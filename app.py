@@ -39,7 +39,8 @@ class Payments:
             db.execute('''CREATE TABLE IF NOT EXISTS accounts (
                 account_id TEXT PRIMARY KEY, balance_cents INTEGER NOT NULL CHECK(balance_cents >= 0)
             )''')
-            # Agreed starting balances: $100 for sender, $0 for merchant. Existing accounts are not reset.
+            # Seed checking with $100 and merchant with $0 only if missing. Either can later send.
+            # Restarting preserves their existing balances.
             db.executemany('INSERT OR IGNORE INTO accounts VALUES (?, ?)',
                            [('DEMO-CHECKING-001', 10000), ('DEMO-MERCHANT-002', 0)])
 
@@ -101,7 +102,8 @@ class Payments:
         event('payment_processed', **details)
         return payment
 
-    # CREATION: validate the instruction, recognize retries, or save a new RECEIVED record.
+    # CREATION: this function saves or retrieves an instruction; it does not move balances.
+    # The POST handler calls process() next, before returning the final outcome.
     def create(self, data, key):
         # Require a usable retry label. The 200-character cap is an existing technical limit.
         if not isinstance(key, str) or not key.strip() or len(key) > 200:
@@ -133,18 +135,17 @@ class Payments:
         # Your positive-amount rule also excludes infinity and NaN, which are not usable money amounts.
         if not amount.is_finite() or amount <= 0:
             raise APIError(422, 'Payment amount must be greater than zero.')
-        # Existing demo cap, introduced earlier by the assistant: reject amounts above $1 million.
+        # Demo constraint: reject amounts above $1 million before creating a record.
         if amount > Decimal('1000000'):
             raise APIError(422, 'Demo payments are limited to $1,000,000.')
-        # USD uses whole cents here: reject amounts containing a fraction of one cent.
+        # Reject fractional cents (5.101), but allow trailing zeros (5.100 equals 5.10).
         if amount != amount.quantize(Decimal('0.01')):
             raise APIError(422, 'USD amounts cannot have fractions of a cent.')
         # Normalize equivalent values such as 25 and 25.00 before comparing retry details.
         normalized = dict(data, amount=format(amount.quantize(Decimal('0.01')), 'f'))
         request = json.dumps(normalized, sort_keys=True)
         with sqlite3.connect(self.database, timeout=10) as db:
-            # Serialize checking and inserting so simultaneous retries cannot duplicate a payment.
-            # Reserve the database write transaction so simultaneous requests cannot race these checks.
+            # Check the key and insert under one write transaction: concurrent retries create one record.
             db.execute('BEGIN IMMEDIATE')
             existing = db.execute('SELECT request, response FROM payments WHERE idempotency_key = ?', (key,)).fetchone()
             # This retry key is already stored. Compare its original instruction with this request.
@@ -153,7 +154,8 @@ class Payments:
                 if existing[0] != request:
                     event('duplicate_conflict', level=logging.WARNING, payment_id=json.loads(existing[1])['payment_id'])
                     raise APIError(409, 'This Idempotency-Key was already used for different payment details.')
-                # Same key and details: return the latest saved outcome with HTTP 200.
+                # Same key and details: reuse the saved record, even if it is still RECEIVED.
+                # The POST handler then processes it or returns its already-final outcome.
                 event('duplicate_returned', payment_id=json.loads(existing[1])['payment_id'])
                 return 200, json.loads(existing[1])
             # New key: generate an ID and timestamp, and save a pending instruction.
@@ -210,7 +212,8 @@ def handler_for(payments):
     logger = make_logger(Path(payments.database).parent / 'logs')
 
     class Handler(BaseHTTPRequestHandler):
-        # Wrap each request so all decisions share one ID, even on separate worker threads.
+        # Give each API call a new request ID; retries get new request IDs but reuse payment IDs.
+        # A context variable keeps simultaneous worker threads from mixing request IDs.
         def handle_one_request(self):
             self.request_id = str(uuid4())
             self.response_status = None
@@ -228,6 +231,7 @@ def handler_for(payments):
                 if self.response_status is None:
                     self.reply(500, {'error': 'Internal server error. Retry with the same idempotency key.'})
             finally:
+                # This records the server's attempted response, not proof the client received it.
                 if self.request_seen or self.response_status is not None:
                     event('request_finished', http_status=self.response_status,
                           duration_ms=round((time.monotonic() - started) * 1000, 2))
@@ -237,7 +241,8 @@ def handler_for(payments):
             valid = super().parse_request()
             if valid:
                 self.request_seen = True
-                # Do not log headers, bodies, query strings, or raw idempotency keys.
+                # This arrival event omits raw headers, bodies, query strings, and idempotency keys.
+                # Later events include selected payment fields and fictional balance changes.
                 path = self.path.split('?', 1)[0]
                 if path.startswith('/payments/'):
                     path = '/payments/{payment_id}/process' if path.endswith('/process') else '/payments/{payment_id}'
@@ -246,6 +251,7 @@ def handler_for(payments):
                 event('request_received', method=self.command, endpoint=path)
             return valid
 
+        # Return the correlation ID in a header so callers can find this request in the logs.
         def send_response(self, code, message=None):
             self.response_status = code
             super().send_response(code, message)
@@ -269,7 +275,8 @@ def handler_for(payments):
             self.end_headers()
             self.wfile.write(body)
 
-        # GET requests read information. Opening a browser address uses this method.
+        # GET requests read app data; they do not move balances or create payment instructions.
+        # They still generate diagnostic log events. Browser navigation uses GET.
         def do_GET(self):
             # Troubleshooting page reads diagnostic files, not payment records or balances.
             if urlsplit(self.path).path == '/logs':
@@ -362,10 +369,13 @@ def handler_for(payments):
                     raise APIError(400, 'Invalid JSON body.')
                 # Agreed flow: save or retrieve the instruction, then process it before replying.
                 status, result = payments.create(data, self.headers.get('Idempotency-Key'))
-                # Immediate processing returns COMPLETED or REJECTED. Final retries do not move funds again.
-                # Saving and processing are separate transactions: a crash between them can leave RECEIVED work.
+                # On a normal response, processing is synchronous: return COMPLETED or REJECTED.
+                # Final retries do not move funds again. Unexpected failures may instead return 500.
+                # Save and process are separate transactions: a crash between them can leave RECEIVED.
+                # No background recovery worker exists; retry the same key or call /process.
                 result = payments.process(result['payment_id'])
-                # 201 for a new record, 200 for a retry; the payment status separately describes its outcome.
+                # 201 for a new record, 200 for a retry, including business rejections.
+                # Invalid input instead returns an HTTP error before any payment is saved.
                 self.reply(status, result)
             # Convert an expected application error into an HTTP error response.
             except APIError as error:
