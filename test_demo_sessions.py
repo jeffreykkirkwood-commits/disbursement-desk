@@ -6,10 +6,11 @@ import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from http.server import ThreadingHTTPServer
+from werkzeug.serving import make_server
 from pathlib import Path
 
-from app import Payments, handler_for
+from payments import Payments
+from hosted_app import create_app
 from demo_sessions import DemoStore
 
 
@@ -22,8 +23,9 @@ class BrowserDemoTests(unittest.TestCase):
                          amount='25.00', currency='USD', rail='ACH')
 
     def start(self):
-        self.store = DemoStore(self.folder / 'demos', Payments)
-        self.server = ThreadingHTTPServer(('127.0.0.1', 0), handler_for(self.store))
+        self.application = create_app(self.folder / 'demos')
+        self.store = self.application.extensions['demos']
+        self.server = make_server('127.0.0.1', 0, self.application, threaded=True)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
 
@@ -31,10 +33,11 @@ class BrowserDemoTests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()
-        self.store.close()
+        self.application.extensions['close']()
 
     def tearDown(self):
         self.stop()
+        self.application.extensions['close']()
         self.temp.cleanup()
 
     def call(self, path='/accounts', cookie=None, method='GET', data=None, headers=None):
@@ -100,7 +103,7 @@ class BrowserDemoTests(unittest.TestCase):
     def test_missing_forged_and_stale_sessions_cannot_submit(self):
         for cookie in (None, 'payments_demo=' + 'a' * 64, 'payments_demo=../../payments.sqlite3'):
             self.assertEqual(self.call('/payments', cookie, 'POST', self.body)[0], 409)
-        self.assertEqual(list((self.folder / 'demos').iterdir()), [])
+        self.assertEqual(list((self.folder / 'demos').rglob('payments.sqlite3')), [])
         a, aid = self.browser()
         b, bid = self.browser()
         self.assertEqual(self.call('/payments', b, 'POST', self.body, {'X-Demo-ID': aid})[0], 409)
@@ -113,7 +116,7 @@ class BrowserDemoTests(unittest.TestCase):
         a, aid = self.browser()
         self.assertEqual(self.call('/payments', a, 'POST', self.body, {'Origin': 'https://example.com'})[0], 403)
         self.assertEqual(self.call('/payments', a, 'POST', self.body, {'Sec-Fetch-Site': 'cross-site'})[0], 403)
-        origin = 'http://127.0.0.1:' + str(self.server.server_port)
+        origin = 'http://127.0.0.1:8001'
         self.assertEqual(self.call('/payments', a, 'POST', self.body, {'Origin': origin, 'X-Demo-ID': aid})[0], 201)
 
     def test_same_cookie_concurrent_retries_debit_once(self):

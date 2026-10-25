@@ -7,14 +7,14 @@ from pathlib import Path
 from uuid import uuid4
 from flask import Flask, Response, g, jsonify, redirect, request
 from werkzeug.exceptions import HTTPException
-from app import APIError, Payments
+from payments import APIError, Payments
 from dashboard import render_dashboard
-from demo_sessions import DemoStore
-from event_log import event, request_context
+from demo_sessions import DemoStore, DemoCapacityError
+from event_log import event, request_context, make_logger
 from log_view import render_logs
 
 
-def create_app(directory=None, public_origin=None):
+def create_app(directory=None, public_origin=None, payments=None):
     app = Flask(__name__, static_folder=None)
     app.config['MAX_CONTENT_LENGTH'] = 10000
     # Render supplies its public HTTPS URL. An explicit origin supports custom domains.
@@ -23,28 +23,55 @@ def create_app(directory=None, public_origin=None):
               os.environ.get('RENDER_EXTERNAL_URL') or 'http://127.0.0.1:8001').rstrip('/')
     if os.environ.get('RENDER') and not origin.startswith('https://'):
         raise RuntimeError('Hosted demos require an HTTPS public origin.')
-    demos = DemoStore(directory or os.environ.get('DEMO_DIRECTORY', '/tmp/payments-demos'),
-                      Payments, secure_cookie=origin.startswith('https://'))
+    directory = Path(directory or os.environ.get('DEMO_DIRECTORY', '/tmp/payments-demos'))
+    # Server diagnostics cover requests without a visitor session. Never expose these via /logs.
+    server_logger = make_logger(directory / '_server_logs')
+    demos = None if payments else DemoStore(directory, Payments, secure_cookie=origin.startswith('https://'))
+    fixed_logger = make_logger(Path(payments.database).parent / 'logs') if payments else None
     app.extensions['demos'] = demos
-    atexit.register(demos.close)
+    def close():
+        if demos:
+            demos.close()
+        for logger in (server_logger, fixed_logger):
+            if logger:
+                for handler in logger.handlers[:]:
+                    handler.close()
+                    logger.removeHandler(handler)
+    app.extensions['close'] = close
+    atexit.register(close)
 
     @app.before_request
     def select_demo():
         g.request_id, g.started = str(uuid4()), time.monotonic()
-        g.context_token = request_context.set(None)
+        g.context_token = request_context.set((server_logger, g.request_id))
+        g.leased = False
+        event('http_request_received', method=request.method,
+              endpoint=str(request.url_rule) if request.url_rule else '(unknown endpoint)')
         g.cookie = g.demo_id = None
         # Health probes, assets and unknown routes must not allocate databases.
         if request.endpoint in (None, 'health', 'script', 'home'):
             return
+        # Fixed storage is a test fixture only; normal local and hosted users use cookies.
+        if payments:
+            g.payments = payments
+            request_context.set((fixed_logger, g.request_id))
+            event('request_received', method=request.method, endpoint=str(request.url_rule))
+            return
+        # Reject foreign websites before looking up a browser session. The server log retains the rejection.
         if request.method == 'POST':
             if (request.headers.get('Sec-Fetch-Site') == 'cross-site' or
                     (request.headers.get('Origin') and request.headers['Origin'] != origin)):
                 return jsonify(error='Cross-site submissions are not allowed.'), 403
-        session = demos.resolve(request.headers.get('Cookie'), create=request.method == 'GET')
+        # GET/HEAD may start a demo; a POST can only use an existing session.
+        try:
+            session = demos.resolve(request.headers.get('Cookie'), create=request.method in ('GET', 'HEAD'))
+        except DemoCapacityError as error:
+            return jsonify(error=str(error)), 503
         if not session:
             return jsonify(error='Demo session missing. Reload the dashboard before submitting.',
                            code='DEMO_SESSION_CHANGED'), 409
         g.demo_id, g.payments, logger, g.cookie = session
+        g.leased = True
         request_context.set((logger, g.request_id))
         event('request_received', method=request.method, endpoint=str(request.url_rule))
         if request.method == 'POST':
@@ -67,10 +94,20 @@ def create_app(directory=None, public_origin=None):
                   reason=payload.get('error', 'Request failed'))
         event('request_finished', http_status=response.status_code,
               duration_ms=round((time.monotonic() - g.started) * 1000, 2))
+        # Mirror only response metadata centrally; visitor details stay in that visitor's log.
+        token = request_context.set((server_logger, g.request_id))
+        try:
+            event('http_response', http_status=response.status_code,
+                  endpoint=str(request.url_rule) if request.url_rule else '(unknown endpoint)')
+        finally:
+            request_context.reset(token)
         return response
 
     @app.teardown_request
     def release_context(error):
+        if g.get('leased'):
+            demos.release(g.demo_id)
+            g.leased = False
         token = g.pop('context_token', None)
         if token is not None:
             request_context.reset(token)
@@ -117,7 +154,7 @@ def create_app(directory=None, public_origin=None):
         return jsonify(g.payments.list_accounts())
 
     @app.get('/payments')
-    def payments():
+    def list_payments():
         return jsonify(g.payments.list_payments())
 
     @app.get('/payments/<payment_id>')

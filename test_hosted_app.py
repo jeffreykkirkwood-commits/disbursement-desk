@@ -14,7 +14,7 @@ class HostedTests(unittest.TestCase):
                          creditor_account='DEMO-MERCHANT-002', amount='0.07', currency='USD', rail='ACH')
 
     def tearDown(self):
-        self.app.extensions['demos'].close()
+        self.app.extensions['close']()
         self.temp.cleanup()
 
     def get(self, path, client=None):
@@ -28,7 +28,7 @@ class HostedTests(unittest.TestCase):
         for path in ('/', '/health', '/payment-form.js', '/not-found', '/dwolla-credentials.local.json'):
             response = self.get(path)
             self.assertNotIn('Set-Cookie', response.headers)
-        self.assertEqual(list(Path(self.temp.name).iterdir()), [])
+        self.assertEqual(list(Path(self.temp.name).rglob('payments.sqlite3')), [])
 
     def test_https_cookie_and_retry_moves_once(self):
         response = self.get('/dashboard')

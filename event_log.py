@@ -21,9 +21,9 @@ def make_logger(directory):
     directory.mkdir(exist_ok=True, parents=True)
     logger = logging.Logger('payments.' + str(directory))
     logger.setLevel(logging.INFO)
-    # Rotate near 1 MB: keep api.log plus .1 (newest backup), .2, and .3.
+    # Rotate near 256 KB: retain the active log and three backups per demo.
     # Older events are discarded; this is not a permanent audit history.
-    file_handler = RotatingFileHandler(directory / 'api.log', maxBytes=1000000,
+    file_handler = RotatingFileHandler(directory / 'api.log', maxBytes=262144,
                                        backupCount=3, encoding='utf-8')
     # Write the same JSON event to disk and Terminal (stderr). No retroactive event reconstruction.
     for handler in (file_handler, logging.StreamHandler()):
