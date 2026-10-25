@@ -13,6 +13,7 @@ from dashboard import render_dashboard
 from log_view import render_logs
 from urllib.parse import urlsplit, parse_qs
 from event_log import event, make_logger, request_context
+from demo_sessions import DemoStore
 
 
 # Expected request errors carry an HTTP status and a message for the caller.
@@ -39,10 +40,10 @@ class Payments:
             db.execute('''CREATE TABLE IF NOT EXISTS accounts (
                 account_id TEXT PRIMARY KEY, balance_cents INTEGER NOT NULL CHECK(balance_cents >= 0)
             )''')
-            # Seed checking with $100 and merchant with $0 only if missing. Either can later send.
+            # Seed each account with $100 only if missing. Either can later send.
             # Restarting preserves their existing balances.
             db.executemany('INSERT OR IGNORE INTO accounts VALUES (?, ?)',
-                           [('DEMO-CHECKING-001', 10000), ('DEMO-MERCHANT-002', 0)])
+                           [('DEMO-CHECKING-001', 10000), ('DEMO-MERCHANT-002', 10000)])
 
     # PROCESSING: find a saved instruction, evaluate it, and save its final outcome.
     def process(self, payment_id):
@@ -209,17 +210,23 @@ class Payments:
 
 # HTTP INTERFACE: map request methods and addresses to the payment features above.
 def handler_for(payments):
-    logger = make_logger(Path(payments.database).parent / 'logs')
+    # Normal startup supplies DemoStore. A fixed Payments instance supports isolated
+    # payment-rule tests; it is never used by the browser-demo entry point below.
+    demos = payments if isinstance(payments, DemoStore) else None
+    logger = None if demos else make_logger(Path(payments.database).parent / 'logs')
 
     class Handler(BaseHTTPRequestHandler):
         # Give each API call a new request ID; retries get new request IDs but reuse payment IDs.
         # A context variable keeps simultaneous worker threads from mixing request IDs.
         def handle_one_request(self):
             self.request_id = str(uuid4())
+            self.demo_cookie = None
+            self.demo_id = None
+            self.payments = None if demos else payments
             self.response_status = None
             self.request_seen = False
             started = time.monotonic()
-            token = request_context.set((logger, self.request_id))
+            token = request_context.set((logger, self.request_id) if logger else None)
             try:
                 super().handle_one_request()
             except (BrokenPipeError, ConnectionResetError):
@@ -241,6 +248,31 @@ def handler_for(payments):
             valid = super().parse_request()
             if valid:
                 self.request_seen = True
+                if demos:
+                    # Resolve the browser BEFORE reading data or selecting its log.
+                    # A missing/expired cookie can start a demo on GET, never on POST.
+                    session = demos.resolve(self.headers.get('Cookie'), create=self.command == 'GET')
+                    if session:
+                        self.demo_id, self.payments, demo_logger, self.demo_cookie = session
+                        request_context.set((demo_logger, self.request_id))
+                    elif self.command == 'POST':
+                        self.reply(409, {'error': 'Demo session missing. Reload the dashboard before submitting.',
+                                         'code': 'DEMO_SESSION_CHANGED'})
+                        return False
+                if self.command == 'POST' and demos:
+                    # Prevent a different website from submitting through this browser.
+                    # CLI clients may omit Origin, but must retain their demo cookie.
+                    origin = self.headers.get('Origin')
+                    if (self.headers.get('Sec-Fetch-Site') == 'cross-site' or
+                            (origin and origin != 'http://' + self.headers.get('Host', ''))):
+                        self.reply(403, {'error': 'Cross-site submissions are not allowed.'})
+                        return False
+                    # An old tab must not replay its pending instruction into a new demo.
+                    expected = self.headers.get('X-Demo-ID')
+                    if expected and expected != self.demo_id:
+                        self.reply(409, {'error': 'This tab belongs to a different demo. Reload the dashboard.',
+                                         'code': 'DEMO_SESSION_CHANGED'})
+                        return False
                 # This arrival event omits raw headers, bodies, query strings, and idempotency keys.
                 # Later events include selected payment fields and fictional balance changes.
                 path = self.path.split('?', 1)[0]
@@ -256,6 +288,13 @@ def handler_for(payments):
             self.response_status = code
             super().send_response(code, message)
             self.send_header('X-Request-ID', self.request_id)
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.send_header('Referrer-Policy', 'same-origin')
+            if self.demo_id:
+                self.send_header('X-Demo-ID', self.demo_id)
+            if self.demo_cookie:
+                self.send_header('Set-Cookie', self.demo_cookie)
 
         def log_message(self, format, *args):
             # Replace the default access line with our correlated structured events.
@@ -280,11 +319,10 @@ def handler_for(payments):
         def do_GET(self):
             # Troubleshooting page reads diagnostic files, not payment records or balances.
             if urlsplit(self.path).path == '/logs':
-                body = render_logs(Path(payments.database).parent / 'logs',
+                body = render_logs(Path(self.payments.database).parent / 'logs',
                                    parse_qs(urlsplit(self.path).query), self.request_id).encode('utf-8')
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
-                self.send_header('Cache-Control', 'no-store')
                 self.send_header('Content-Length', str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -294,28 +332,28 @@ def handler_for(payments):
                 body = Path(__file__).with_name('payment-form.js').read_bytes()
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/javascript; charset=utf-8')
-                self.send_header('Cache-Control', 'no-store')
                 self.send_header('Content-Length', str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
                 return
             # Combined browser UI: read one snapshot, then render HTML instead of JSON.
             if self.path in ('/dashboard', '/dashboard/'):
-                body = render_dashboard(payments.dashboard_data()).encode('utf-8')
+                data = self.payments.dashboard_data()
+                data['demo_id'] = self.demo_id or 'local-test'
+                body = render_dashboard(data).encode('utf-8')
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 # A refresh must read fresh data rather than reuse an older cached snapshot.
-                self.send_header('Cache-Control', 'no-store')
                 self.send_header('Content-Length', str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
                 return
             # Account list: display current dollar balances.
             if self.path == '/accounts':
-                return self.reply(200, payments.list_accounts())
+                return self.reply(200, self.payments.list_accounts())
             # Payment list: display the current saved payment history.
             if self.path == '/payments':
-                return self.reply(200, payments.list_payments())
+                return self.reply(200, self.payments.list_payments())
             # Health check: confirm the server can answer a request.
             if self.path == '/health':
                 return self.reply(200, {'status': 'ok', 'mode': 'fictional payments only'})
@@ -327,7 +365,7 @@ def handler_for(payments):
             # Single-payment address: extract the ID from the path and look up that record.
             if self.path.startswith('/payments/'):
                 try:
-                    return self.reply(200, payments.get(self.path[len('/payments/'):]))
+                    return self.reply(200, self.payments.get(self.path[len('/payments/'):]))
                 # Convert an expected application error into an HTTP error response.
                 except APIError as error:
                     return self.reply(error.status, {'error': error.message})
@@ -340,7 +378,7 @@ def handler_for(payments):
             # Retain the manual processing endpoint; final outcomes are safe to request again.
             if len(parts) == 3 and parts[0] == 'payments' and parts[2] == 'process':
                 try:
-                    return self.reply(200, payments.process(parts[1]))
+                    return self.reply(200, self.payments.process(parts[1]))
                 # Convert an expected application error into an HTTP error response.
                 except APIError as error:
                     return self.reply(error.status, {'error': error.message})
@@ -368,12 +406,12 @@ def handler_for(payments):
                 except (ValueError, UnicodeDecodeError):
                     raise APIError(400, 'Invalid JSON body.')
                 # Agreed flow: save or retrieve the instruction, then process it before replying.
-                status, result = payments.create(data, self.headers.get('Idempotency-Key'))
+                status, result = self.payments.create(data, self.headers.get('Idempotency-Key'))
                 # On a normal response, processing is synchronous: return COMPLETED or REJECTED.
                 # Final retries do not move funds again. Unexpected failures may instead return 500.
                 # Save and process are separate transactions: a crash between them can leave RECEIVED.
                 # No background recovery worker exists; retry the same key or call /process.
-                result = payments.process(result['payment_id'])
+                result = self.payments.process(result['payment_id'])
                 # 201 for a new record, 200 for a retry, including business rejections.
                 # Invalid input instead returns an HTTP error before any payment is saved.
                 self.reply(status, result)
@@ -386,11 +424,11 @@ def handler_for(payments):
 
 # STARTUP: runs when you type python3 app.py, not when tests import this file.
 if __name__ == '__main__':
-    # Use the database next to this script, regardless of the Terminal working folder.
-    database = Path(__file__).with_name('payments.sqlite3')
+    # Preserve the old shared database. Each browser now gets a separate demo folder.
+    demos = DemoStore(Path(__file__).with_name('demos'), Payments)
     port = int(os.environ.get('PORT', '8000'))
     # Listen only on this Mac. This teaching server has no authentication; it is not public hosting.
-    server = ThreadingHTTPServer(('127.0.0.1', port), handler_for(Payments(database)))
+    server = ThreadingHTTPServer(('127.0.0.1', port), handler_for(demos))
     print('Payments simulator running at http://127.0.0.1:%s — Ctrl+C to stop' % port, flush=True)
     try:
         server.serve_forever()
@@ -400,3 +438,4 @@ if __name__ == '__main__':
     # Always close the listening socket when the server exits.
     finally:
         server.server_close()
+        demos.close()
