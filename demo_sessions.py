@@ -43,7 +43,7 @@ class DemoStore:
                 self.loaded[demo_id] = (payments, make_logger(folder / "logs"))
             payments, logger = self.loaded[demo_id]
             # Persistent cookie survives closing a browser. HttpOnly hides it from JS;
-            # SameSite limits cross-site use. Secure is for a future HTTPS deployment.
+            # SameSite limits cross-site use. Hosted HTTPS demos also set Secure.
             value = f"{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={COOKIE_AGE}"
             if self.secure_cookie:
                 value += "; Secure"
