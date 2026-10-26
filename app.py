@@ -1,3 +1,7 @@
+# START HERE / FEATURE 01 — Local launch
+# Start a local-only demo server. Bind to the loopback address (this computer), disable
+# debugger/reloader, and reuse the hosted application rules. Run it deliberately; importing
+# this file does not start a server.
 """Local startup for the same Flask application deployed on Render."""
 import os
 from pathlib import Path
