@@ -1,3 +1,4 @@
+# START HERE — How requests leave bounded, visitor-specific diagnostic traces.
 """Local diagnostic events, correlated by request ID. Not a financial audit ledger."""
 import json
 import logging
@@ -10,12 +11,19 @@ from pathlib import Path
 request_context = ContextVar('request_context', default=None)
 
 
+# FEATURE 01 — Write readable event records
+# Convert an event and its details into a JSON log line with a timestamp and severity.
 class EventFormatter(logging.Formatter):
+    # FEATURE 02 — Attach a time and severity
+    # The log line describes an observation, not a second source of account balances.
     def format(self, record):
         return json.dumps({'time': datetime.now(timezone.utc).isoformat(),
                            'level': record.levelname, **record.event}, ensure_ascii=True)
 
 
+# FEATURE 03 — Keep bounded diagnostic history
+# Write rotating files plus console output. Rotation keeps only a limited recent
+# history, so missing older logs do not prove an action never happened.
 def make_logger(directory):
     directory = Path(directory)
     directory.mkdir(exist_ok=True, parents=True)
@@ -32,6 +40,10 @@ def make_logger(directory):
     return logger
 
 
+# FEATURE 04 — Label activity for the current request
+# Use the current request context to associate events with the right visitor log.
+# Logging happens separately from the financial database transaction and is not a
+# complete accounting ledger.
 def event(name, level=logging.INFO, **fields):
     context = request_context.get()
     if context is None:

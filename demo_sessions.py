@@ -1,3 +1,4 @@
+# START HERE — How temporary visitor data is separated and reclaimed.
 """Browser demo selection. Cookie possession grants access to fictional demo data."""
 import hashlib
 import re
@@ -14,11 +15,19 @@ COOKIE_NAME = "payments_demo"
 COOKIE_AGE = 365 * 24 * 60 * 60
 
 
+# FEATURE 01 — Explain a full demo service
+# Signal that a new browser workspace cannot be allocated within configured limits.
 class DemoCapacityError(Exception):
     """Temporary demo capacity, not a rejected payment."""
 
 
+# FEATURE 02 — Separate browser workspaces
+# Manage temporary databases, cookies and expiry together so one visitor does not see
+# another visitor balances or logs.
 class DemoStore:
+    # FEATURE 03 — Set workspace limits
+    # Create the storage folder and load positive session, size, inactivity and payment
+    # limits. A lock coordinates simultaneous requests in this process.
     def __init__(self, directory, payments_factory, secure_cookie=False):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -35,10 +44,17 @@ class DemoStore:
         if min(self.max_sessions, self.idle_seconds, self.max_bytes, self.max_payments) <= 0:
             raise ValueError('Demo limits must be positive.')
 
+    # FEATURE 04 — Recognize only managed data
+    # Consider only correctly named non-symlink folders containing a demo database.
+    # Unrelated files must never become cleanup targets.
     def _folders(self):
         return [p for p in self.directory.iterdir() if p.is_dir() and not p.is_symlink()
                 and re.fullmatch(r'[0-9a-f]{64}', p.name) and (p / 'payments.sqlite3').is_file()]
 
+    # FEATURE 05 — Remove inactive managed demos
+    # Check last-use time when resolving a session, skipping any database currently in
+    # use. Expiry deletes the managed demo folder; this is temporary demonstration
+    # storage, not durable financial history.
     def _expire(self):
         # Only managed demo folders can expire. Never remove the old shared database.
         # Active requests retain their lease until Flask finishes building the response.
@@ -54,6 +70,9 @@ class DemoStore:
                         cached[1].removeHandler(handler)
                 shutil.rmtree(folder)
 
+    # FEATURE 06 — Mark a request finished
+    # Decrease the active-request count so a later expiry check can reclaim an idle
+    # demo.
     def release(self, demo_id):
         with self.lock:
             self.active[demo_id] = max(0, self.active.get(demo_id, 0) - 1)
@@ -63,6 +82,11 @@ class DemoStore:
     # Cookie possession selects a fictional browser workspace, not a signed-in user.
     # Resolve and lease under the store lock so expiry cannot remove a database while
     # a request is using it; the HTTP layer releases that lease after handling.
+    # FEATURE 07 — Find or start the browser demo
+    # Validate the cookie, hash its random token into a folder name and reuse that
+    # database. A missing submission session is rejected; an allowed page read can
+    # allocate one if capacity permits. Touch its activity marker and acquire an in-use
+    # lease before returning it.
     def resolve(self, cookie_header, create=False):
         # Never use a caller-supplied value as a filesystem path. Only hash a
         # correctly shaped random token, and accept it only for an existing demo.
@@ -99,6 +123,8 @@ class DemoStore:
                 value += "; Secure"
             return demo_id, payments, logger, value
 
+    # FEATURE 08 — Close cached log writers
+    # Release open handlers without deleting the stored demo folders.
     def close(self):
         # Called on shutdown/tests, after requests finish, to release log file handles.
         with self.lock:
