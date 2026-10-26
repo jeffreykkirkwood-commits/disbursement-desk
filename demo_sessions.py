@@ -13,7 +13,6 @@ from threading import RLock
 from event_log import make_logger
 
 COOKIE_NAME = "payments_demo"
-COOKIE_AGE = 365 * 24 * 60 * 60
 
 
 # FEATURE 01 — Explain a full demo service
@@ -114,9 +113,10 @@ class DemoStore:
             payments, logger = self.loaded[demo_id]
             (folder / '.last-used').touch()
             self.active[demo_id] = self.active.get(demo_id, 0) + 1
-            # Cookie lasts a year. HttpOnly = page scripts can't read it; SameSite=Strict =
-            # other websites can't use it; Secure (online only) = sent over HTTPS only.
-            value = f"{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={COOKIE_AGE}"
+            # Cookie lasts as long as the demo's idle expiry (DEMO_IDLE_SECONDS, default 1 day).
+            # HttpOnly = page scripts can't read it; SameSite=Strict = other websites can't
+            # use it; Secure (online only) = sent over HTTPS only.
+            value = f"{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={self.idle_seconds}"
             if self.secure_cookie:
                 value += "; Secure"
             return demo_id, payments, logger, value
