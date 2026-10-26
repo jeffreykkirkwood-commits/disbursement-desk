@@ -98,7 +98,7 @@ def create_app(directory=None, public_origin=None, payments=None):
     # FEATURE 04 — Return the result with a trace label
     # Runs after every request. Adds a request ID (for matching log lines), the demo
     # cookie, and "don't cache this" and basic browser-safety headers. The server-wide log
-    # gets only the status code; visitor details stay in that visitor's own log.
+    # gets the request ID, method, endpoint pattern and status (plus the rejection reason for requests refused before a demo is found); visitor details stay in that visitor's own log.
     @app.after_request
     def finish(response):
         response.headers.update({'X-Request-ID': g.request_id, 'Cache-Control': 'no-store',
