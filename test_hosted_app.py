@@ -1,7 +1,9 @@
-# START HERE — Synthetic regression scenarios: each assertion protects the behavior described below.
+# Automated checks for the web layer in hosted_app.py (cookies, origins, size limits).
 """Exercise the hosted HTTP boundary with temporary fictional databases."""
+import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from hosted_app import create_app
 
@@ -81,6 +83,27 @@ class HostedTests(unittest.TestCase):
         self.assertEqual(self.post(Origin='https://different.example').status_code, 403)
         self.assertEqual(self.get('/payments').json, [])
 
+    # FEATURE 13 — Scenario — Render's public address is the trusted origin
+    # On Render, with no PUBLIC_ORIGIN set, browsers may submit payments only from the
+    # address Render supplies. The local default address and other websites are refused.
+    def test_render_external_url_is_the_allowed_origin(self):
+        render_url = 'https://payments-demo.onrender.com'
+        env = {k: v for k, v in os.environ.items() if k != 'PUBLIC_ORIGIN'}
+        env.update(RENDER='true', RENDER_EXTERNAL_URL=render_url)
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, env, clear=True):
+            app = create_app(d)
+            try:
+                client = app.test_client()
+                client.get('/dashboard', base_url=render_url)
+                post = lambda origin: client.post('/payments', json=self.body, base_url=render_url,
+                                                  headers={'Idempotency-Key': 'render', 'Origin': origin})
+                for refused in ('http://127.0.0.1:8001', 'https://different.example'):
+                    self.assertEqual(post(refused).status_code, 403)
+                self.assertEqual(client.get('/payments', base_url=render_url).json, [])
+                self.assertEqual(post(render_url).status_code, 201)
+            finally:
+                app.extensions['close']()
+
     # FEATURE 09 — Scenario — validation and business rejection
     # Contrast invalid input with a valid unaffordable instruction. The first creates no
     # payment; the second saves a rejection without moving funds.
@@ -103,3 +126,40 @@ class HostedTests(unittest.TestCase):
                                     base_url='https://demo.example')
         self.assertEqual(response.status_code, 413)
         self.assertEqual(self.get('/payments').json, [])
+
+    # FEATURE 11 — Scenario — origin header is checked only when a client sends one
+    # Browsers attach Origin (or Sec-Fetch-Site) to cross-site POSTs, which is what CSRF
+    # protection targets. Non-browser clients such as curl send neither, so they are
+    # allowed, but still need an existing demo cookie. An opaque "null" origin is foreign.
+    def test_origin_header_is_checked_only_when_present(self):
+        def bare_post(**headers):
+            return self.client.post('/payments', json=self.body, base_url='https://demo.example',
+                                    headers={'Idempotency-Key': 'curl-key', **headers})
+        self.assertEqual(bare_post().status_code, 409)
+        self.get('/dashboard')
+        self.assertEqual(bare_post().status_code, 201)
+        self.assertEqual(bare_post(**{'Sec-Fetch-Site': 'same-origin'}).status_code, 200)
+        self.assertEqual(bare_post(Origin='null').status_code, 403)
+        self.assertEqual(bare_post(**{'Sec-Fetch-Site': 'cross-site'}).status_code, 403)
+        self.assertEqual(self.get('/accounts').json[0]['balance'], '99.93')
+
+    # FEATURE 12 — Scenario — local Gunicorn origin default
+    # Without PUBLIC_ORIGIN or Render's URL, browsers may submit payments only from the local
+    # Gunicorn address (port 8001). Setting PUBLIC_ORIGIN replaces that address.
+    def test_local_gunicorn_origin_default(self):
+        cleared = {k: v for k, v in os.environ.items()
+                   if k not in ('PUBLIC_ORIGIN', 'RENDER_EXTERNAL_URL', 'RENDER')}
+        for env, allowed, refused in (({}, 'http://127.0.0.1:8001', 'http://127.0.0.1:8000'),
+                                      ({'PUBLIC_ORIGIN': 'http://127.0.0.1:8000'},
+                                       'http://127.0.0.1:8000', 'http://127.0.0.1:8001')):
+            with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {**cleared, **env}, clear=True):
+                app = create_app(d)
+                try:
+                    client = app.test_client()
+                    client.get('/dashboard', base_url=allowed)
+                    post = lambda origin: client.post('/payments', json=self.body, base_url=allowed,
+                                                      headers={'Idempotency-Key': 'local', 'Origin': origin})
+                    self.assertEqual(post(refused).status_code, 403)
+                    self.assertEqual(post(allowed).status_code, 201)
+                finally:
+                    app.extensions['close']()

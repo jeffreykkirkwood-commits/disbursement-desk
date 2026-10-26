@@ -1,4 +1,4 @@
-# START HERE — Synthetic regression scenarios: each assertion protects the behavior described below.
+# Automated checks that each browser (cookie) gets its own separate demo, using a real local server.
 """HTTP-level isolation tests using separate browser cookies and temporary data."""
 import hashlib
 import http.client
