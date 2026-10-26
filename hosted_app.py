@@ -214,8 +214,9 @@ def create_app(directory=None, public_origin=None, payments=None):
 
     # FEATURE 17 — Submit or safely retry
     # Require JSON, validate and save or reuse the instruction, then process it before
-    # replying. The creation response number describes whether a record was new; the
-    # result status describes whether funds moved.
+    # replying. HTTP 201 only means a new record was saved (200 means this retry key was
+    # seen before). It does not mean money moved: a 201 can carry status REJECTED, for
+    # example for insufficient funds. Check the result's status field.
     @app.post('/payments')
     def create_payment():
         if request.mimetype != 'application/json':
