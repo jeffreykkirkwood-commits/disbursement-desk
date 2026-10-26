@@ -103,3 +103,20 @@ class HostedTests(unittest.TestCase):
                                     base_url='https://demo.example')
         self.assertEqual(response.status_code, 413)
         self.assertEqual(self.get('/payments').json, [])
+
+    # FEATURE 11 — Scenario — origin header is checked only when a client sends one
+    # Browsers attach Origin (or Sec-Fetch-Site) to cross-site POSTs, which is what CSRF
+    # protection targets. Non-browser clients such as curl send neither, so they are
+    # allowed, but still need an existing demo cookie. An opaque "null" origin is foreign.
+    def test_origin_header_is_checked_only_when_present(self):
+        def bare_post(**headers):
+            return self.client.post('/payments', json=self.body, base_url='https://demo.example',
+                                    headers={'Idempotency-Key': 'curl-key', **headers})
+        self.assertEqual(bare_post().status_code, 409)
+        self.get('/dashboard')
+        self.assertEqual(bare_post().status_code, 201)
+        self.assertEqual(bare_post(**{'Sec-Fetch-Site': 'same-origin'}).status_code, 200)
+        self.assertEqual(bare_post(Origin='null').status_code, 403)
+        self.assertEqual(bare_post(**{'Sec-Fetch-Site': 'cross-site'}).status_code, 403)
+        self.assertEqual(self.get('/accounts').json[0]['balance'], '99.93')
+
