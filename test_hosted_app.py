@@ -123,8 +123,8 @@ class HostedTests(unittest.TestCase):
         self.assertEqual(self.get('/accounts').json[0]['balance'], '99.93')
 
     # FEATURE 12 — Scenario — local Gunicorn origin default
-    # Without PUBLIC_ORIGIN or Render's URL, only the documented local Gunicorn address
-    # (port 8001) may submit from a browser; app.py passes its own port 8000 origin.
+    # Without PUBLIC_ORIGIN or Render's URL, browsers may submit payments only from the local
+    # Gunicorn address (port 8001). Setting PUBLIC_ORIGIN replaces that address.
     def test_local_gunicorn_origin_default(self):
         cleared = {k: v for k, v in os.environ.items()
                    if k not in ('PUBLIC_ORIGIN', 'RENDER_EXTERNAL_URL', 'RENDER')}
