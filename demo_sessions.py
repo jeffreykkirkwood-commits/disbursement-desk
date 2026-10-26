@@ -1,4 +1,5 @@
-# START HERE — How temporary visitor data is separated and reclaimed.
+# START HERE — Gives each browser its own private, temporary demo (its own database and
+# logs), identified by a cookie, and deletes demos that have been idle too long.
 """Browser demo selection. Cookie possession grants access to fictional demo data."""
 import hashlib
 import re
@@ -36,7 +37,8 @@ class DemoStore:
         self.lock = RLock()
         self.loaded = {}
         self.active = {}
-        # These limits bound a disposable prototype; configuration must be positive integers.
+        # Safety limits, overridable with environment variables: max demos, idle time before
+        # deletion (default 1 day), total disk use (default 128 MB), payments per demo.
         self.max_sessions = int(os.environ.get('DEMO_MAX_SESSIONS', '50'))
         self.idle_seconds = int(os.environ.get('DEMO_IDLE_SECONDS', '86400'))
         self.max_bytes = int(os.environ.get('DEMO_MAX_BYTES', '134217728'))
@@ -56,8 +58,6 @@ class DemoStore:
     # use. Expiry deletes the managed demo folder; this is temporary demonstration
     # storage, not durable financial history.
     def _expire(self):
-        # Only managed demo folders can expire. Never remove the old shared database.
-        # Active requests retain their lease until Flask finishes building the response.
         now = time.time()
         for folder in self._folders():
             marker = folder / '.last-used'
@@ -79,14 +79,12 @@ class DemoStore:
             if not self.active[demo_id]:
                 self.active.pop(demo_id, None)
 
-    # Cookie possession selects a fictional browser workspace, not a signed-in user.
-    # Resolve and lease under the store lock so expiry cannot remove a database while
-    # a request is using it; the HTTP layer releases that lease after handling.
     # FEATURE 07 — Find or start the browser demo
-    # Validate the cookie, hash its random token into a folder name and reuse that
-    # database. A missing submission session is rejected; an allowed page read can
-    # allocate one if capacity permits. Touch its activity marker and acquire an in-use
-    # lease before returning it.
+    # Read the cookie's random token, turn it into a folder name (via a one-way "hash"),
+    # and reuse that demo's database. Whoever holds the cookie gets that demo; there is
+    # no login. If there's no valid demo: a page view may start a new one (if under the
+    # limits), a payment submission is refused. Marks the demo as recently used and
+    # "leased" (in use) so cleanup won't delete it until the web layer calls release().
     def resolve(self, cookie_header, create=False):
         # Never use a caller-supplied value as a filesystem path. Only hash a
         # correctly shaped random token, and accept it only for an existing demo.
@@ -116,8 +114,8 @@ class DemoStore:
             payments, logger = self.loaded[demo_id]
             (folder / '.last-used').touch()
             self.active[demo_id] = self.active.get(demo_id, 0) + 1
-            # Persistent cookie survives closing a browser. HttpOnly hides it from JS;
-            # SameSite limits cross-site use. Hosted HTTPS demos also set Secure.
+            # Cookie lasts a year. HttpOnly = page scripts can't read it; SameSite=Strict =
+            # other websites can't use it; Secure (online only) = sent over HTTPS only.
             value = f"{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={COOKIE_AGE}"
             if self.secure_cookie:
                 value += "; Secure"
@@ -126,7 +124,6 @@ class DemoStore:
     # FEATURE 08 — Close cached log writers
     # Release open handlers without deleting the stored demo folders.
     def close(self):
-        # Called on shutdown/tests, after requests finish, to release log file handles.
         with self.lock:
             for _, logger in self.loaded.values():
                 for handler in logger.handlers:

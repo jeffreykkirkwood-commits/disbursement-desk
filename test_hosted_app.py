@@ -1,4 +1,4 @@
-# START HERE — Synthetic regression scenarios: each assertion protects the behavior described below.
+# Automated checks for the web layer in hosted_app.py (cookies, origins, size limits).
 """Exercise the hosted HTTP boundary with temporary fictional databases."""
 import tempfile
 import unittest

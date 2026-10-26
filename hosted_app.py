@@ -1,4 +1,5 @@
-# START HERE — How browser requests reach the right demo and payment workflow.
+# START HERE — The web layer: every browser or API request enters here, gets matched to
+# that visitor's own demo database, and is handed to the payment rules in payments.py.
 """Hosted HTTP interface. Reuses the simulator rules and HTML, never Dwolla credentials."""
 import atexit
 import logging
@@ -21,7 +22,7 @@ from log_view import render_logs
 # get separate temporary demo databases; tests may supply fixed storage.
 def create_app(directory=None, public_origin=None, payments=None):
     app = Flask(__name__, static_folder=None)
-    app.config['MAX_CONTENT_LENGTH'] = 10000
+    app.config['MAX_CONTENT_LENGTH'] = 10000  # Refuse request bodies over ~10 KB.
     # Render supplies its public HTTPS URL. An explicit origin supports custom domains.
     # Do not trust forwarded headers or a caller's Host header to authorize submissions.
     origin = (public_origin or os.environ.get('PUBLIC_ORIGIN') or
@@ -48,13 +49,12 @@ def create_app(directory=None, public_origin=None, payments=None):
     app.extensions['close'] = close
     atexit.register(close)
 
-    # Establish request tracing and the browser workspace before routing. Business
-    # handlers never choose a database from a submitted payment/account identifier.
     # FEATURE 03 — Choose the visitor workspace before any action
-    # A browser cookie identifies its demo. Ordinary page reads may start a demo, but
-    # submitting cannot silently create one. Reject requests from a different website
-    # and stale tab identifiers before money logic runs. A lease marks this database as
-    # in use so expiry cannot delete it mid-request.
+    # Runs before every request. A browser cookie (a small ID the browser sends back each
+    # time) picks which demo database this visitor uses. Viewing a page may start a new
+    # demo, but submitting a payment never silently creates one. Requests from other
+    # websites, or from an old browser tab, are rejected before any money logic runs.
+    # The "lease" marks the database as in use so cleanup cannot delete it mid-request.
     @app.before_request
     def select_demo():
         g.request_id, g.started = str(uuid4()), time.monotonic()
@@ -96,9 +96,9 @@ def create_app(directory=None, public_origin=None, payments=None):
                                code='DEMO_SESSION_CHANGED'), 409
 
     # FEATURE 04 — Return the result with a trace label
-    # Add the request identifier, current demo cookie and no-cache instructions. Log the
-    # response metadata so failures can be traced; visitor details stay in that visitor
-    # log.
+    # Runs after every request. Adds a request ID (for matching log lines), the demo
+    # cookie, and "don't cache this" and basic browser-safety headers. The server-wide log
+    # gets the request ID, method, endpoint pattern and status (plus the rejection reason for requests refused before a demo is found); visitor details stay in that visitor's own log.
     @app.after_request
     def finish(response):
         response.headers.update({'X-Request-ID': g.request_id, 'Cache-Control': 'no-store',
@@ -113,7 +113,6 @@ def create_app(directory=None, public_origin=None, payments=None):
                   reason=payload.get('error', 'Request failed'))
         event('request_finished', http_status=response.status_code,
               duration_ms=round((time.monotonic() - g.started) * 1000, 2))
-        # Mirror only response metadata centrally; visitor details stay in that visitor's log.
         token = request_context.set((server_logger, g.request_id))
         try:
             event('http_response', http_status=response.status_code,
@@ -123,8 +122,8 @@ def create_app(directory=None, public_origin=None, payments=None):
         return response
 
     # FEATURE 05 — Finish even when a request fails
-    # Release the in-use marker and restore the logging context. Otherwise an exception
-    # could leave a demo permanently protected from expiry or mix request labels.
+    # Always runs last, even after a crash. Releases the "in use" lease; otherwise a failed
+    # request could keep a demo from ever expiring, or mix up log labels between requests.
     @app.teardown_request
     def release_context(error):
         if g.get('leased'):
@@ -135,7 +134,8 @@ def create_app(directory=None, public_origin=None, payments=None):
             request_context.reset(token)
 
     # FEATURE 06 — Explain payment input problems
-    # Return the deliberately chosen message and response number from the payment rules.
+    # Turn an expected rule violation from payments.py into a JSON error with its status
+    # code (for example 422 = "your input is invalid").
     @app.errorhandler(APIError)
     def expected_error(error):
         return jsonify(error=error.message), error.status
@@ -214,13 +214,13 @@ def create_app(directory=None, public_origin=None, payments=None):
 
     # FEATURE 17 — Submit or safely retry
     # Require JSON, validate and save or reuse the instruction, then process it before
-    # replying. The creation response number describes whether a record was new; the
-    # result status describes whether funds moved.
+    # replying. HTTP 201 only means a new record was saved (200 means this retry key was
+    # seen before). It does not mean money moved: a 201 can carry status REJECTED, for
+    # example for insufficient funds. Check the result's status field.
     @app.post('/payments')
     def create_payment():
         if request.mimetype != 'application/json':
             raise APIError(415, 'Use Content-Type: application/json.')
-        # Same save-then-process flow as the local server; no copied payment rules.
         status, result = g.payments.create(request.get_json(), request.headers.get('Idempotency-Key'))
         return jsonify(g.payments.process(result['payment_id'])), status
 
