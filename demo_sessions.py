@@ -60,6 +60,9 @@ class DemoStore:
             if not self.active[demo_id]:
                 self.active.pop(demo_id, None)
 
+    # Cookie possession selects a fictional browser workspace, not a signed-in user.
+    # Resolve and lease under the store lock so expiry cannot remove a database while
+    # a request is using it; the HTTP layer releases that lease after handling.
     def resolve(self, cookie_header, create=False):
         # Never use a caller-supplied value as a filesystem path. Only hash a
         # correctly shaped random token, and accept it only for an existing demo.
