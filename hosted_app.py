@@ -35,7 +35,7 @@ def create_app(directory=None, public_origin=None, payments=None):
     fixed_logger = make_logger(Path(payments.database).parent / 'logs') if payments else None
     app.extensions['demos'] = demos
     # FEATURE 02 — Release resources on shutdown
-    # Close log files and cached demo connections so restarting does not leave their
+    # Close log files and cached demo log handlers so restarting does not leave their
     # handles open. This does not reset saved balances.
     def close():
         if demos:
