@@ -83,6 +83,27 @@ class HostedTests(unittest.TestCase):
         self.assertEqual(self.post(Origin='https://different.example').status_code, 403)
         self.assertEqual(self.get('/payments').json, [])
 
+    # FEATURE 13 — Scenario — Render's public address is the trusted origin
+    # On Render, with no PUBLIC_ORIGIN set, browsers may submit payments only from the
+    # address Render supplies. The local default address and other websites are refused.
+    def test_render_external_url_is_the_allowed_origin(self):
+        render_url = 'https://payments-demo.onrender.com'
+        env = {k: v for k, v in os.environ.items() if k != 'PUBLIC_ORIGIN'}
+        env.update(RENDER='true', RENDER_EXTERNAL_URL=render_url)
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, env, clear=True):
+            app = create_app(d)
+            try:
+                client = app.test_client()
+                client.get('/dashboard', base_url=render_url)
+                post = lambda origin: client.post('/payments', json=self.body, base_url=render_url,
+                                                  headers={'Idempotency-Key': 'render', 'Origin': origin})
+                for refused in ('http://127.0.0.1:8001', 'https://different.example'):
+                    self.assertEqual(post(refused).status_code, 403)
+                self.assertEqual(client.get('/payments', base_url=render_url).json, [])
+                self.assertEqual(post(render_url).status_code, 201)
+            finally:
+                app.extensions['close']()
+
     # FEATURE 09 — Scenario — validation and business rejection
     # Contrast invalid input with a valid unaffordable instruction. The first creates no
     # payment; the second saves a rejection without moving funds.
