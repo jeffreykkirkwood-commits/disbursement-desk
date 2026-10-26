@@ -1,7 +1,9 @@
 # START HERE — Synthetic regression scenarios: each assertion protects the behavior described below.
 """Exercise the hosted HTTP boundary with temporary fictional databases."""
+import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from hosted_app import create_app
 
@@ -120,3 +122,23 @@ class HostedTests(unittest.TestCase):
         self.assertEqual(bare_post(**{'Sec-Fetch-Site': 'cross-site'}).status_code, 403)
         self.assertEqual(self.get('/accounts').json[0]['balance'], '99.93')
 
+    # FEATURE 12 — Scenario — local Gunicorn origin default
+    # Without PUBLIC_ORIGIN or Render's URL, only the documented local Gunicorn address
+    # (port 8001) may submit from a browser; app.py passes its own port 8000 origin.
+    def test_local_gunicorn_origin_default(self):
+        cleared = {k: v for k, v in os.environ.items()
+                   if k not in ('PUBLIC_ORIGIN', 'RENDER_EXTERNAL_URL', 'RENDER')}
+        for env, allowed, refused in (({}, 'http://127.0.0.1:8001', 'http://127.0.0.1:8000'),
+                                      ({'PUBLIC_ORIGIN': 'http://127.0.0.1:8000'},
+                                       'http://127.0.0.1:8000', 'http://127.0.0.1:8001')):
+            with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {**cleared, **env}, clear=True):
+                app = create_app(d)
+                try:
+                    client = app.test_client()
+                    client.get('/dashboard', base_url=allowed)
+                    post = lambda origin: client.post('/payments', json=self.body, base_url=allowed,
+                                                      headers={'Idempotency-Key': 'local', 'Origin': origin})
+                    self.assertEqual(post(refused).status_code, 403)
+                    self.assertEqual(post(allowed).status_code, 201)
+                finally:
+                    app.extensions['close']()
