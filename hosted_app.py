@@ -40,6 +40,8 @@ def create_app(directory=None, public_origin=None, payments=None):
     app.extensions['close'] = close
     atexit.register(close)
 
+    # Establish request tracing and the browser workspace before routing. Business
+    # handlers never choose a database from a submitted payment/account identifier.
     @app.before_request
     def select_demo():
         g.request_id, g.started = str(uuid4()), time.monotonic()
