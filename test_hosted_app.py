@@ -83,7 +83,7 @@ class HostedTests(unittest.TestCase):
         self.assertEqual(self.post(Origin='https://different.example').status_code, 403)
         self.assertEqual(self.get('/payments').json, [])
 
-    # FEATURE — Scenario — Render's public address is the trusted origin
+    # FEATURE 13 — Scenario — Render's public address is the trusted origin
     # On Render, with no PUBLIC_ORIGIN set, browsers may submit payments only from the
     # address Render supplies. The local default address and other websites are refused.
     def test_render_external_url_is_the_allowed_origin(self):
