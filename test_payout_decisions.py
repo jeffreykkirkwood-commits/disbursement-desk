@@ -59,6 +59,11 @@ class DecisionTests(unittest.TestCase):
 
     # FEATURE 03 — Scenario — blocked moves are refused clearly and change nothing
     def test_rejected_moves(self):
+        # PENDING and APPROVED are internal-only states that are never seeded, so put two
+        # sent payouts into them directly to check the Desk still refuses to act on them.
+        with sqlite3.connect(self.db) as db:
+            db.execute("UPDATE payouts SET status = 'PENDING' WHERE payout_id = 'PO-1045'")
+            db.execute("UPDATE payouts SET status = 'APPROVED' WHERE payout_id = 'PO-1036'")
         blocked = (('PO-1039', 'approve'), ('PO-1039', 'hold'), ('PO-1039', 'return'),  # PAID
                    ('PO-1037', 'approve'), ('PO-1037', 'hold'), ('PO-1037', 'return'),  # RETURNED
                    ('PO-1045', 'approve'), ('PO-1045', 'hold'), ('PO-1045', 'return'),  # PENDING
