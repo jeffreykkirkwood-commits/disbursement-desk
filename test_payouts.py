@@ -184,13 +184,15 @@ class HostedSeedTests(unittest.TestCase):
         self.assertEqual(payouts.get_payout(databases[1], 'PO-1044')['status'], 'FLAGGED')
         self.assertEqual(len(payouts.list_payouts(databases[1])), 25)
 
-    # FEATURE 12 — Scenario — nothing visible changes: no payout route, no Desk text
+    # FEATURE 12 — Scenario — nothing visible changes: no Desk screen or read route
+    # The only payout route is the POST-only decision API (#35); no page shows payouts.
     def test_no_new_routes(self):
         client = self.app.test_client()
         page = client.get('/dashboard', base_url='https://demo.example').get_data(as_text=True)
         self.assertNotIn('PO-10', page)
-        rules = {str(rule) for rule in self.app.url_map.iter_rules()}
-        self.assertFalse([r for r in rules if re.search('payout|desk', r)], rules)
+        rules = [rule for rule in self.app.url_map.iter_rules() if re.search('payout|desk', str(rule))]
+        self.assertEqual([str(r) for r in rules], ['/payouts/<payout_id>/<any(approve, hold, return):action>'])
+        self.assertEqual(rules[0].methods - {'OPTIONS'}, {'POST'})
         self.assertEqual(client.get('/payouts', base_url='https://demo.example').status_code, 404)
 
 

@@ -1,7 +1,8 @@
-# START HERE — Disbursement Desk data: the payout record, its allowed status changes and
-# the fixed set of fictional payouts every new demo starts with. Behind the scenes only:
-# no web route reads this yet (the Desk screens come later, in issue #41).
-"""Payout table, status transitions and deterministic synthetic seed data (issue #34)."""
+# START HERE — Disbursement Desk data: the payout record, its allowed status changes,
+# the fixed set of fictional payouts every new demo starts with, and the operator's
+# approve / hold / return decisions. Behind the scenes only: no screen uses this yet (the
+# Desk screens come later, in issue #41).
+"""Payout table, transitions, synthetic seed data (#34) and operator decisions (#35)."""
 import random
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -209,3 +210,86 @@ def get_payout(database, payout_id):
     if not row:
         raise APIError(404, 'Payout not found.')
     return _public(row)
+
+
+# FEATURE 12 — Name the three Desk decisions
+# Each operator decision and where it leaves the payout. Approve goes straight on to PAID
+# ("Sent" on the Desk) through APPROVED inside one save, so no Desk action ever leaves a
+# payout showing PENDING or APPROVED (approved design, issue #35 comment). Only payouts
+# waiting for an operator (FLAGGED = "Needs review", or HELD) can be decided; HELD can
+# still be approved or returned later.
+APPROVE, HOLD, RETURN = 'approve', 'hold', 'return'
+DECISIONS = {APPROVE: (APPROVED, PAID), HOLD: (HELD,), RETURN: (RETURNED,)}
+DECIDABLE = frozenset({FLAGGED, HELD})
+EVENT_COLUMNS = ('event_id', 'payout_id', 'action', 'from_status', 'to_status', 'actor', 'reason',
+                 'idempotency_key', 'at')
+
+
+# FEATURE 13 — Check the decision details
+# Reviewer name is required (it goes in the action log). A reason is optional: Jeffrey
+# approved confirm-only Hold and Return, so a blank or missing reason is saved as empty.
+# The idempotency key works like the payment routes' Idempotency-Key header.
+def _clean(action, actor, reason, key):
+    if action not in DECISIONS:
+        raise APIError(422, 'Decision must be approve, hold or return.')
+    if not isinstance(key, str) or not key.strip() or len(key) > 200:
+        raise APIError(422, 'Provide an Idempotency-Key header (1–200 characters).')
+    if not isinstance(actor, str) or not actor.strip() or len(actor.strip()) > 80:
+        raise APIError(422, 'Provide a reviewer name (1–80 characters).')
+    if reason is not None and not isinstance(reason, str):
+        raise APIError(422, 'Reason must be text if given.')
+    reason = (reason or '').strip() or None
+    if reason is not None and len(reason) > 500:
+        raise APIError(422, 'Reason must be 500 characters or fewer.')
+    return actor.strip(), reason
+
+
+# FEATURE 14 — Record one decision, at most once per key
+# One locked save: look up the key, check the move, update the payout and append one row
+# to the action log (reviewer, from/to status, reason, key, time). Repeating the same
+# decision with the same key changes nothing and returns the first result (200); the same
+# key with different details is refused (409). Illegal moves are refused with a clear
+# 409 and change nothing. Works only on the one viewer database it is given.
+def decide(database, payout_id, action, actor, idempotency_key, reason=None, now=None):
+    actor, reason = _clean(action, actor, reason, idempotency_key)
+    with sqlite3.connect(str(database), timeout=10) as db:
+        db.execute('BEGIN IMMEDIATE')
+        for statement in SCHEMA:
+            db.execute(statement)
+        existing = db.execute(f'SELECT {", ".join(EVENT_COLUMNS)} FROM payout_events WHERE idempotency_key = ?',
+                              (idempotency_key,)).fetchone()
+        if existing:
+            previous = dict(zip(EVENT_COLUMNS, existing))
+            if (previous['payout_id'], previous['action'], previous['actor'], previous['reason']) != (
+                    payout_id, action, actor, reason):
+                raise APIError(409, 'This Idempotency-Key was already used for a different decision.')
+            return 200, previous
+        row = db.execute('SELECT status FROM payouts WHERE payout_id = ?', (payout_id,)).fetchone()
+        if not row:
+            raise APIError(404, 'Payout not found.')
+        current = row[0]
+        if current not in DECIDABLE:
+            raise APIError(409, f'A {current} payout cannot be decided; only FLAGGED or HELD payouts can '
+                                f'be approved, held or returned.')
+        step = current
+        for target in DECISIONS[action]:
+            check_transition(step, target)
+            step = target
+        at = (now or datetime.now(timezone.utc)).isoformat()
+        db.execute('UPDATE payouts SET status = ?, updated_at = ? WHERE payout_id = ?', (step, at, payout_id))
+        cursor = db.execute('INSERT INTO payout_events (payout_id, action, from_status, to_status, actor, reason, '
+                            'idempotency_key, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                            (payout_id, action, current, step, actor, reason, idempotency_key, at))
+        return 201, dict(event_id=cursor.lastrowid, payout_id=payout_id, action=action, from_status=current,
+                         to_status=step, actor=actor, reason=reason, idempotency_key=idempotency_key, at=at)
+
+
+# FEATURE 15 — Read the action log
+# Oldest first, for one payout or the whole demo. Read-only.
+def list_events(database, payout_id=None):
+    query = f'SELECT {", ".join(EVENT_COLUMNS)} FROM payout_events'
+    args = ()
+    if payout_id is not None:
+        query, args = query + ' WHERE payout_id = ?', (payout_id,)
+    with sqlite3.connect(str(database)) as db:
+        return [dict(zip(EVENT_COLUMNS, row)) for row in db.execute(query + ' ORDER BY event_id', args)]
