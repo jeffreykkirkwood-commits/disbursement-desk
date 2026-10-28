@@ -48,22 +48,28 @@ def check_transition(current, target):
 
 
 # FEATURE 05 — Name the exception rules
-# The three rules from issue #35. This file only stores which rule fired and a plain
-# sentence; the rules engine that decides it is built in #35. AMOUNT_THRESHOLD is the
-# value the seed below was designed around.
-DUPLICATE_ACCOUNT = 'DUPLICATE_ACCOUNT'
-AMOUNT_OVER_THRESHOLD = 'AMOUNT_OVER_THRESHOLD'
-PAYEE_NAME_MISMATCH = 'PAYEE_NAME_MISMATCH'
-FLAG_TEXT = {
-    DUPLICATE_ACCOUNT: 'Another payee already uses this destination account',
-    AMOUNT_OVER_THRESHOLD: 'Amount is over the $2,000.00 review threshold',
-    PAYEE_NAME_MISMATCH: 'Name on the bank account does not match the payee',
+# The three rules approved for the Desk (issue #35 decision log): an amount more than 3x
+# the payee's usual payout, bank details changed within 7 days, and the same payee and
+# amount within 24 hours. The seed works out each payout's flag from its own data
+# (payee_usual_cents, bank_details_changed_at and earlier payouts) with explain_flag()
+# below, and stores the rule code and sentence. The live rules engine is not built here.
+AMOUNT_OVER_3X_AVG = 'AMOUNT_OVER_3X_AVG'
+BANK_CHANGED_7D = 'BANK_CHANGED_7D'
+DUPLICATE_24H = 'DUPLICATE_24H'
+FLAG_TEXT = {  # generic wording per rule; explain_flag() writes the exact sentence per payout
+    AMOUNT_OVER_3X_AVG: 'Amount is more than 3× this payee’s usual payout',
+    BANK_CHANGED_7D: 'Payee bank details changed within the last 7 days',
+    DUPLICATE_24H: 'Same payee and amount within 24 hours (possible duplicate)',
 }
-AMOUNT_THRESHOLD = Decimal('2000.00')
+USUAL_MULTIPLIER = 3
+BANK_CHANGE_WINDOW = timedelta(days=7)
+DUPLICATE_WINDOW = timedelta(hours=24)
 
 # FEATURE 06 — Create the payout and audit tables
 # Payouts live in the same per-visitor SQLite file as payments. Amounts are whole cents.
-# Note fields stay empty until notes are built (#37, #38). payout_events is the operator
+# payee_usual_cents is the payee's usual (average earlier) payout and bank_details_changed_at is
+# when the payee's bank details last changed (NULL = not recently); both are the facts
+# behind a flag. Note fields stay empty until notes are built (#37, #38). payout_events is the operator
 # action log (who, what, when, why) that the approve/hold/return API (#35) will append to.
 SCHEMA = (
     '''CREATE TABLE IF NOT EXISTS payouts (
@@ -77,6 +83,8 @@ SCHEMA = (
         status TEXT NOT NULL CHECK(status IN ('PENDING', 'FLAGGED', 'APPROVED', 'HELD', 'RETURNED', 'PAID')),
         flag_code TEXT,
         flag_text TEXT,
+        payee_usual_cents INTEGER CHECK(payee_usual_cents IS NULL OR payee_usual_cents > 0),
+        bank_details_changed_at TEXT,
         note_text TEXT,
         note_source TEXT CHECK(note_source IS NULL OR note_source IN ('ai', 'rules')),
         note_fallback INTEGER CHECK(note_fallback IS NULL OR note_fallback IN (0, 1)),
@@ -96,70 +104,127 @@ SCHEMA = (
     )''',
 )
 COLUMNS = ('payout_id', 'payee_name', 'payee_account', 'account_name', 'amount_cents', 'currency',
-           'rail', 'status', 'flag_code', 'flag_text', 'note_text', 'note_source', 'note_fallback',
+           'rail', 'status', 'flag_code', 'flag_text', 'payee_usual_cents', 'bank_details_changed_at', 'note_text', 'note_source', 'note_fallback',
            'created_at', 'updated_at')
 
 # FEATURE 07 — Fix the fictional starting set
 # Every name and DEMO- account below is invented. The current queue mirrors the approved
-# Desk mock (issue #40/#41): 3 payouts need review, 1 is held, plus final and clean ones.
-# Each exception rule has at least one payout. The history rows give each payee a few
-# earlier PAID payouts so later rules can compare against "usual" amounts.
+# Desk mock (issue #40/#41): 3 payouts need review (one per rule), 1 is held, 1 returned,
+# the rest sent. No seeded payout is PENDING or APPROVED: viewers only ever see Needs
+# review (FLAGGED), Held, Returned and Sent (PAID). Flags are not listed here; they are
+# worked out from the data. The history rows give each payee five earlier PAID payouts
+# whose average is exactly the payee's usual amount.
 SEED_RANDOM = 34
 BASE_TIME = datetime(2026, 10, 1, 14, 0, tzinfo=timezone.utc)
 CURRENT = (
-    # payout_id, payee, account, name on account, amount, rail, status, flag, day offset
-    ('PO-1036', 'Quartz Copy Shop', 'DEMO-QRTZ-008', 'Quartz Copy Shop', '215.00', 'ACH', APPROVED, None, 25),
-    ('PO-1037', 'Maple Tutoring LLC', 'DEMO-MAPL-007', 'M. Lane Holdings', '450.00', 'RTP', RETURNED, PAYEE_NAME_MISMATCH, 25),
-    ('PO-1038', 'Harbor Hardware', 'DEMO-HRBR-006', 'Harbor Hardware', '2075.50', 'ACH', HELD, AMOUNT_OVER_THRESHOLD, 25),
-    ('PO-1039', 'Nordwind Transport', 'DEMO-NWND-003', 'Nordwind Transport', '1200.00', 'ACH', PAID, None, 26),
-    ('PO-1040', 'Cedar Cleaning Co.', 'DEMO-CEDR-004', 'Cedar Cleaning Co.', '640.00', 'ACH', PAID, None, 26),
-    ('PO-1041', 'Pine Street Print', 'DEMO-PINE-005', 'Pine Street Print', '98.15', 'RTP', PAID, None, 26),
-    ('PO-1042', 'Acme Supplies', 'DEMO-ACME-001', 'Acme Supplies', '4850.00', 'ACH', FLAGGED, AMOUNT_OVER_THRESHOLD, 27),
-    ('PO-1043', 'Bluebird Bakery', 'DEMO-BLUE-002', 'Blue Bird Baking Ltd', '312.40', 'RTP', FLAGGED, PAYEE_NAME_MISMATCH, 27),
-    ('PO-1044', 'Northwind Freight', 'DEMO-NWND-003', 'Northwind Freight', '1200.00', 'ACH', FLAGGED, DUPLICATE_ACCOUNT, 27),
-    ('PO-1045', 'Willow Lane Florist', 'DEMO-WLLW-009', 'Willow Lane Florist', '187.25', 'RTP', PENDING, None, 27),
+    # payout_id, payee, account, amount, rail, status, hours after BASE_TIME,
+    # bank details last changed (hours after BASE_TIME, or None for not recently)
+    ('PO-1036', 'Quartz Copy Shop', 'DEMO-QRTZ-008', '215.00', 'ACH', PAID, 25 * 24, None),
+    ('PO-1037', 'Maple Tutoring LLC', 'DEMO-MAPL-007', '450.00', 'RTP', RETURNED, 25 * 24, 24 * 24),
+    ('PO-1038', 'Harbor Hardware', 'DEMO-HRBR-006', '2075.50', 'ACH', HELD, 25 * 24 + 2, None),
+    ('PO-1039', 'Northwind Freight', 'DEMO-NWND-003', '1200.00', 'ACH', PAID, 26 * 24 + 4, None),
+    ('PO-1040', 'Cedar Cleaning Co.', 'DEMO-CEDR-004', '640.00', 'ACH', PAID, 26 * 24, None),
+    ('PO-1041', 'Pine Street Print', 'DEMO-PINE-005', '98.15', 'RTP', PAID, 26 * 24 + 1, None),
+    ('PO-1042', 'Acme Supplies', 'DEMO-ACME-001', '4850.00', 'ACH', FLAGGED, 27 * 24, None),
+    ('PO-1043', 'Bluebird Bakery', 'DEMO-BLUE-002', '312.40', 'RTP', FLAGGED, 27 * 24 + 1, 25 * 24 + 1),
+    ('PO-1044', 'Northwind Freight', 'DEMO-NWND-003', '1200.00', 'ACH', FLAGGED, 27 * 24 + 2, None),
+    ('PO-1045', 'Willow Lane Florist', 'DEMO-WLLW-009', '187.25', 'RTP', PAID, 27 * 24 - 3, None),
 )
 HISTORY_PAYEES = (  # payee, account, usual amount in dollars
     ('Acme Supplies', 'DEMO-ACME-001', 790), ('Bluebird Bakery', 'DEMO-BLUE-002', 300),
-    ('Cedar Cleaning Co.', 'DEMO-CEDR-004', 640), ('Pine Street Print', 'DEMO-PINE-005', 95),
-    ('Harbor Hardware', 'DEMO-HRBR-006', 520),
+    ('Northwind Freight', 'DEMO-NWND-003', 1200), ('Cedar Cleaning Co.', 'DEMO-CEDR-004', 640),
+    ('Pine Street Print', 'DEMO-PINE-005', 95), ('Harbor Hardware', 'DEMO-HRBR-006', 520),
 )
+
+
+def _row(payout_id, payee, account, cents, rail, status, when, usual=None, changed=None):
+    return dict(payout_id=payout_id, payee_name=payee, payee_account=account, account_name=payee,
+                amount_cents=cents, currency='USD', rail=rail, status=status, flag_code=None,
+                flag_text=None, payee_usual_cents=usual, bank_details_changed_at=changed,
+                note_text=None, note_source=None, note_fallback=None, created_at=when, updated_at=when)
+
+
+# FEATURE 07b — Work out why a payout is flagged, from its data
+# Checks the three approved rules in order against the payout's own facts and the earlier
+# payouts given, and returns (rule code, plain sentence), or (None, None) if none fires.
+# Used to build the seed so every stored reason is backed by data.
+def explain_flag(payout, earlier):
+    when = datetime.fromisoformat(payout['created_at'])
+    usual = payout.get('payee_usual_cents')
+    if usual and payout['amount_cents'] > USUAL_MULTIPLIER * usual:
+        ratio = round(payout['amount_cents'] / usual)
+        return AMOUNT_OVER_3X_AVG, f'Amount is {ratio}× this payee’s usual payout (${usual / 100:,.0f} avg)'
+    changed = payout.get('bank_details_changed_at')
+    if changed and timedelta(0) <= when - datetime.fromisoformat(changed) <= BANK_CHANGE_WINDOW:
+        days = (when.date() - datetime.fromisoformat(changed).date()).days
+        ago = 'today' if days == 0 else f'{days} day{"s" if days > 1 else ""} ago'
+        return BANK_CHANGED_7D, f'Payee bank details changed {ago}'
+    for other in earlier:
+        then = datetime.fromisoformat(other['created_at'])
+        if (other['payout_id'] != payout['payout_id'] and other['payee_name'] == payout['payee_name']
+                and other['amount_cents'] == payout['amount_cents']
+                and timedelta(0) < when - then <= DUPLICATE_WINDOW):
+            day = 'yesterday' if (when.date() - then.date()).days == 1 else 'earlier today'
+            return DUPLICATE_24H, f'Same payee and amount as {day} (possible duplicate)'
+    return None, None
 
 
 # FEATURE 08 — Build the seed rows
 # Pure function: the same rows on every call and every boot (fixed random seed, fixed
-# timestamps). Nothing here reads the clock or the network.
+# timestamps). Nothing here reads the clock or the network. History amounts come in
+# +/- pairs around the usual amount (within 10%), so their average is exactly the usual.
+# Each current payout's usual amount is the average of that payee's earlier payouts, and
+# its flag comes from explain_flag().
 def seed_rows():
     rng = random.Random(SEED_RANDOM)
     rows, number = [], 1001
     for index, (payee, account, usual) in enumerate(HISTORY_PAYEES):
-        for visit in range(3):
-            cents = usual * 100 + rng.randint(-usual * 10, usual * 10)  # within ±10% of usual
-            when = (BASE_TIME + timedelta(days=visit * 7 + index)).isoformat()
-            rows.append(dict(payout_id=f'PO-{number}', payee_name=payee, payee_account=account,
-                             account_name=payee, amount_cents=cents, currency='USD',
-                             rail=rng.choice(('ACH', 'RTP')), status=PAID, flag_code=None,
-                             flag_text=None, note_text=None, note_source=None, note_fallback=None,
-                             created_at=when, updated_at=when))
+        a, b = rng.randint(1, usual * 10), rng.randint(1, usual * 10)
+        for visit, offset in enumerate((a, -a, b, -b, 0)):
+            when = (BASE_TIME + timedelta(days=visit * 4 + index // 2, hours=index)).isoformat()
+            rows.append(_row(f'PO-{number}', payee, account, usual * 100 + offset,
+                             rng.choice(('ACH', 'RTP')), PAID, when))
             number += 1
-    for payout_id, payee, account, name, amount, rail, status, flag, day in CURRENT:
-        when = (BASE_TIME + timedelta(days=day)).isoformat()
-        rows.append(dict(payout_id=payout_id, payee_name=payee, payee_account=account,
-                         account_name=name, amount_cents=int(Decimal(amount) * 100), currency='USD',
-                         rail=rail, status=status, flag_code=flag, flag_text=FLAG_TEXT.get(flag),
-                         note_text=None, note_source=None, note_fallback=None,
-                         created_at=when, updated_at=when))
+    history = list(rows)
+    for payout_id, payee, account, amount, rail, status, hours, changed in CURRENT:
+        when = (BASE_TIME + timedelta(hours=hours)).isoformat()
+        past = [r['amount_cents'] for r in history if r['payee_name'] == payee]
+        usual = sum(past) // len(past) if past else None
+        changed = None if changed is None else (BASE_TIME + timedelta(hours=changed)).isoformat()
+        rows.append(_row(payout_id, payee, account, int(Decimal(amount) * 100), rail, status, when,
+                         usual, changed))
+    for row in rows[len(history):]:
+        row['flag_code'], row['flag_text'] = explain_flag(row, [r for r in rows if r['created_at'] < row['created_at']])
     return rows
 
 
-# FEATURE 09 — Create tables and seed a new demo once
-# Called when a visitor demo database is opened. Seeds only an empty payout table, so a
-# restart keeps that visitor's changes. Returns how many rows were added.
+# FEATURE 09 — Create tables, upgrade older demos, and seed a new demo once
+# Called when a visitor demo database is opened. A payouts table made by an earlier
+# version gets any missing columns (ALTER TABLE ADD COLUMN, only when missing, so running
+# it again does nothing). If that upgrade happened and no operator has acted yet (empty
+# action log), its old starting set is replaced with the current one, so old flag reasons
+# don't linger. Otherwise only an empty payout table is seeded, so a restart keeps that
+# visitor's changes. Returns how many rows were added.
+ADDED_COLUMNS = (('payee_usual_cents', 'INTEGER CHECK(payee_usual_cents IS NULL OR payee_usual_cents > 0)'),
+                 ('bank_details_changed_at', 'TEXT'))
+
+
+def _upgrade(db):
+    existing = {row[1] for row in db.execute('PRAGMA table_info(payouts)')}
+    missing = [(name, kind) for name, kind in ADDED_COLUMNS if name not in existing]
+    for name, kind in missing:
+        db.execute(f'ALTER TABLE payouts ADD COLUMN {name} {kind}')
+    return bool(missing)
+
+
 def ensure_seeded(database):
     with sqlite3.connect(str(database), timeout=10) as db:
         db.execute('BEGIN IMMEDIATE')
         for statement in SCHEMA:
             db.execute(statement)
+        upgraded = _upgrade(db)
+        if upgraded and not db.execute('SELECT COUNT(*) FROM payout_events').fetchone()[0]:
+            db.execute('DELETE FROM payouts')
         if db.execute('SELECT COUNT(*) FROM payouts').fetchone()[0]:
             return 0
         return _insert_seed(db)
@@ -173,6 +238,7 @@ def reset(database):
         db.execute('BEGIN IMMEDIATE')
         for statement in SCHEMA:
             db.execute(statement)
+        _upgrade(db)
         db.execute('DELETE FROM payout_events')
         db.execute('DELETE FROM payouts')
         return _insert_seed(db)

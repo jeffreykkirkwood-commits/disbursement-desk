@@ -7,6 +7,7 @@ import re
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from itertools import product
 from pathlib import Path
 import payouts
@@ -22,6 +23,63 @@ ALLOWED = {
 }
 # Names used by real banks or payment companies must never appear in the seed.
 REAL_NAMES = ('chase', 'wells fargo', 'citi', 'bank of america', 'paypal', 'stripe', 'dwolla', 'venmo')
+
+
+SEED_COUNT = 40  # 30 earlier PAID history payouts + the 10-payout current queue
+
+
+def tripped_rules(payout, rows):
+    """Which approved rules this seeded payout's stored facts trip (a reference check, not the engine)."""
+    when = datetime.fromisoformat(payout['created_at'])
+    tripped = []
+    usual = payout['payee_usual_cents']
+    if usual and payout['amount_cents'] > payouts.USUAL_MULTIPLIER * usual:
+        tripped.append('AMOUNT_OVER_3X_AVG')
+    changed = payout['bank_details_changed_at']
+    if changed and timedelta(0) <= when - datetime.fromisoformat(changed) <= payouts.BANK_CHANGE_WINDOW:
+        tripped.append('BANK_CHANGED_7D')
+    if any(o['payout_id'] != payout['payout_id'] and o['payee_name'] == payout['payee_name']
+           and o['amount_cents'] == payout['amount_cents']
+           and timedelta(0) < when - datetime.fromisoformat(o['created_at']) <= payouts.DUPLICATE_WINDOW
+           for o in rows):
+        tripped.append('DUPLICATE_24H')
+    return tripped
+
+
+# The payouts table as the first version of this PR created it (no usual amount, no
+# bank-details date), with one old-style seeded row.
+OLD_SCHEMA = (
+    """CREATE TABLE payouts (payout_id TEXT PRIMARY KEY, payee_name TEXT NOT NULL,
+        payee_account TEXT NOT NULL CHECK(payee_account LIKE 'DEMO-%'), account_name TEXT NOT NULL,
+        amount_cents INTEGER NOT NULL CHECK(amount_cents > 0), currency TEXT NOT NULL CHECK(currency = 'USD'),
+        rail TEXT NOT NULL CHECK(rail IN ('ACH', 'RTP')),
+        status TEXT NOT NULL CHECK(status IN ('PENDING', 'FLAGGED', 'APPROVED', 'HELD', 'RETURNED', 'PAID')),
+        flag_code TEXT, flag_text TEXT, note_text TEXT,
+        note_source TEXT CHECK(note_source IS NULL OR note_source IN ('ai', 'rules')),
+        note_fallback INTEGER CHECK(note_fallback IS NULL OR note_fallback IN (0, 1)),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+    """CREATE TABLE payout_events (event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        payout_id TEXT NOT NULL REFERENCES payouts(payout_id), action TEXT NOT NULL,
+        from_status TEXT NOT NULL, to_status TEXT NOT NULL, actor TEXT NOT NULL, reason TEXT,
+        idempotency_key TEXT UNIQUE, at TEXT NOT NULL)""",
+    "CREATE TABLE keep_me (note TEXT)",
+    "INSERT INTO keep_me VALUES ('untouched')",
+    """INSERT INTO payouts (payout_id, payee_name, payee_account, account_name, amount_cents, currency, rail,
+        status, flag_code, flag_text, created_at, updated_at) VALUES ('PO-1044', 'Northwind Freight',
+        'DEMO-NWND-003', 'Northwind Freight', 120000, 'USD', 'ACH', 'FLAGGED', 'DUPLICATE_ACCOUNT',
+        'Another payee already uses this destination account', '2026-10-28T14:00:00+00:00',
+        '2026-10-28T14:00:00+00:00')""",
+)
+
+
+def make_old_demo(path, with_event=False):
+    with sqlite3.connect(path) as db:
+        for statement in OLD_SCHEMA:
+            db.execute(statement)
+        if with_event:
+            db.execute("INSERT INTO payout_events (payout_id, action, from_status, to_status, actor, at) "
+                       "VALUES ('PO-1044', 'hold', 'FLAGGED', 'HELD', 'Test Operator', '2026-10-28T12:00:00+00:00')")
+    return path
 
 
 class TransitionTests(unittest.TestCase):
@@ -72,8 +130,8 @@ class SeedTests(unittest.TestCase):
     # is caught.
     def test_deterministic(self):
         other = Path(self.temp.name) / 'second.sqlite3'
-        self.assertEqual(payouts.ensure_seeded(self.db), 25)
-        self.assertEqual(payouts.ensure_seeded(other), 25)
+        self.assertEqual(payouts.ensure_seeded(self.db), SEED_COUNT)
+        self.assertEqual(payouts.ensure_seeded(other), SEED_COUNT)
         self.assertEqual(self.dump(self.db), self.dump(other))
         self.assertEqual(payouts.seed_rows(), payouts.seed_rows())
         fingerprint = hashlib.sha256(json.dumps(payouts.seed_rows(), sort_keys=True).encode()).hexdigest()
@@ -89,45 +147,104 @@ class SeedTests(unittest.TestCase):
                        "VALUES ('PO-1042', 'hold', 'FLAGGED', 'HELD', 'Test Operator', '2026-10-28T12:00:00+00:00')")
         self.assertEqual(payouts.ensure_seeded(self.db), 0)  # restart: nothing reseeded
         self.assertEqual(payouts.get_payout(self.db, 'PO-1042')['status'], 'HELD')
-        self.assertEqual(payouts.reset(self.db), 25)
+        self.assertEqual(payouts.reset(self.db), SEED_COUNT)
         self.assertEqual(self.dump(self.db), original)
         with sqlite3.connect(self.db) as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM payout_events').fetchone()[0], 0)
 
-    # FEATURE 06 — Scenario — at least one payout for each exception rule
+    # FEATURE 06 — Scenario — at least one payout for each approved rule, and the data backs it
+    # Only the three approved rules exist. Each flagged payout's stored facts really trip
+    # its rule, and no unflagged payout trips any rule.
     def test_each_rule_has_a_payout(self):
         rows = payouts.seed_rows()
+        self.assertEqual(set(payouts.FLAG_TEXT), {'AMOUNT_OVER_3X_AVG', 'BANK_CHANGED_7D', 'DUPLICATE_24H'})
         for code in payouts.FLAG_TEXT:
             with self.subTest(rule=code):
                 self.assertTrue(any(r['flag_code'] == code and r['status'] == 'FLAGGED' for r in rows))
         for r in rows:
-            self.assertEqual(r['flag_text'], payouts.FLAG_TEXT.get(r['flag_code']))
+            self.assertIn(r['flag_code'], set(payouts.FLAG_TEXT) | {None})
+            self.assertEqual(r['flag_code'] is None, r['flag_text'] is None)
             if r['status'] in ('FLAGGED', 'HELD'):
                 self.assertIsNotNone(r['flag_code'])
-        # The seeded data really trips each rule as described.
-        by_code = {r['flag_code']: r for r in rows if r['status'] == 'FLAGGED'}
-        over = by_code['AMOUNT_OVER_THRESHOLD']
-        self.assertGreater(over['amount_cents'], payouts.AMOUNT_THRESHOLD * 100)
-        mismatch = by_code['PAYEE_NAME_MISMATCH']
-        self.assertNotEqual(mismatch['payee_name'], mismatch['account_name'])
-        dup = by_code['DUPLICATE_ACCOUNT']
-        self.assertTrue(any(r['payee_account'] == dup['payee_account'] and r['payee_name'] != dup['payee_name']
-                            for r in rows))
-        # Clean payouts stay under the threshold with matching names.
         for r in rows:
-            if r['flag_code'] is None:
-                self.assertLessEqual(r['amount_cents'], payouts.AMOUNT_THRESHOLD * 100)
-                self.assertEqual(r['payee_name'], r['account_name'])
+            with self.subTest(payout=r['payout_id']):
+                self.assertEqual(sorted(tripped_rules(r, rows)), [r['flag_code']] if r['flag_code'] else [])
+
+    # FEATURE 06b — Scenario — stored "usual" amounts equal the payee's earlier average
+    def test_usual_amount_matches_history(self):
+        rows = payouts.seed_rows()
+        acme = next(r for r in rows if r['payout_id'] == 'PO-1042')
+        self.assertEqual(acme['payee_usual_cents'], 79000)
+        for r in rows:
+            if r['payee_usual_cents'] is not None:
+                earlier = [h['amount_cents'] for h in rows if h['payee_name'] == r['payee_name']
+                           and h['created_at'] < r['created_at'] and h['payee_usual_cents'] is None]
+                self.assertEqual(sum(earlier) / len(earlier), r['payee_usual_cents'])
+                self.assertTrue(all(abs(c - r['payee_usual_cents']) <= r['payee_usual_cents'] // 10 for c in earlier))
 
     # FEATURE 07 — Scenario — the starting queue matches the approved Desk mock
-    # 3 need review + 1 held = 4 exceptions; every status appears at least once.
+    # 3 need review (one per rule) + 1 held = 4 exceptions, plus returned and sent ones.
     def test_queue_shape(self):
         rows = payouts.seed_rows()
         statuses = [r['status'] for r in rows]
         self.assertEqual(statuses.count('FLAGGED'), 3)
         self.assertEqual(statuses.count('HELD'), 1)
-        self.assertEqual(set(statuses), set(payouts.STATUSES))
+        self.assertEqual(statuses.count('RETURNED'), 1)
         self.assertEqual(len({r['payout_id'] for r in rows}), len(rows))
+        mock = {r['payout_id']: (r['payee_name'], r['amount_cents'], r['status']) for r in rows}
+        self.assertEqual(mock['PO-1042'], ('Acme Supplies', 485000, 'FLAGGED'))
+        self.assertEqual(mock['PO-1043'], ('Bluebird Bakery', 31240, 'FLAGGED'))
+        self.assertEqual(mock['PO-1044'], ('Northwind Freight', 120000, 'FLAGGED'))
+        self.assertEqual(mock['PO-1038'], ('Harbor Hardware', 207550, 'HELD'))
+        self.assertEqual(mock['PO-1037'], ('Maple Tutoring LLC', 45000, 'RETURNED'))
+
+    # FEATURE 07b — Scenario — no seeded payout is PENDING or APPROVED
+    # Viewers only ever see Needs review, Held, Returned and Sent (issue #35 decision log).
+    def test_no_pending_or_approved_in_seed(self):
+        self.assertEqual({r['status'] for r in payouts.seed_rows()}, {'FLAGGED', 'HELD', 'RETURNED', 'PAID'})
+        payouts.ensure_seeded(self.db)
+        with sqlite3.connect(self.db) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM payouts WHERE status IN ('PENDING', 'APPROVED')")
+                             .fetchone()[0], 0)
+
+    # FEATURE 07c — Scenario — the bank-details date is a real, seeded column
+    def test_bank_details_column_seeded(self):
+        payouts.ensure_seeded(self.db)
+        with sqlite3.connect(self.db) as db:
+            columns = {row[1] for row in db.execute('PRAGMA table_info(payouts)')}
+            self.assertIn('bank_details_changed_at', columns)
+            changed = dict(db.execute('SELECT payout_id, bank_details_changed_at FROM payouts '
+                                      'WHERE bank_details_changed_at IS NOT NULL').fetchall())
+        self.assertEqual(changed['PO-1043'], '2026-10-26T15:00:00+00:00')
+        self.assertEqual(payouts.get_payout(self.db, 'PO-1043')['flag_text'], 'Payee bank details changed 2 days ago')
+
+    # FEATURE 07d — Scenario — a demo made by the older version is upgraded in place
+    # Older demos have a payouts table without the new columns. Opening one adds them
+    # (only once), keeps payments untouched, and swaps in the current starting set while
+    # no operator has acted. With action-log rows present, the payouts are kept.
+    def test_upgrade_older_demo(self):
+        make_old_demo(self.db)
+        self.assertEqual(payouts.ensure_seeded(self.db), SEED_COUNT)
+        self.assertEqual(payouts.ensure_seeded(self.db), 0)  # idempotent
+        with sqlite3.connect(self.db) as db:
+            columns = [row[1] for row in db.execute('PRAGMA table_info(payouts)')]
+            self.assertEqual(columns.count('bank_details_changed_at'), 1)
+            self.assertEqual(db.execute('SELECT note FROM keep_me').fetchone()[0], 'untouched')
+        self.assertEqual(self.dump(self.db), json.dumps(payouts.list_payouts(self.fresh()), sort_keys=True))
+        self.assertNotIn('DUPLICATE_ACCOUNT', self.dump(self.db))
+        # With operator history, rows are kept and just gain the empty columns.
+        acted = Path(self.temp.name) / 'acted.sqlite3'
+        make_old_demo(acted, with_event=True)
+        self.assertEqual(payouts.ensure_seeded(acted), 0)
+        kept = payouts.get_payout(acted, 'PO-1044')
+        self.assertEqual((kept['flag_code'], kept['bank_details_changed_at']), ('DUPLICATE_ACCOUNT', None))
+        self.assertEqual(payouts.reset(acted), SEED_COUNT)
+        self.assertEqual(payouts.get_payout(acted, 'PO-1044')['flag_code'], 'DUPLICATE_24H')
+
+    def fresh(self):
+        path = Path(self.temp.name) / 'fresh.sqlite3'
+        payouts.ensure_seeded(path)
+        return path
 
     # FEATURE 08 — Scenario — only fictional names and DEMO accounts
     def test_fictional_only(self):
@@ -182,7 +299,7 @@ class HostedSeedTests(unittest.TestCase):
             db.execute("UPDATE payouts SET status = 'RETURNED' WHERE payout_id = 'PO-1044'")
         self.assertEqual(payouts.get_payout(databases[0], 'PO-1044')['status'], 'RETURNED')
         self.assertEqual(payouts.get_payout(databases[1], 'PO-1044')['status'], 'FLAGGED')
-        self.assertEqual(len(payouts.list_payouts(databases[1])), 25)
+        self.assertEqual(len(payouts.list_payouts(databases[1])), SEED_COUNT)
 
     # FEATURE 12 — Scenario — nothing visible changes: no payout route, no Desk text
     def test_no_new_routes(self):
@@ -195,4 +312,4 @@ class HostedSeedTests(unittest.TestCase):
 
 
 # sha256 of the seed rows as sorted JSON; update only on purpose when the seed changes.
-PINNED_FINGERPRINT = '79f5d331dc1b28649f2dab6c529aa3622c64de9cc6902020097bae2eb8a398cf'
+PINNED_FINGERPRINT = '7436ad6c513967da231f5ee165d372233d04ad323a66294d8acba08ea0e57393'
