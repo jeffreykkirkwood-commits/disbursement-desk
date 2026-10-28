@@ -10,10 +10,21 @@ from uuid import uuid4
 from flask import Flask, Response, g, jsonify, redirect, request
 from werkzeug.exceptions import HTTPException
 from payments import APIError, Payments
+import payouts
 from dashboard import render_dashboard
 from demo_sessions import DemoStore, DemoCapacityError
 from event_log import event, request_context, make_logger
 from log_view import render_logs
+
+
+# FEATURE 00 — Open one visitor demo with its Desk payouts
+# Open the visitor's payments database, then add the payout tables and the fictional
+# starting payouts (payouts.py) to that same file the first time it opens. Each visitor
+# gets their own copy. No route reads payouts yet (issue #34 is behind the scenes only).
+def payments_with_payouts(database, **options):
+    ledger = Payments(database, **options)
+    payouts.ensure_seeded(database)
+    return ledger
 
 
 # FEATURE 01 — Assemble the web application
@@ -32,7 +43,7 @@ def create_app(directory=None, public_origin=None, payments=None):
     directory = Path(directory or os.environ.get('DEMO_DIRECTORY', '/tmp/payments-demos'))
     # Server diagnostics cover requests without a visitor session. Never expose these via /logs.
     server_logger = make_logger(directory / '_server_logs')
-    demos = None if payments else DemoStore(directory, Payments, secure_cookie=origin.startswith('https://'))
+    demos = None if payments else DemoStore(directory, payments_with_payouts, secure_cookie=origin.startswith('https://'))
     fixed_logger = make_logger(Path(payments.database).parent / 'logs') if payments else None
     app.extensions['demos'] = demos
     # FEATURE 02 — Release resources on shutdown
