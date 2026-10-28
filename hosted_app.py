@@ -20,7 +20,7 @@ from log_view import render_logs
 # FEATURE 00 — Open one visitor demo with its Desk payouts
 # Open the visitor's payments database, then add the payout tables and the fictional
 # starting payouts (payouts.py) to that same file the first time it opens. Each visitor
-# gets their own copy. No route reads payouts yet (issue #34 is behind the scenes only).
+# gets their own copy. Only the decision routes below touch payouts; no screen shows them.
 def payments_with_payouts(database, **options):
     ledger = Payments(database, **options)
     payouts.ensure_seeded(database)
@@ -241,5 +241,25 @@ def create_app(directory=None, public_origin=None, payments=None):
     @app.post('/payments/<payment_id>/process')
     def process_payment(payment_id):
         return jsonify(g.payments.process(payment_id))
+
+    # FEATURE 19 — Approve, hold or return one payout (Desk back end, issue #35)
+    # JSON body: reviewer (required) and reason (optional; Hold and Return are
+    # confirm-only). Needs an Idempotency-Key header. Works only on this visitor's own
+    # demo database. 201 = decision recorded; 200 = same key seen before, nothing changed;
+    # 409 = move not allowed from the current status. No screen calls this yet.
+    @app.post('/payouts/<payout_id>/<any(approve, hold, return):action>')
+    def decide_payout(payout_id, action):
+        if request.mimetype != 'application/json':
+            raise APIError(415, 'Use Content-Type: application/json.')
+        body = request.get_json()
+        if not isinstance(body, dict):
+            raise APIError(422, 'Send a JSON object with a reviewer name.')
+        database = g.payments.database
+        status, decision = payouts.decide(database, payout_id, action, body.get('reviewer'),
+                                          request.headers.get('Idempotency-Key'), body.get('reason'))
+        event('payout_decision_replayed' if status == 200 else 'payout_decision_saved',
+              payout_id=payout_id, action=action, from_status=decision['from_status'],
+              to_status=decision['to_status'])
+        return jsonify(payout=payouts.get_payout(database, payout_id), decision=decision), status
 
     return app
