@@ -178,7 +178,8 @@ def create_app(directory=None, public_origin=None, payments=None):
     # payment.
     @app.get('/health')
     def health():
-        return jsonify(status='ok', mode='fictional payments only')
+        return jsonify(status='ok', mode='fictional payments only',
+                       commit=os.environ.get('RENDER_GIT_COMMIT') or None)
 
     # FEATURE 11 — Deliver the browser form logic
     # Serve this one named JavaScript file instead of exposing an entire directory of
