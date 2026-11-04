@@ -36,6 +36,19 @@ class HostedTests(unittest.TestCase):
         return self.client.post('/payments', json=body or self.body, base_url='https://demo.example',
                                 headers={'Idempotency-Key': 'test-key', 'Origin': 'https://demo.example', **headers})
 
+    # FEATURE 05a — Scenario — health reports the running commit
+    # RENDER_GIT_COMMIT (fake value here) appears as commit; unset gives null. Status stays ok.
+    def test_health_reports_commit(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('RENDER_GIT_COMMIT', None)
+            reply = self.client.get('/health')
+        self.assertEqual(reply.status_code, 200)
+        self.assertEqual(reply.get_json(), dict(status='ok', mode='fictional payments only', commit=None))
+        with mock.patch.dict(os.environ, {'RENDER_GIT_COMMIT': 'abc1234fake'}):
+            reply = self.client.get('/health')
+        self.assertEqual(reply.status_code, 200)
+        self.assertEqual(reply.get_json(), dict(status='ok', mode='fictional payments only', commit='abc1234fake'))
+
     # FEATURE 05 — Scenario — health assets and unknown do not create demo
     # Read health, assets, root and unknown/private paths. These requests must not
     # allocate a visitor database.
