@@ -1,6 +1,7 @@
-# Automated checks for the Disbursement Desk queue (/desk, issue #32 slice 1): what a
+# Automated checks for the Disbursement Desk (/desk, issue #32 slices 1 and 2): what a
 # viewer sees first, the All filter without history rows, the empty and load-error
-# states, the header links both ways, and that opening the page writes nothing.
+# states, the header links both ways, each payout's read-only detail, and that opening
+# the page writes nothing.
 """Exercise /desk through the hosted app with temporary fictional demos."""
 import json
 import re
@@ -15,12 +16,14 @@ import payouts
 
 EXCEPTION_IDS = ['PO-1042', 'PO-1043', 'PO-1044', 'PO-1038']
 ALL_IDS = EXCEPTION_IDS + ['PO-1037', 'PO-1036', 'PO-1039', 'PO-1040', 'PO-1041', 'PO-1045']
-ROW = re.compile(r'<li data-ex="(\d)"( hidden)?><div class="row"><span class="payee">(.*?)</span>'
+ROW = re.compile(r'<li data-ex="(\d)"( hidden)?><button type="button" class="row" data-id="PO-\d+" '
+                 r'aria-current="false"><span class="payee">(.*?)</span>'
                  r'<span class="amt">(.*?)</span><span class="sub">(.*?)</span>'
-                 r'<span class="pill (s-\w+)">(.*?)</span></div></li>')
+                 r'<span class="pill (s-\w+)">(.*?)</span></button></li>')
+PANEL = re.compile(r'<div class="panel" data-id="(PO-\d+)" hidden>(.*?)</div>(?=<div class="panel"|</aside>)', re.S)
 
 
-class DeskTests(unittest.TestCase):
+class DeskBase(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.app = create_app(self.temp.name, 'https://demo.example')
@@ -40,6 +43,8 @@ class DeskTests(unittest.TestCase):
     def database(self):
         return next(Path(self.temp.name).rglob('payments.sqlite3'))
 
+
+class DeskTests(DeskBase):
     # Scenario — the Desk opens on the 4 starting exceptions with the approved chrome
     def test_opens_on_exceptions(self):
         reply = self.get()
@@ -142,6 +147,83 @@ class DeskTests(unittest.TestCase):
         html = self.get().get_data(as_text=True)
         self.assertIn('&lt;b&gt;Evil&lt;/b&gt;', html)
         self.assertNotIn('<b>Evil</b>', html)
+
+
+class DeskDetailTests(DeskBase):
+    def panels(self, html=None):
+        return dict(PANEL.findall(html or self.get().get_data(as_text=True)))
+
+    # Scenario — every current-queue payout has exactly one hidden detail panel, none for history
+    def test_one_panel_per_current_payout(self):
+        html = self.get().get_data(as_text=True)
+        self.assertEqual(list(self.panels(html)), ALL_IDS)
+        self.assertIn('<aside id="detail" class="detail" aria-label="Payout detail" hidden>', html)
+        self.assertNotIn('data-id="PO-1001"', html)
+
+    # Scenario — a Needs review payout shows its fields and why it was flagged
+    def test_needs_review_detail(self):
+        panel = self.panels()['PO-1043']
+        for words in ('<button type="button" class="back" aria-label="Back to list">← Back</button>',
+                      '<span class="pill s-review">Needs review</span>', '<h2 tabindex="-1">Bluebird Bakery</h2>',
+                      '<p class="big">$312.40</p>', '<dt>Payout</dt><dd>PO-1043</dd>',
+                      '<dt>To account</dt><dd>DEMO-BLUE-002</dd>', '<dt>Rail</dt><dd>RTP · USD</dd>',
+                      '<div class="flag"><strong>Why flagged:</strong> Payee bank details changed 2 days ago</div>'):
+            self.assertIn(words, panel)
+        self.assertNotIn('This payout is final', panel)
+
+    # Scenario — Held shows its flag and no final message; no action buttons in slice 2
+    def test_held_detail_has_no_actions(self):
+        panel = self.panels()['PO-1038']
+        self.assertIn('<span class="pill s-held">Held</span>', panel)
+        self.assertIn('Why flagged:</strong> Amount is 4× this payee’s usual payout ($520 avg)', panel)
+        self.assertNotIn('This payout is final', panel)
+        for word in ('Approve', 'Hold<', '>Return<', 'class="actions"', 'class="btn'):
+            self.assertNotIn(word, panel)
+
+    # Scenario — Sent and Returned payouts are final: message, no buttons
+    def test_final_payouts(self):
+        panels = self.panels()
+        returned, sent = panels['PO-1037'], panels['PO-1040']
+        self.assertIn('<span class="pill s-returned">Returned</span>', returned)
+        self.assertIn('Why flagged:</strong> Payee bank details changed 1 day ago', returned)
+        self.assertIn('<span class="pill s-sent">Sent</span>', sent)
+        self.assertNotIn('Why flagged', sent)
+        self.assertIn('<dt>Rail</dt><dd>ACH · USD</dd>', sent)
+        for panel in (returned, sent):
+            self.assertIn('<p class="done">This payout is final. No actions available.</p>', panel)
+            self.assertNotIn('class="btn', panel)
+
+    # Scenario — no note block on any payout (notes come after #37)
+    def test_no_note_until_stored(self):
+        for panel in self.panels().values():
+            for word in ('class="note"', 'RULES NOTE', 'AI NOTE', 'Written by AI', 'From fixed rules'):
+                self.assertNotIn(word, panel)
+
+    # Scenario — no note block even when a note is stored: notes come after #37 in their own PR
+    def test_stored_note_is_not_rendered(self):
+        self.get()
+        with closing(sqlite3.connect(str(self.database()))) as db, db:
+            db.execute("UPDATE payouts SET note_text = 'Stored note', note_source = 'rules', note_fallback = 0 "
+                       "WHERE payout_id = 'PO-1043'")
+        html = self.get().get_data(as_text=True)
+        self.assertNotIn('Stored note', html)
+        self.assertNotIn('class="note"', html)
+
+    # Scenario — the load-error page has no detail panels
+    def test_load_error_has_no_panels(self):
+        with mock.patch('payouts.current_queue', side_effect=sqlite3.OperationalError('locked')):
+            html = self.get().get_data(as_text=True)
+        self.assertEqual(self.panels(html), {})
+
+    # Scenario — detail text is escaped
+    def test_detail_text_is_escaped(self):
+        self.get()
+        with closing(sqlite3.connect(str(self.database()))) as db, db:
+            db.execute("UPDATE payouts SET payee_name = '<i>X</i>', flag_text = '<script>y</script>' WHERE payout_id = 'PO-1042'")
+        panel = self.panels()['PO-1042']
+        self.assertIn('&lt;i&gt;X&lt;/i&gt;', panel)
+        self.assertIn('&lt;script&gt;y&lt;/script&gt;', panel)
+        self.assertNotIn('<script>', panel)
 
 
 class CurrentQueueTests(unittest.TestCase):
