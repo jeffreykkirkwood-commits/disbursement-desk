@@ -23,7 +23,8 @@ from log_view import render_logs
 # Open the visitor's payments database, then add the payout tables and the fictional
 # starting payouts (payouts.py) to that same file the first time it opens. Each visitor
 # gets their own copy. The /desk page (FEATURE 19) reads them. The decision routes
-# (FEATURE 21) can approve, hold or return a payout; no screen calls those routes yet.
+# (FEATURE 21) can approve, hold or return a payout. Reset demo (FEATURE 22) restores
+# this visitor's synthetic seed only.
 def payments_with_payouts(database, **options):
     ledger = Payments(database, **options)
     payouts.ensure_seeded(database)
@@ -285,5 +286,16 @@ def create_app(directory=None, public_origin=None, payments=None):
               payout_id=payout_id, action=action, from_status=decision['from_status'],
               to_status=decision['to_status'])
         return jsonify(payout=payouts.get_payout(database, payout_id), decision=decision), status
+
+    # FEATURE 22 — Reset this visitor's Desk demo to the starting set (#32 slice 4)
+    # Calls payouts.reset() on this visitor's own database only. That restores the
+    # synthetic seed and clears this demo's action log; it never touches anyone else.
+    # 200 means the starting set was written back. No request body is required.
+    @app.post('/payouts/reset')
+    def reset_payouts():
+        database = g.payments.database
+        restored = payouts.reset(database)
+        event('payouts_reset', restored=restored)
+        return jsonify(restored=restored)
 
     return app
