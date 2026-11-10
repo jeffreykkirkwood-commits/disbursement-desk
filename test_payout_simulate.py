@@ -1,0 +1,150 @@
+# Automated checks for the behind-the-scenes POST /payouts/simulate route (issue #91).
+# It creates a synthetic payee payout in the visitor's own cookie-scoped demo only.
+"""Exercise the demo-only payout create route with temporary fictional demos."""
+import unittest
+from pathlib import Path
+import tempfile
+
+from hosted_app import create_app
+import payouts
+
+
+NEW_PAYEE = {
+    'payee_name': 'Oak Street Books',
+    'payee_account': 'DEMO-OAKS-010',
+    'amount_cents': 100001,
+    'rail': 'ACH',
+}
+
+
+class SimulatePayoutTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.app = create_app(self.temp.name, 'https://demo.example')
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        self.app.extensions['close']()
+        self.temp.cleanup()
+
+    def open_desk(self, client=None):
+        client = client or self.client
+        return client.get('/desk', base_url='https://demo.example')
+
+    def simulate(self, body=None, client=None, **headers):
+        client = client or self.client
+        extra = {'Origin': 'https://demo.example', **headers}
+        return client.post('/payouts/simulate', json=body or NEW_PAYEE,
+                           base_url='https://demo.example', headers=extra)
+
+    def reset(self, client=None):
+        client = client or self.client
+        return client.post('/payouts/reset', base_url='https://demo.example',
+                           headers={'Origin': 'https://demo.example'})
+
+    def database(self, client=None):
+        self.open_desk(client or self.client)
+        files = sorted(Path(self.temp.name).rglob('payments.sqlite3'))
+        if client is None or client is self.client:
+            return files[0] if len(files) == 1 else max(files, key=lambda p: p.stat().st_mtime)
+        return files
+
+    # FEATURE 01 — Scenario — a missing session or foreign origin is refused
+    def test_requires_this_visitors_session(self):
+        refused = self.simulate()
+        self.assertEqual(refused.status_code, 409)
+        self.assertEqual(refused.json['code'], 'DEMO_SESSION_CHANGED')
+        self.open_desk()
+        foreign = self.simulate(**{'Origin': 'https://different.example'})
+        self.assertEqual(foreign.status_code, 403)
+        self.assertEqual(len(payouts.list_payouts(self.database())), 40)
+
+    # FEATURE 02 — Scenario — a first payout over $1,000 to a new payee is flagged
+    def test_new_payee_over_1000_is_flagged_and_shows_on_desk(self):
+        self.open_desk()
+        reply = self.simulate(dict(NEW_PAYEE, payout_id='PO-3002'))
+        self.assertEqual(reply.status_code, 201)
+        self.assertEqual(reply.json['status'], 'FLAGGED')
+        payout = reply.json['payout']
+        self.assertEqual(payout['payout_id'], 'PO-3002')
+        self.assertEqual(payout['payee_name'], 'Oak Street Books')
+        self.assertEqual(payout['amount'], '1000.01')
+        self.assertEqual(payout['status'], 'FLAGGED')
+        self.assertEqual(payout['flag_code'], 'NEW_PAYEE_OVER_1000')
+        self.assertIn('Rule NEW_PAYEE_OVER_1000:', payout['note_text'])
+        self.assertEqual(payout['note_source'], 'rules')
+        self.assertFalse(payout['note_fallback'])
+        self.assertNotIn('Written by AI', payout['note_text'])
+        html = self.open_desk().get_data(as_text=True)
+        self.assertIn('Exceptions <b>5</b>', html)
+        self.assertIn('All <b>11</b>', html)
+        self.assertIn('Oak Street Books', html)
+        self.assertIn('PO-3002', html)
+
+    # FEATURE 03 — Scenario — a first payout of exactly $1,000 follows the normal rules
+    def test_new_payee_of_1000_follows_normal_rules(self):
+        self.open_desk()
+        reply = self.simulate(dict(NEW_PAYEE, amount_cents=100000, payout_id='PO-3005'))
+        self.assertEqual(reply.status_code, 201)
+        self.assertEqual(reply.json['status'], 'PAID')
+        self.assertIsNone(reply.json['payout']['flag_code'])
+        html = self.open_desk().get_data(as_text=True)
+        self.assertIn('Exceptions <b>4</b>', html)
+        self.assertIn('All <b>11</b>', html)
+        self.assertIn('PO-3005', html)
+
+    # FEATURE 04 — Scenario — Reset demo removes the added payout
+    def test_reset_removes_simulated_payout(self):
+        self.open_desk()
+        self.assertEqual(self.simulate(dict(NEW_PAYEE, payout_id='PO-3002')).status_code, 201)
+        self.assertIn('PO-3002', self.open_desk().get_data(as_text=True))
+        reply = self.reset()
+        self.assertEqual(reply.status_code, 200)
+        self.assertEqual(reply.json['restored'], 40)
+        html = self.open_desk().get_data(as_text=True)
+        self.assertIn('Exceptions <b>4</b>', html)
+        self.assertIn('All <b>10</b>', html)
+        self.assertNotIn('PO-3002', html)
+        self.assertNotIn('Oak Street Books', html)
+        self.assertEqual(len(payouts.list_payouts(self.database())), 40)
+
+    # FEATURE 05 — Scenario — another visitor's demo is unchanged
+    def test_only_this_visitors_demo_changes(self):
+        other = self.app.test_client()
+        self.open_desk()
+        self.open_desk(other)
+        self.assertEqual(self.simulate(dict(NEW_PAYEE, payout_id='PO-3002')).status_code, 201)
+        mine = self.open_desk().get_data(as_text=True)
+        theirs = self.open_desk(other).get_data(as_text=True)
+        self.assertIn('Exceptions <b>5</b>', mine)
+        self.assertIn('PO-3002', mine)
+        self.assertIn('Exceptions <b>4</b>', theirs)
+        self.assertIn('All <b>10</b>', theirs)
+        self.assertNotIn('PO-3002', theirs)
+        self.assertNotIn('Oak Street Books', theirs)
+
+    # FEATURE 06 — Scenario — a payout id is assigned when none is given; bad accounts are refused
+    def test_assigns_id_and_refuses_non_demo_accounts(self):
+        self.open_desk()
+        reply = self.simulate()
+        self.assertEqual(reply.status_code, 201)
+        self.assertEqual(reply.json['payout']['payout_id'], 'PO-1046')
+        refused = self.simulate({'payee_name': 'Oak Street Books',
+                                 'payee_account': 'REAL-BANK-001',
+                                 'amount_cents': 100001})
+        self.assertEqual(refused.status_code, 422)
+        self.assertEqual(payouts.get_payout(self.database(), 'PO-1046')['payee_account'],
+                         'DEMO-OAKS-010')
+
+    # FEATURE 07 — Scenario — no viewer-facing control points at this route
+    def test_no_viewer_facing_control(self):
+        html = self.open_desk().get_data(as_text=True)
+        dashboard = self.client.get('/dashboard', base_url='https://demo.example').get_data(as_text=True)
+        script = self.client.get('/desk.js', base_url='https://demo.example').get_data(as_text=True)
+        for page in (html, dashboard, script):
+            self.assertNotIn('/payouts/simulate', page)
+            self.assertNotIn('simulate payout', page.lower())
+
+
+if __name__ == '__main__':
+    unittest.main()
