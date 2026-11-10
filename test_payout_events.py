@@ -1,13 +1,18 @@
 # Automated checks for payout_events.py: the per-visitor live update stream of
 # payout created and status-changed events (issue #43).
 """Exercise event order, workspace scoping and reconnect with temporary fictional demos."""
+import http.client
 import json
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from contextlib import closing
 from pathlib import Path
 from unittest import mock
+from urllib.request import urlopen
+from werkzeug.serving import make_server
 
 import payout_events
 import payouts
@@ -47,6 +52,7 @@ class StreamBase(unittest.TestCase):
     # not hold a thread.
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        payout_events.reset_stream_slots()
         self.hold = mock.patch.object(payout_events, 'HOLD_SECONDS', 0)
         self.hold.start()
         self.app = create_app(self.temp.name, 'https://demo.example')
@@ -212,6 +218,113 @@ class StreamTests(StreamBase):
         self.assertEqual(payout_events.parse_last_id('nope'), 0)
         self.assertEqual(payout_events.parse_last_id('-3'), 0)
         self.assertEqual(payout_events.parse_last_id(None), 0)
+
+
+class StreamCapTests(unittest.TestCase):
+    # FEATURE 10 — Test support — setUp a live threaded server
+    # A real threaded server keeps two stream connections open so the cap,
+    # a freed slot, and /health can be checked at the same time. Polling is
+    # shortened so a closed client is noticed quickly. HOLD_SECONDS stays at
+    # its real value; the tests close the connections themselves.
+    def setUp(self):
+        payout_events.reset_stream_slots()
+        self.temp = tempfile.TemporaryDirectory()
+        self.poll = mock.patch.object(payout_events, 'POLL_SECONDS', 0.05)
+        self.poll.start()
+        self.app = create_app(self.temp.name, 'http://127.0.0.1')
+        self.server = make_server('127.0.0.1', 0, self.app, threaded=True)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.host, self.port = '127.0.0.1', self.server.server_port
+        self.base = 'http://%s:%s' % (self.host, self.port)
+        with urlopen(self.base + '/dashboard', timeout=5) as response:
+            self.cookie = response.headers['Set-Cookie'].split(';')[0]
+        self.open_conns = []
+
+    # FEATURE 11 — Test support — tearDown
+    def tearDown(self):
+        for conn in list(self.open_conns):
+            self.close_stream(conn)
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        self.poll.stop()
+        self.app.extensions['close']()
+        payout_events.reset_stream_slots()
+        self.temp.cleanup()
+
+    def open_stream(self):
+        conn = http.client.HTTPConnection(self.host, self.port, timeout=8)
+        conn.request('GET', '/payouts/stream', headers={'Cookie': self.cookie})
+        response = conn.getresponse()
+        self.open_conns.append(conn)
+        # Leave the body unread so the server keeps the connection (and the
+        # slot) open. The slot is acquired before these headers are sent.
+        return conn, response
+
+    def close_stream(self, conn):
+        try:
+            conn.close()
+        finally:
+            if conn in self.open_conns:
+                self.open_conns.remove(conn)
+
+    def wait_for_stream(self, timeout=3):
+        deadline = time.monotonic() + timeout
+        last = None
+        while time.monotonic() < deadline:
+            conn, response = self.open_stream()
+            last = response
+            if response.status == 200:
+                return conn, response
+            self.close_stream(conn)
+            time.sleep(0.05)
+        return None, last
+
+    # FEATURE 12 — Scenario — a third concurrent stream gets 503
+    def test_third_stream_returns_503(self):
+        conn1, first = self.open_stream()
+        conn2, second = self.open_stream()
+        self.assertEqual(first.status, 200)
+        self.assertEqual(second.status, 200)
+        conn3, third = self.open_stream()
+        self.assertEqual(third.status, 503)
+        self.assertEqual(third.getheader('Retry-After'), str(payout_events.RETRY_AFTER_SECONDS))
+        self.assertIn('text/plain', third.getheader('Content-Type'))
+        body = third.read().decode()
+        self.assertIn('Too many live update streams are open', body)
+        self.assertIn('Try again shortly', body)
+        self.close_stream(conn3)
+
+    # FEATURE 13 — Scenario — a slot frees after a stream closes
+    def test_slot_frees_after_a_stream_closes(self):
+        conn1, first = self.open_stream()
+        conn2, second = self.open_stream()
+        self.assertEqual(first.status, 200)
+        self.assertEqual(second.status, 200)
+        conn3, third = self.open_stream()
+        self.assertEqual(third.status, 503)
+        self.close_stream(conn3)
+        self.close_stream(conn1)
+        conn4, recovered = self.wait_for_stream()
+        self.assertIsNotNone(conn4)
+        self.assertEqual(recovered.status, 200)
+        self.assertTrue(recovered.getheader('Content-Type', '').startswith('text/event-stream'))
+
+    # FEATURE 14 — Scenario — /health answers while two streams are open
+    def test_health_answers_while_two_streams_are_open(self):
+        conn1, first = self.open_stream()
+        conn2, second = self.open_stream()
+        self.assertEqual(first.status, 200)
+        self.assertEqual(second.status, 200)
+        with urlopen(self.base + '/health', timeout=2) as response:
+            self.assertEqual(response.status, 200)
+            payload = json.loads(response.read().decode())
+        self.assertEqual(payload['status'], 'ok')
+        # The cap is still in effect: a third stream is refused while /health answered.
+        conn3, third = self.open_stream()
+        self.assertEqual(third.status, 503)
+        self.close_stream(conn3)
 
 
 if __name__ == '__main__':
