@@ -2,12 +2,13 @@
 # the fixed set of fictional payouts every new demo starts with, and the operator's
 # approve / hold / return decisions. The /desk page (desk.py) reads the current queue
 # from here; no screen calls the decision functions yet.
-"""Payout table, transitions, synthetic seed data (#34) and operator decisions (#35)."""
+"""Payout table, transitions, synthetic seed data (#34), operator decisions (#35) and stored rules notes (#37)."""
 import random
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import payout_notes
 from payments import APIError
 
 # FEATURE 01 — Name every payout status
@@ -71,8 +72,9 @@ DUPLICATE_WINDOW = timedelta(hours=24)
 # Payouts live in the same per-visitor SQLite file as payments. Amounts are whole cents.
 # payee_usual_cents is the payee's usual (average earlier) payout and bank_details_changed_at is
 # when the payee's bank details last changed (NULL = not recently); both are the facts
-# behind a flag. Note fields stay empty until notes are built (#37, #38). payout_events is the operator
-# action log (who, what, when, why) that the approve/hold/return API (#35) will append to.
+# behind a flag. Note fields are filled by payout_notes.apply() from those stored rules
+# (#37). They stay 'rules' notes with fallback off; an AI source is reserved for later
+# (#38). payout_events is the operator action log (who, what, when, why).
 SCHEMA = (
     '''CREATE TABLE IF NOT EXISTS payouts (
         payout_id TEXT PRIMARY KEY,
@@ -176,7 +178,7 @@ def explain_flag(payout, earlier):
 # timestamps). Nothing here reads the clock or the network. History amounts come in
 # +/- pairs around the usual amount (within 10%), so their average is exactly the usual.
 # Each current payout's usual amount is the average of that payee's earlier payouts, and
-# its flag comes from explain_flag().
+# its flag comes from explain_flag(). Each row then gets a stored rules note.
 def seed_rows():
     rng = random.Random(SEED_RANDOM)
     rows, number = [], 1001
@@ -197,6 +199,8 @@ def seed_rows():
                          usual, changed))
     for row in rows[len(history):]:
         row['flag_code'], row['flag_text'] = explain_flag(row, [r for r in rows if r['created_at'] < row['created_at']])
+    for row in rows:
+        payout_notes.apply(row)
     return rows
 
 
@@ -228,6 +232,7 @@ def ensure_seeded(database):
         if upgraded and not db.execute('SELECT COUNT(*) FROM payout_events').fetchone()[0]:
             db.execute('DELETE FROM payouts')
         if db.execute('SELECT COUNT(*) FROM payouts').fetchone()[0]:
+            _backfill_notes(db)
             return 0
         return _insert_seed(db)
 
@@ -244,6 +249,23 @@ def reset(database):
         db.execute('DELETE FROM payout_events')
         db.execute('DELETE FROM payouts')
         return _insert_seed(db)
+
+
+# FEATURE 10b — Fill empty note columns on an existing demo
+# Writes a rules note only where note_text is still NULL. Status, flags and the
+# action log are left alone, so an operator's work is kept. Running it again
+# after notes exist does nothing.
+def _backfill_notes(db):
+    rows = db.execute(
+        f'SELECT {", ".join(COLUMNS)} FROM payouts WHERE note_text IS NULL').fetchall()
+    for raw in rows:
+        payout = payout_notes.apply(dict(zip(COLUMNS, raw)))
+        db.execute(
+            'UPDATE payouts SET note_text = ?, note_source = ?, note_fallback = ? '
+            'WHERE payout_id = ?',
+            (payout['note_text'], payout['note_source'],
+             int(payout['note_fallback']), payout['payout_id']))
+    return len(rows)
 
 
 def _insert_seed(db):

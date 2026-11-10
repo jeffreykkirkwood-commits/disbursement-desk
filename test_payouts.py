@@ -1,5 +1,5 @@
 # Automated checks for payouts.py: the payout table, every allowed and blocked status
-# change, and the fictional seed data (issue #34).
+# change, the fictional seed data (issue #34), and stored rules notes (issue #37).
 """Exercise the Disbursement Desk data model with temporary fictional databases."""
 import hashlib
 import json
@@ -256,7 +256,9 @@ class SeedTests(unittest.TestCase):
             self.assertRegex(r['amount'], r'^\d+\.\d{2}$')
             for name in (r['payee_name'], r['account_name']):
                 self.assertFalse(any(real in name.lower() for real in REAL_NAMES), name)
-            self.assertIsNone(r['note_text'])  # notes are built later (#37)
+            self.assertEqual(r['note_source'], 'rules')
+            self.assertTrue(r['note_text'])
+            self.assertIs(r['note_fallback'], False)
 
     # FEATURE 09 — Scenario — the database refuses non-DEMO accounts and bad statuses
     def test_constraints(self):
@@ -316,4 +318,4 @@ class HostedSeedTests(unittest.TestCase):
 
 
 # sha256 of the seed rows as sorted JSON; update only on purpose when the seed changes.
-PINNED_FINGERPRINT = '7436ad6c513967da231f5ee165d372233d04ad323a66294d8acba08ea0e57393'
+PINNED_FINGERPRINT = '0358950ade9286335672c786b077cfcae0e3ece26dad8c3172cbfe5a334a9876'
