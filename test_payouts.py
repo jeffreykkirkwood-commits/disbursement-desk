@@ -152,15 +152,18 @@ class SeedTests(unittest.TestCase):
         with sqlite3.connect(self.db) as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM payout_events').fetchone()[0], 0)
 
-    # FEATURE 06 — Scenario — at least one payout for each approved rule, and the data backs it
-    # Only the three approved rules exist. Each flagged payout's stored facts really trip
-    # its rule, and no unflagged payout trips any rule.
+    # FEATURE 06 — Scenario — at least one payout for each seed rule, and the data backs it
+    # The seed still covers the three original rules. The new-payee rule (#86) is listed
+    # but has no seeded payout, so the starting set stays unchanged. Each flagged
+    # payout's stored facts really trip its rule, and no unflagged payout trips any rule.
     def test_each_rule_has_a_payout(self):
         rows = payouts.seed_rows()
-        self.assertEqual(set(payouts.FLAG_TEXT), {'AMOUNT_OVER_3X_AVG', 'BANK_CHANGED_7D', 'DUPLICATE_24H'})
-        for code in payouts.FLAG_TEXT:
+        self.assertEqual(set(payouts.FLAG_TEXT), {
+            'AMOUNT_OVER_3X_AVG', 'BANK_CHANGED_7D', 'DUPLICATE_24H', 'NEW_PAYEE_OVER_1000'})
+        for code in ('AMOUNT_OVER_3X_AVG', 'BANK_CHANGED_7D', 'DUPLICATE_24H'):
             with self.subTest(rule=code):
                 self.assertTrue(any(r['flag_code'] == code and r['status'] == 'FLAGGED' for r in rows))
+        self.assertFalse(any(r['flag_code'] == 'NEW_PAYEE_OVER_1000' for r in rows))
         for r in rows:
             self.assertIn(r['flag_code'], set(payouts.FLAG_TEXT) | {None})
             self.assertEqual(r['flag_code'] is None, r['flag_text'] is None)

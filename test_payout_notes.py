@@ -91,6 +91,21 @@ class RulesNoteTests(unittest.TestCase):
                 self.assertIs(row['note_fallback'], False)
                 self.assertNotIn('Written by AI', row['note_text'])
 
+    # FEATURE 05b — Scenario — a new-payee flag stores a #37-style rules note
+    def test_new_payee_rule_uses_rules_note(self):
+        text, source, fallback = payout_notes.rules_note({
+            'flag_code': 'NEW_PAYEE_OVER_1000',
+            'flag_text': 'First payout to this payee is over $1,000',
+        })
+        self.assertEqual(
+            text,
+            'Rule NEW_PAYEE_OVER_1000: First payout to this payee is over $1,000. '
+            'Review before sending.')
+        self.assertEqual((source, fallback), ('rules', False))
+        self.assertTrue(text.startswith('Rule NEW_PAYEE_OVER_1000:'))
+        self.assertNotIn('Written by AI', text)
+        self.assertNotIn('AI NOTE', text)
+
 
 class StoredNoteTests(unittest.TestCase):
     def setUp(self):
