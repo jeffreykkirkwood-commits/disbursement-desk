@@ -2,8 +2,9 @@
 # viewer sees first, the All filter without history rows, the empty and load-error
 # states, the header links both ways, each payout's detail, the Approve / Hold / Return
 # buttons and confirm dialog words (slice 3), Reset demo (slice 4), the stored
-# rules notes and AI-unavailable fallback (slice 5, Q3 option A), and that
-# opening the page writes nothing.
+# rules notes and AI-unavailable fallback (slice 5, Q3 option A), that opening
+# the page writes nothing, and that a payout flagged after the seed appears in
+# the queue (#80).
 """Exercise /desk through the hosted app with temporary fictional demos."""
 import json
 import re
@@ -15,6 +16,7 @@ from pathlib import Path
 from unittest import mock
 from hosted_app import create_app
 import desk
+import payout_rules
 import payouts
 
 EXCEPTION_IDS = ['PO-1042', 'PO-1043', 'PO-1044', 'PO-1038']
@@ -667,6 +669,60 @@ class CurrentQueueTests(unittest.TestCase):
             queue = payouts.current_queue(db)
         self.assertEqual([p['payout_id'] for p in queue], ALL_IDS)
         self.assertEqual({p['payout_id'] for p in queue}, set(payouts.CURRENT_IDS))
+        self.assertTrue(payouts.HISTORY_IDS.isdisjoint(p['payout_id'] for p in queue))
+
+    def test_newly_flagged_payout_appears_in_queue(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = Path(folder) / 'payments.sqlite3'
+            payouts.ensure_seeded(db)
+            result = payout_rules.create(
+                db, 'PO-1046', 'Cedar Cleaning Co.', 'DEMO-CEDR-004', 320000, 'ACH')
+            self.assertEqual(result['status'], payouts.FLAGGED)
+            queue = payouts.current_queue(db)
+        ids = [p['payout_id'] for p in queue]
+        self.assertIn('PO-1046', ids)
+        self.assertEqual(
+            [p['payout_id'] for p in queue if p['status'] == payouts.FLAGGED],
+            ['PO-1042', 'PO-1043', 'PO-1044', 'PO-1046'])
+        self.assertEqual(ids[:5], ['PO-1042', 'PO-1043', 'PO-1044', 'PO-1046', 'PO-1038'])
+        self.assertTrue(payouts.HISTORY_IDS.isdisjoint(ids))
+        self.assertEqual(len(queue), 11)
+
+    def test_reset_drops_newly_flagged_payout(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = Path(folder) / 'payments.sqlite3'
+            payouts.ensure_seeded(db)
+            payout_rules.create(
+                db, 'PO-1046', 'Cedar Cleaning Co.', 'DEMO-CEDR-004', 320000, 'ACH')
+            payouts.reset(db)
+            queue = payouts.current_queue(db)
+            listed = payouts.list_payouts(db)
+        self.assertEqual([p['payout_id'] for p in queue], ALL_IDS)
+        self.assertNotIn('PO-1046', [p['payout_id'] for p in queue])
+        self.assertNotIn('PO-1046', [p['payout_id'] for p in listed])
+        self.assertEqual(len(listed), 40)
+        self.assertEqual({p['payout_id'] for p in queue}, set(payouts.CURRENT_IDS))
+
+
+class DeskNewFlaggedTests(DeskBase):
+    # Scenario — a payout created and flagged after the seed shows on the Desk
+    def test_desk_lists_newly_flagged_payout(self):
+        self.get()
+        result = payout_rules.create(
+            self.database(), 'PO-1046', 'Cedar Cleaning Co.', 'DEMO-CEDR-004', 320000, 'ACH')
+        self.assertEqual(result['status'], payouts.FLAGGED)
+        html = self.get().get_data(as_text=True)
+        self.assertIn('Exceptions <b>5</b>', html)
+        self.assertIn('All <b>11</b>', html)
+        rows = self.rows(html)
+        visible = [r for r in rows if not r['hidden']]
+        self.assertEqual([r['sub'].split(' · ')[0] for r in visible],
+                         ['PO-1042', 'PO-1043', 'PO-1044', 'PO-1046', 'PO-1038'])
+        added = next(r for r in visible if r['sub'].startswith('PO-1046'))
+        self.assertEqual(
+            (added['payee'], added['amount'], added['word']),
+            ('Cedar Cleaning Co.', '$3,200.00', 'Needs review'))
+        self.assertIn('PO-1046 · Amount is 5× this payee’s usual payout ($640 avg)', html)
 
 
 if __name__ == '__main__':
