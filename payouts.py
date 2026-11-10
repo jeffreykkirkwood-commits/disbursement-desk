@@ -307,17 +307,20 @@ def get_payout(database, payout_id):
 
 
 # FEATURE 12 — Read the Desk's current queue
-# Only the current-queue payouts (the CURRENT ids above), never the 30 history rows, which
-# exist only for usual-amount math (a history view was declined, #40). Ordered the way the
+# Every payout except the 30 history rows, which exist only for usual-amount math
+# (a history view was declined, #40). Newly created payouts, including ones flagged
+# after the seed, are included so they appear on the Desk (#80). Ordered the way the
 # approved mock lists them: Needs review, then Held, then Returned, then Sent, each by id.
 CURRENT_IDS = tuple(row[0] for row in CURRENT)
+HISTORY_IDS = frozenset(row['payout_id'] for row in seed_rows() if row['payout_id'] not in CURRENT_IDS)
 QUEUE_ORDER = {FLAGGED: 0, PENDING: 0, HELD: 1, RETURNED: 2, APPROVED: 3, PAID: 3}
 
 
 def current_queue(database):
+    history = tuple(HISTORY_IDS)
     with closing(sqlite3.connect(str(database))) as db:
-        rows = db.execute(f'SELECT {", ".join(COLUMNS)} FROM payouts WHERE payout_id IN '
-                          f'({", ".join("?" * len(CURRENT_IDS))})', CURRENT_IDS).fetchall()
+        rows = db.execute(f'SELECT {", ".join(COLUMNS)} FROM payouts WHERE payout_id NOT IN '
+                          f'({", ".join("?" * len(history))})', history).fetchall()
     queue = [_public(row) for row in rows]
     return sorted(queue, key=lambda p: (QUEUE_ORDER[p['status']], p['payout_id']))
 
