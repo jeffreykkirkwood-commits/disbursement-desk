@@ -12,6 +12,7 @@ from flask import Flask, Response, g, jsonify, redirect, request, stream_with_co
 from werkzeug.exceptions import HTTPException
 from payments import APIError, Payments
 import payouts
+import payout_rules
 import payout_events
 from dashboard import render_dashboard
 from desk import render_desk
@@ -303,6 +304,38 @@ def create_app(directory=None, public_origin=None, payments=None):
         event('payouts_reset', restored=restored)
         payout_events.after_reset(database)
         return jsonify(restored=restored)
+
+    # FEATURE 25 — Create one synthetic payee payout in this visitor's demo (#91)
+    # Behind the scenes only: POST JSON, requires this visitor's existing demo
+    # session cookie (a POST cannot start a new session). Creates only fictional
+    # DEMO- payouts in that visitor's database and returns JSON. No page, link
+    # or button is added. Reset demo still restores the starting set.
+    def _next_demo_payout_id(database):
+        with sqlite3.connect(str(database)) as db:
+            ids = [row[0] for row in db.execute('SELECT payout_id FROM payouts')]
+        numbers = [int(payout_id[3:]) for payout_id in ids
+                   if payout_id.startswith('PO-') and payout_id[3:].isdigit()]
+        return f'PO-{max(numbers, default=0) + 1}'
+
+    @app.post('/payouts/simulate')
+    def simulate_payout():
+        if request.mimetype != 'application/json':
+            raise APIError(415, 'Use Content-Type: application/json.')
+        body = request.get_json()
+        if not isinstance(body, dict):
+            raise APIError(422, 'Send a JSON object with a payee name, DEMO- account and amount.')
+        database = g.payments.database
+        payout_id = body.get('payout_id') or _next_demo_payout_id(database)
+        payout_events.sync(database)
+        result = payout_rules.create(
+            database, payout_id, body.get('payee_name'), body.get('payee_account'),
+            body.get('amount_cents'), body.get('rail', 'ACH'),
+            bank_details_changed_at=body.get('bank_details_changed_at'))
+        event('payout_simulated', payout_id=payout_id, status=result['status'])
+        payout_events.sync(database)
+        return jsonify(payout=payouts.get_payout(database, payout_id),
+                       status=result['status'], changed=result['changed'],
+                       event=result['event']), 201
 
     # FEATURE 23 — Stream payout created and status-changed events (#43)
     # Server-sent events for this visitor's demo only. A reconnect sends the
