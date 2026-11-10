@@ -219,7 +219,6 @@ class StreamTests(StreamBase):
         self.assertEqual(payout_events.parse_last_id('-3'), 0)
         self.assertEqual(payout_events.parse_last_id(None), 0)
 
-
 class StreamCapTests(unittest.TestCase):
     # FEATURE 10 — Test support — setUp a live threaded server
     # A real threaded server keeps two stream connections open so the cap,
@@ -325,6 +324,79 @@ class StreamCapTests(unittest.TestCase):
         conn3, third = self.open_stream()
         self.assertEqual(third.status, 503)
         self.close_stream(conn3)
+
+
+class StreamLogTests(StreamBase):
+    # The three #82 checks: cap, skip a no-op write, and no duplicate created
+    # events after reset when resuming from id 0.
+    # FEATURE 15 — Scenario — the log keeps only the newest MAX_EVENTS events
+    def test_log_keeps_only_the_newest_events(self):
+        self.start()
+        database = next(Path(self.temp.name).rglob('payments.sqlite3'))
+        path = payout_events._path(database)
+        state = payout_events._load(path)
+        start_id = state['next_id']
+        extra = payout_events.MAX_EVENTS + 100
+        at = '2026-11-10T18:00:00+00:00'
+        for offset in range(extra):
+            state['events'].append(dict(
+                id=start_id + offset, type=payout_events.STATUS_CHANGED,
+                payout_id='PO-FAKE', from_status='FLAGGED', to_status='HELD',
+                payee_name='Synthetic Payee', amount='1.00', currency='USD',
+                rail='ACH', at=at))
+        state['next_id'] = start_id + extra
+        payout_events._save(path, state)
+        self.assertEqual(payout_events.sync(database), [])
+        trimmed = payout_events._load(path)
+        self.assertEqual(len(trimmed['events']), payout_events.MAX_EVENTS)
+        self.assertEqual(trimmed['events'][0]['id'], start_id + extra - payout_events.MAX_EVENTS)
+        self.assertEqual(trimmed['events'][-1]['id'], start_id + extra - 1)
+        self.assertEqual(trimmed['next_id'], start_id + extra)
+        with mock.patch.object(payout_events, '_save') as save:
+            self.assertEqual(payout_events.sync(database), [])
+            save.assert_not_called()
+
+    # FEATURE 16 — Scenario — sync does not rewrite the file when nothing changed
+    def test_sync_skips_rewrite_when_nothing_changed(self):
+        self.start()
+        database = next(Path(self.temp.name).rglob('payments.sqlite3'))
+        self.assertEqual(payout_events.sync(database), [])
+        with mock.patch.object(payout_events, '_save') as save:
+            self.assertEqual(payout_events.sync(database), [])
+            save.assert_not_called()
+        at = '2026-11-10T18:05:00+00:00'
+        with closing(sqlite3.connect(str(database))) as db, db:
+            db.execute(
+                "UPDATE payouts SET status = 'HELD', updated_at = ? WHERE payout_id = 'PO-1042'",
+                (at,))
+        with mock.patch.object(payout_events, '_save', wraps=payout_events._save) as save:
+            added = payout_events.sync(database)
+            self.assertEqual(len(added), 1)
+            self.assertEqual(added[0]['type'], 'status-changed')
+            self.assertEqual(added[0]['payout_id'], 'PO-1042')
+            save.assert_called()
+
+    # FEATURE 17 — Scenario — after reset, resume from id 0 has no duplicate created events
+    def test_reset_from_id_zero_has_no_duplicate_created_events(self):
+        self.start()
+        self.decide('PO-1042', 'hold', 'hold-reset-dup')
+        database = next(Path(self.temp.name).rglob('payments.sqlite3'))
+        before = payout_events.events_after(database, 0)
+        last_id = before[-1]['id']
+        created_before = [event for event in before if event['type'] == 'created']
+        self.assertEqual(len(created_before), 40)
+        self.assertTrue(any(event['type'] == 'status-changed' and event['payout_id'] == 'PO-1042'
+                            for event in before))
+        self.assertEqual(self.reset().status_code, 200)
+        after = payout_events.events_after(database, 0)
+        self.assertEqual(len(after), 40)
+        self.assertTrue(all(event['type'] == 'created' for event in after))
+        payout_ids = [event['payout_id'] for event in after]
+        self.assertEqual(len(payout_ids), len(set(payout_ids)))
+        self.assertEqual(after[0]['id'], last_id + 1)
+        held = [event for event in after if event['payout_id'] == 'PO-1042']
+        self.assertEqual(len(held), 1)
+        self.assertEqual(held[0]['status'], 'FLAGGED')
 
 
 if __name__ == '__main__':
