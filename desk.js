@@ -1,7 +1,8 @@
 // Disbursement Desk, slices 1 to 5 (#32): switch the queue between Exceptions and All,
 // open one payout's detail, Approve / Hold / Return it after a confirm dialog,
-// Reset demo, and show the AI or rules fallback note. The server already rendered
-// every row, panel, note and the dialog words; this shows or hides them. A confirmed
+// Reset demo, and show the stored rules note or the AI-unavailable fallback. The
+// server already rendered every row, panel, note and the dialog words; this shows
+// or hides them. A confirmed
 // action is sent to the #35 decision API (POST /payouts/<id>/<action>) and the page
 // reloads, so the list and detail show the saved state. If it does not save, the
 // dialog stays open and says so; nothing on screen changes. Cancel changes nothing.
@@ -12,7 +13,7 @@
 // The API body is never shown.
 // URL hash for reproducible screenshots: #f=all opens on All, #id=PO-1042 opens a
 // payout, #id=PO-1043&confirm=hold also opens that dialog, #id=PO-1042&ai=off shows
-// the rules fallback on a note that would have been AI-written.
+// the approved AI-unavailable fallback on the stored note.
 (function () {
   const chips = document.querySelectorAll('.chip[data-f]');
   const rows = document.querySelectorAll('#list li[data-ex]');
@@ -34,10 +35,12 @@
     history.replaceState(null, '', hash ? '#' + hash : location.pathname + location.search);
   }
 
-  // #ai=off shows the already-rendered fallback note and hides the AI note. Rules
-  // notes are unchanged. No model is called; the fallback is already on the page.
+  // #ai=off shows the already-rendered fallback note and hides the stored rules
+  // note. No model is called; the fallback is already on the page, and its body
+  // is the same stored #37 text.
   function showFallback(off) {
     document.querySelectorAll('.note[data-note="ai"]').forEach(n => { n.hidden = off; });
+    document.querySelectorAll('.note[data-note="rules"]').forEach(n => { n.hidden = off; });
     document.querySelectorAll('.note[data-note="fallback"]').forEach(n => { n.hidden = !off; });
   }
 

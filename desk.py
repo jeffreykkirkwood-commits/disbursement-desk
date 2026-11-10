@@ -1,9 +1,9 @@
 # START HERE — Builds the Disbursement Desk page (HTML): the payout queue, the payout
 # detail, the Approve / Hold / Return confirm dialog and the note badges (issue #32
 # slices 1 to 5). This file never changes the database: desk.js sends a confirmed
-# decision to the #35 decision API (POST /payouts/<id>/<action>) and reloads. Notes
-# on screen are static and synthetic (slice 5). They are not stored, and they do not
-# call a model. Stored note columns and the #37 rules-note generator stay unused.
+# decision to the #35 decision API (POST /payouts/<id>/<action>) and reloads. Slice 5
+# reads each payout's stored #37 note (note_text, note_source, note_fallback) and
+# shows it on screen. It does not call a model or invent note sentences.
 """Disbursement Desk presentation for the approved #40 design. Never writes to the database."""
 from dashboard import money, text
 
@@ -54,32 +54,17 @@ def shown_flag(payout):
 
 
 # FEATURE 01d — Choose the note badge and helper line (slice 5, Q3 option A)
-# On-screen words are the approved #40 words: AI NOTE plus "Written by AI, may be
-# wrong", or RULES NOTE plus "From fixed rules". When the AI is off, slower than
-# about 3 seconds, or errors, an AI-written note is replaced by a rules note marked
-# "AI unavailable, rules fallback". The wording "AI-drafted, review required" is
-# never shown. Note sentences are the static synthetic lines from the approved #40
-# mock. This slice does not call a model, add an env var or key, or write note
-# columns. The #37 rules-note generator is not built here. The AI never decides
-# the flag; it only chooses the note label and text.
-AI_NOTE_BADGE = 'AI NOTE'
+# Stored #37 notes come from a template, so they are shown only as RULES NOTE
+# plus "From fixed rules". There is no AI model, so the AI NOTE spot uses the
+# approved #40 fallback wording: RULES NOTE plus "AI unavailable, rules fallback".
+# The body is the payout's stored note_text. "Written by AI, may be wrong" and
+# "AI-drafted, review required" are never shown on template text. This slice does
+# not call a model, add an env var or key, or write note columns. The AI never
+# decides the flag.
 RULES_NOTE_BADGE = 'RULES NOTE'
-AI_NOTE_HELPER = 'Written by AI, may be wrong'
 RULES_NOTE_HELPER = 'From fixed rules'
 FALLBACK_HELPER = 'AI unavailable, rules fallback'
 AI_TIMEOUT_SECONDS = 3
-# Verbatim from the approved #40 gist. Payouts the mock did not list use the same
-# clean-rules sentence as Cedar Cleaning Co.
-SYNTHETIC_NOTES = {
-    'PO-1042': ('ai', 'Unusually large for Acme Supplies. Their last 5 payouts averaged $790. Check the invoice before approving.'),
-    'PO-1043': ('rules', 'Rule BANK_CHANGED_7D: bank details changed within 7 days. Confirm the change with the payee by phone before sending.'),
-    'PO-1044': ('ai', 'Looks like a repeat of PO-1039 from yesterday: same payee, same amount. Hold unless a second invoice exists.'),
-    'PO-1040': ('rules', 'No rules triggered. Within normal range for this payee.'),
-    'PO-1041': ('ai', 'Routine payout. Matches the monthly pattern for this payee.'),
-    'PO-1038': ('rules', 'Rule MANUAL_HOLD: an operator held this payout. It will not send until approved.'),
-    'PO-1037': ('rules', 'Rule MANUAL_RETURN: returned to sender. No money moves.'),
-}
-CLEAN_RULES_NOTE = 'No rules triggered. Within normal range for this payee.'
 
 
 def ai_unavailable(ai_off=False, error=False, elapsed_seconds=None):
@@ -88,50 +73,23 @@ def ai_unavailable(ai_off=False, error=False, elapsed_seconds=None):
     return elapsed_seconds is not None and elapsed_seconds > AI_TIMEOUT_SECONDS
 
 
-def note_kind(payout):
-    listed = SYNTHETIC_NOTES.get(payout['payout_id'])
-    return listed[0] if listed else 'rules'
-
-
-def note_body(payout):
-    listed = SYNTHETIC_NOTES.get(payout['payout_id'])
-    return listed[1] if listed else CLEAN_RULES_NOTE
-
-
-def fallback_note_body(payout):
-    # Same rule as the approved #40 gist: a Needs-review flag that starts with
-    # Amount uses AMOUNT_OVER_3X_AVG; any other Needs-review flag uses
-    # DUPLICATE_24H; otherwise there were no rules.
-    if payout['status'] in ('FLAGGED', 'PENDING'):
-        flag = payout.get('flag_text') or ''
-        code = 'AMOUNT_OVER_3X_AVG' if flag.startswith('Amount') else 'DUPLICATE_24H'
-        return f'Rule {code}: {flag}. Review before sending.'
-    return 'No rules triggered.'
-
-
 def shown_note(payout, ai_off=False, error=False, elapsed_seconds=None):
     """Badge, helper line, body, kind and whether this is the fallback."""
-    kind = note_kind(payout)
-    if kind == 'ai' and ai_unavailable(ai_off, error, elapsed_seconds):
+    body = payout.get('note_text') or ''
+    # No model: never label stored text as Written by AI, even if note_source is ai.
+    if (payout.get('note_fallback') or payout.get('note_source') == 'ai'
+            or ai_unavailable(ai_off, error, elapsed_seconds)):
         return {
             'badge': RULES_NOTE_BADGE,
             'helper': FALLBACK_HELPER,
-            'body': fallback_note_body(payout),
+            'body': body,
             'kind': 'rules',
             'fallback': True,
-        }
-    if kind == 'ai':
-        return {
-            'badge': AI_NOTE_BADGE,
-            'helper': AI_NOTE_HELPER,
-            'body': note_body(payout),
-            'kind': 'ai',
-            'fallback': False,
         }
     return {
         'badge': RULES_NOTE_BADGE,
         'helper': RULES_NOTE_HELPER,
-        'body': note_body(payout),
+        'body': body,
         'kind': 'rules',
         'fallback': False,
     }
@@ -152,12 +110,13 @@ def _note_block(note, hidden=False):
 
 
 def _notes(payout):
-    # Default note is visible on first paint, so the panel never sits empty or
-    # keeps spinning. For a payout whose default note is AI-written, the fallback
-    # block is also in the page, hidden, and desk.js shows it when #ai=off.
+    # The stored rules note is visible on first paint, so the panel never sits
+    # empty or keeps spinning. The approved AI-unavailable fallback (same stored
+    # body, fallback helper) is also in the page, hidden, and desk.js shows it
+    # when #ai=off. No model is called.
     default = shown_note(payout)
     blocks = [_note_block(default)]
-    if default['kind'] == 'ai':
+    if not default['fallback']:
         blocks.append(_note_block(shown_note(payout, ai_off=True), hidden=True))
     return ''.join(blocks)
 
@@ -180,10 +139,10 @@ def _row(payout):
 
 # FEATURE 02b — Build one payout's detail, its note and its action buttons
 # Payee, amount, payout id, account, rail, status, the flag sentence when one exists,
-# and one note (slice 5). Sent and Returned payouts say they are final. Needs review
-# and Held payouts get Approve / Hold / Return (slice 3); Hold is disabled when the
-# payout is already Held. The panel carries the payee and amount so the dialog can
-# repeat them. Stored note columns are not read.
+# and one note (slice 5) from the stored #37 columns. Sent and Returned payouts say
+# they are final. Needs review and Held payouts get Approve / Hold / Return (slice 3);
+# Hold is disabled when the payout is already Held. The panel carries the payee and
+# amount so the dialog can repeat them.
 def _detail(payout):
     word, css = STATUS_WORDS[payout['status']]
     pid = text(payout['payout_id'])
