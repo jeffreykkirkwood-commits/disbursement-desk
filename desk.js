@@ -1,16 +1,19 @@
-// Disbursement Desk, slices 1 to 4 (#32): switch the queue between Exceptions and All,
-// open one payout's detail, Approve / Hold / Return it after a confirm dialog, and
-// Reset demo. The server already rendered every row, panel and the dialog words; this
-// shows or hides them. A confirmed action is sent to the #35 decision API
-// (POST /payouts/<id>/<action>) and the page reloads, so the list and detail show the
-// saved state. If it does not save, the dialog stays open and says so; nothing on
-// screen changes. Cancel changes nothing. Reset demo posts to /payouts/reset, which
-// restores this visitor's synthetic seed only, then reloads on Exceptions with no
-// payout open. If reset does not save, nothing on screen changes, and one approved
-// line appears next to Reset demo. There is no confirm step for Reset (the approved
-// mock and slice 4 spec have none). The API body is never shown.
-// URL hash for reproducible screenshots: #f=all opens on All, #id=PO-1042 opens a payout,
-// #id=PO-1043&confirm=hold also opens that dialog.
+// Disbursement Desk, slices 1 to 5 (#32): switch the queue between Exceptions and All,
+// open one payout's detail, Approve / Hold / Return it after a confirm dialog,
+// Reset demo, and show the stored rules note or the AI-unavailable fallback. The
+// server already rendered every row, panel, note and the dialog words; this shows
+// or hides them. A confirmed
+// action is sent to the #35 decision API (POST /payouts/<id>/<action>) and the page
+// reloads, so the list and detail show the saved state. If it does not save, the
+// dialog stays open and says so; nothing on screen changes. Cancel changes nothing.
+// Reset demo posts to /payouts/reset, which restores this visitor's synthetic seed
+// only, then reloads on Exceptions with no payout open. If reset does not save,
+// nothing on screen changes, and one approved line appears next to Reset demo.
+// There is no confirm step for Reset (the approved mock and slice 4 spec have none).
+// The API body is never shown.
+// URL hash for reproducible screenshots: #f=all opens on All, #id=PO-1042 opens a
+// payout, #id=PO-1043&confirm=hold also opens that dialog, #id=PO-1042&ai=off shows
+// the approved AI-unavailable fallback on the stored note.
 (function () {
   const chips = document.querySelectorAll('.chip[data-f]');
   const rows = document.querySelectorAll('#list li[data-ex]');
@@ -21,13 +24,24 @@
   let filter = 'exceptions';
   let selected = null;
   let pending = null; // {id, action, key} while the dialog is open
+  let aiOff = false;
 
   function writeHash() {
     const q = new URLSearchParams();
     if (filter === 'all') q.set('f', 'all');
     if (selected) q.set('id', selected);
+    if (aiOff) q.set('ai', 'off');
     const hash = q.toString();
     history.replaceState(null, '', hash ? '#' + hash : location.pathname + location.search);
+  }
+
+  // #ai=off shows the already-rendered fallback note and hides the stored rules
+  // note. No model is called; the fallback is already on the page, and its body
+  // is the same stored #37 text.
+  function showFallback(off) {
+    document.querySelectorAll('.note[data-note="ai"]').forEach(n => { n.hidden = off; });
+    document.querySelectorAll('.note[data-note="rules"]').forEach(n => { n.hidden = off; });
+    document.querySelectorAll('.note[data-note="fallback"]').forEach(n => { n.hidden = !off; });
   }
 
   function show(next) {
@@ -157,6 +171,8 @@
   });
 
   const q = new URLSearchParams(location.hash.slice(1));
+  aiOff = q.get('ai') === 'off';
+  showFallback(aiOff);
   if (q.get('f') === 'all') show('all');
   if (q.get('id')) open(q.get('id'), false);
   if (q.get('id') && q.get('confirm')) ask(q.get('confirm'));
