@@ -301,15 +301,17 @@ class HostedSeedTests(unittest.TestCase):
         self.assertEqual(payouts.get_payout(databases[1], 'PO-1044')['status'], 'FLAGGED')
         self.assertEqual(len(payouts.list_payouts(databases[1])), SEED_COUNT)
 
-    # FEATURE 12 — Scenario — nothing visible changes: no Desk screen or read route
-    # The only payout route is the POST-only decision API (#35); no page shows payouts.
+    # FEATURE 12 — Scenario — payouts show only on the read-only /desk page (#32 slice 1).
+    # The only payout API is the POST-only decision route (#35). The Payments Lab dashboard
+    # still lists no payouts.
     def test_no_new_routes(self):
         client = self.app.test_client()
         page = client.get('/dashboard', base_url='https://demo.example').get_data(as_text=True)
         self.assertNotIn('PO-10', page)
-        rules = [rule for rule in self.app.url_map.iter_rules() if re.search('payout|desk', str(rule))]
+        rules = [rule for rule in self.app.url_map.iter_rules() if re.search('payout', str(rule))]
         self.assertEqual([str(r) for r in rules], ['/payouts/<payout_id>/<any(approve, hold, return):action>'])
         self.assertEqual(rules[0].methods - {'OPTIONS'}, {'POST'})
+        self.assertEqual({str(r) for r in self.app.url_map.iter_rules() if 'desk' in str(r)}, {'/desk', '/desk/', '/desk.js'})
         self.assertEqual(client.get('/payouts', base_url='https://demo.example').status_code, 404)
 
 

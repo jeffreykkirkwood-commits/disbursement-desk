@@ -1,10 +1,11 @@
 # START HERE — Disbursement Desk data: the payout record, its allowed status changes,
 # the fixed set of fictional payouts every new demo starts with, and the operator's
-# approve / hold / return decisions. Behind the scenes only: no screen uses this yet (the
-# Desk screens come later, in issue #41).
+# approve / hold / return decisions. The /desk page (desk.py) reads the current queue
+# from here; no screen calls the decision functions yet.
 """Payout table, transitions, synthetic seed data (#34) and operator decisions (#35)."""
 import random
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from payments import APIError
@@ -278,7 +279,23 @@ def get_payout(database, payout_id):
     return _public(row)
 
 
-# FEATURE 12 — Name the three Desk decisions
+# FEATURE 12 — Read the Desk's current queue
+# Only the current-queue payouts (the CURRENT ids above), never the 30 history rows, which
+# exist only for usual-amount math (a history view was declined, #40). Ordered the way the
+# approved mock lists them: Needs review, then Held, then Returned, then Sent, each by id.
+CURRENT_IDS = tuple(row[0] for row in CURRENT)
+QUEUE_ORDER = {FLAGGED: 0, PENDING: 0, HELD: 1, RETURNED: 2, APPROVED: 3, PAID: 3}
+
+
+def current_queue(database):
+    with closing(sqlite3.connect(str(database))) as db:
+        rows = db.execute(f'SELECT {", ".join(COLUMNS)} FROM payouts WHERE payout_id IN '
+                          f'({", ".join("?" * len(CURRENT_IDS))})', CURRENT_IDS).fetchall()
+    queue = [_public(row) for row in rows]
+    return sorted(queue, key=lambda p: (QUEUE_ORDER[p['status']], p['payout_id']))
+
+
+# FEATURE 13 — Name the three Desk decisions
 # Each operator decision and where it leaves the payout. Approve goes straight on to PAID
 # ("Sent" on the Desk) through APPROVED inside one save, so no Desk action ever leaves a
 # payout showing PENDING or APPROVED (approved design, issue #35 comment). Only payouts
@@ -291,7 +308,7 @@ EVENT_COLUMNS = ('event_id', 'payout_id', 'action', 'from_status', 'to_status', 
                  'idempotency_key', 'at')
 
 
-# FEATURE 13 — Check the decision details
+# FEATURE 14 — Check the decision details
 # Reviewer name is required (it goes in the action log). A reason is optional: Jeffrey
 # approved confirm-only Hold and Return, so a blank or missing reason is saved as empty.
 # The idempotency key works like the payment routes' Idempotency-Key header.
@@ -310,7 +327,7 @@ def _clean(action, actor, reason, key):
     return actor.strip(), reason
 
 
-# FEATURE 14 — Record one decision, at most once per key
+# FEATURE 15 — Record one decision, at most once per key
 # One locked save: look up the key, check the move, update the payout and append one row
 # to the action log (reviewer, from/to status, reason, key, time). Repeating the same
 # decision with the same key changes nothing and returns the first result (200); the same
@@ -350,7 +367,7 @@ def decide(database, payout_id, action, actor, idempotency_key, reason=None, now
                          to_status=step, actor=actor, reason=reason, idempotency_key=idempotency_key, at=at)
 
 
-# FEATURE 15 — Read the action log
+# FEATURE 16 — Read the action log
 # Oldest first, for one payout or the whole demo. Read-only.
 def list_events(database, payout_id=None):
     query = f'SELECT {", ".join(EVENT_COLUMNS)} FROM payout_events'
