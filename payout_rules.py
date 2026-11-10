@@ -112,8 +112,16 @@ def create(database, payout_id, payee_name, payee_account, amount_cents, rail,
         raise APIError(422, 'Amount must be a positive number of cents.')
     if rail not in ('ACH', 'RTP'):
         raise APIError(422, 'Rail must be ACH or RTP.')
-    if bank_details_changed_at is not None and not isinstance(bank_details_changed_at, str):
-        raise APIError(422, 'Bank-details change time must be text if given.')
+    if bank_details_changed_at is not None:
+        if not isinstance(bank_details_changed_at, str):
+            raise APIError(422, 'Bank-details change time must be text if given.')
+        try:
+            parsed = datetime.fromisoformat(bank_details_changed_at)
+        except ValueError:
+            parsed = None
+        if parsed is None or parsed.tzinfo is None:
+            raise APIError(
+                422, 'Bank-details change time must be an ISO 8601 datetime with a timezone offset.')
     payout_id, payee_name = payout_id.strip(), payee_name.strip()
     payee_account = payee_account.strip()
     at = (now or datetime.now(timezone.utc)).isoformat()
