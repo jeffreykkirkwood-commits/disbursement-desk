@@ -145,6 +145,29 @@ class SimulatePayoutTests(unittest.TestCase):
             self.assertNotIn('/payouts/simulate', page)
             self.assertNotIn('simulate payout', page.lower())
 
+    # FEATURE 08 — Scenario — a bad bank-details time is 422, not 500, and saves nothing
+    def test_invalid_bank_details_changed_at_is_refused(self):
+        self.open_desk()
+        db = self.database()
+        before = payouts.list_payouts(db)
+        before_events = payouts.list_events(db)
+        for bad in ('nope', '2026-11-10', '2026-11-10T00:00:00'):
+            with self.subTest(value=bad):
+                reply = self.simulate(dict(NEW_PAYEE, payout_id='PO-3006',
+                                           bank_details_changed_at=bad))
+                self.assertEqual(reply.status_code, 422)
+                self.assertIn('timezone offset', reply.json['error'])
+                self.assertNotIn('idempotency', reply.json['error'].lower())
+        self.assertEqual(payouts.list_payouts(db), before)
+        self.assertEqual(payouts.list_events(db), before_events)
+        ok = self.simulate(dict(
+            NEW_PAYEE, payout_id='PO-3006',
+            bank_details_changed_at='2026-11-10T18:00:00+00:00'))
+        self.assertEqual(ok.status_code, 201)
+        self.assertEqual(ok.json['payout']['bank_details_changed_at'],
+                         '2026-11-10T18:00:00+00:00')
+        self.assertEqual(ok.json['payout']['flag_code'], 'NEW_PAYEE_OVER_1000')
+
 
 if __name__ == '__main__':
     unittest.main()
