@@ -301,13 +301,15 @@ class HostedSeedTests(unittest.TestCase):
         self.assertEqual(payouts.get_payout(databases[1], 'PO-1044')['status'], 'FLAGGED')
         self.assertEqual(len(payouts.list_payouts(databases[1])), SEED_COUNT)
 
-    # FEATURE 12 — Scenario — nothing visible changes: no payout route, no Desk text
+    # FEATURE 12 — Scenario — no payout API route; payouts show only on the read-only /desk page
+    # (#32 slice 1). The Payments Lab dashboard still lists no payouts.
     def test_no_new_routes(self):
         client = self.app.test_client()
         page = client.get('/dashboard', base_url='https://demo.example').get_data(as_text=True)
         self.assertNotIn('PO-10', page)
         rules = {str(rule) for rule in self.app.url_map.iter_rules()}
-        self.assertFalse([r for r in rules if re.search('payout|desk', r)], rules)
+        self.assertFalse([r for r in rules if re.search('payout', r)], rules)
+        self.assertEqual({r for r in rules if re.search('desk', r)}, {'/desk', '/desk/', '/desk.js'})
         self.assertEqual(client.get('/payouts', base_url='https://demo.example').status_code, 404)
 
 
