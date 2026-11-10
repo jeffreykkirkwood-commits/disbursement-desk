@@ -193,27 +193,21 @@ class DeskDetailTests(DeskBase):
             self.assertIn('<p class="done">This payout is final. No actions available.</p>', panel)
             self.assertNotIn('class="btn', panel)
 
-    # Scenario — no note is invented: without a stored rules note (#37) there is no note block
+    # Scenario — no note block on any payout (notes come after #37)
     def test_no_note_until_stored(self):
         for panel in self.panels().values():
             for word in ('class="note"', 'RULES NOTE', 'AI NOTE', 'Written by AI', 'From fixed rules'):
                 self.assertNotIn(word, panel)
 
-    # Scenario — a stored rules note shows as RULES NOTE / From fixed rules; AI or fallback notes do not (slice 5)
-    def test_stored_rules_note_only(self):
+    # Scenario — no note block even when a note is stored: notes come after #37 in their own PR
+    def test_stored_note_is_not_rendered(self):
         self.get()
         with closing(sqlite3.connect(str(self.database()))) as db, db:
-            db.execute("UPDATE payouts SET note_text = 'Confirm the <new> bank details.', note_source = 'rules', "
-                       "note_fallback = 0 WHERE payout_id = 'PO-1043'")
-            db.execute("UPDATE payouts SET note_text = 'AI text', note_source = 'ai', note_fallback = 0 "
-                       "WHERE payout_id = 'PO-1042'")
-            db.execute("UPDATE payouts SET note_text = 'Fallback text', note_source = 'rules', note_fallback = 1 "
-                       "WHERE payout_id = 'PO-1044'")
-        panels = self.panels()
-        self.assertIn('<div class="note"><div class="note-h"><span class="badge b-rules">RULES NOTE</span>'
-                      'From fixed rules</div><p>Confirm the &lt;new&gt; bank details.</p></div>', panels['PO-1043'])
-        self.assertNotIn('class="note"', panels['PO-1042'])
-        self.assertNotIn('class="note"', panels['PO-1044'])
+            db.execute("UPDATE payouts SET note_text = 'Stored note', note_source = 'rules', note_fallback = 0 "
+                       "WHERE payout_id = 'PO-1043'")
+        html = self.get().get_data(as_text=True)
+        self.assertNotIn('Stored note', html)
+        self.assertNotIn('class="note"', html)
 
     # Scenario — the load-error page has no detail panels
     def test_load_error_has_no_panels(self):
