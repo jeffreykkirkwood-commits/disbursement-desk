@@ -8,10 +8,11 @@ import sqlite3
 import time
 from pathlib import Path
 from uuid import uuid4
-from flask import Flask, Response, g, jsonify, redirect, request
+from flask import Flask, Response, g, jsonify, redirect, request, stream_with_context
 from werkzeug.exceptions import HTTPException
 from payments import APIError, Payments
 import payouts
+import payout_events
 from dashboard import render_dashboard
 from desk import render_desk
 from demo_sessions import DemoStore, DemoCapacityError
@@ -24,10 +25,12 @@ from log_view import render_logs
 # starting payouts (payouts.py) to that same file the first time it opens. Each visitor
 # gets their own copy. The /desk page (FEATURE 19) reads them. The decision routes
 # (FEATURE 21) can approve, hold or return a payout. Reset demo (FEATURE 22) restores
-# this visitor's synthetic seed only.
+# this visitor's synthetic seed only. The payout stream (FEATURE 23) pushes created
+# and status-changed events for this visitor; the Desk does not subscribe yet.
 def payments_with_payouts(database, **options):
     ledger = Payments(database, **options)
     payouts.ensure_seeded(database)
+    payout_events.sync(database)
     return ledger
 
 
@@ -280,11 +283,13 @@ def create_app(directory=None, public_origin=None, payments=None):
         if not isinstance(body, dict):
             raise APIError(422, 'Send a JSON object with a reviewer name.')
         database = g.payments.database
+        payout_events.sync(database)
         status, decision = payouts.decide(database, payout_id, action, body.get('reviewer'),
                                           request.headers.get('Idempotency-Key'), body.get('reason'))
         event('payout_decision_replayed' if status == 200 else 'payout_decision_saved',
               payout_id=payout_id, action=action, from_status=decision['from_status'],
               to_status=decision['to_status'])
+        payout_events.sync(database)
         return jsonify(payout=payouts.get_payout(database, payout_id), decision=decision), status
 
     # FEATURE 22 — Reset this visitor's Desk demo to the starting set (#32 slice 4)
@@ -296,6 +301,21 @@ def create_app(directory=None, public_origin=None, payments=None):
         database = g.payments.database
         restored = payouts.reset(database)
         event('payouts_reset', restored=restored)
+        payout_events.after_reset(database)
         return jsonify(restored=restored)
+
+    # FEATURE 23 — Stream payout created and status-changed events (#43)
+    # Server-sent events for this visitor's demo only. A reconnect sends the
+    # Last-Event-ID header (or lastEventId query) and resumes after that id.
+    # The connection closes after a short hold so the one Gunicorn worker's
+    # four threads stay available; EventSource reconnects. The Desk page does
+    # not subscribe yet, so nothing on screen changes.
+    @app.get('/payouts/stream')
+    def payout_stream():
+        last_id = payout_events.parse_last_id(
+            request.headers.get('Last-Event-ID') or request.args.get('lastEventId'))
+        return Response(stream_with_context(payout_events.stream(g.payments.database, last_id)),
+                        mimetype='text/event-stream',
+                        headers={'X-Accel-Buffering': 'no', 'Connection': 'keep-alive'})
 
     return app
