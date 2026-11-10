@@ -239,7 +239,8 @@ def ensure_seeded(database):
 
 # FEATURE 10 — Put this one demo back to the starting set
 # Clears this database's payouts and action log and reseeds them. It only touches the
-# file it is given (one visitor's demo), never anyone else's. No route calls it yet.
+# file it is given (one visitor's demo), never anyone else's. The Desk footer calls
+# this through POST /payouts/reset (#32 slice 4).
 def reset(database):
     with sqlite3.connect(str(database), timeout=10) as db:
         db.execute('BEGIN IMMEDIATE')
