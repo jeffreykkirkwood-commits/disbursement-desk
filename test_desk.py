@@ -1,7 +1,8 @@
-# Automated checks for the Disbursement Desk (/desk, issue #32 slices 1 and 2): what a
+# Automated checks for the Disbursement Desk (/desk, issue #32 slices 1 to 4): what a
 # viewer sees first, the All filter without history rows, the empty and load-error
 # states, the header links both ways, each payout's detail, the Approve / Hold / Return
-# buttons and confirm dialog words (slice 3), and that opening the page writes nothing.
+# buttons and confirm dialog words (slice 3), Reset demo (slice 4), and that opening
+# the page writes nothing.
 """Exercise /desk through the hosted app with temporary fictional demos."""
 import json
 import re
@@ -350,6 +351,126 @@ class DeskActionTests(DeskBase):
         self.assertIn('Exceptions <b>1</b>', html)
         for code in ('APPROVED', 'PENDING'):
             self.assertNotIn(code, html)
+
+
+class DeskResetTests(DeskBase):
+    def decide(self, payout_id, action, key='k1', client=None):
+        client = client or self.client
+        page = client.get('/desk', base_url='https://demo.example')
+        demo = page.headers['X-Demo-ID']
+        return client.post(f'/payouts/{payout_id}/{action}', json={'reviewer': 'Desk operator'},
+                           base_url='https://demo.example',
+                           headers={'Idempotency-Key': key, 'Origin': 'https://demo.example',
+                                    'X-Demo-ID': demo})
+
+    def reset(self, client=None, **headers):
+        client = client or self.client
+        page = client.get('/desk', base_url='https://demo.example')
+        demo = page.headers.get('X-Demo-ID')
+        extra = {'Origin': 'https://demo.example', 'X-Demo-ID': demo}
+        extra.update(headers)
+        return client.post('/payouts/reset', base_url='https://demo.example', headers=extra)
+
+    # Scenario — after a Hold, this same browser still shows Held on reload
+    def test_hold_survives_reload(self):
+        self.assertEqual(self.decide('PO-1042', 'hold').status_code, 201)
+        html = self.get().get_data(as_text=True)
+        self.assertIn('PO-1042 · Held by operator', html)
+        self.assertIn('Exceptions <b>4</b>', html)
+        self.assertIn('<span class="pill s-held">Held</span>', dict(PANEL.findall(html))['PO-1042'])
+
+    # Scenario — Reset demo restores the starting 10 current-queue payouts and 4 exceptions
+    def test_reset_restores_starting_set(self):
+        self.assertEqual(self.decide('PO-1042', 'hold').status_code, 201)
+        self.assertEqual(self.decide('PO-1043', 'return', 'k2').status_code, 201)
+        self.assertEqual(self.decide('PO-1044', 'approve', 'k3').status_code, 201)
+        before = self.get().get_data(as_text=True)
+        self.assertIn('Exceptions <b>2</b>', before)
+        self.assertIn('Held by operator', before)
+        reply = self.reset()
+        self.assertEqual(reply.status_code, 200)
+        self.assertEqual(reply.json['restored'], 40)
+        html = self.get().get_data(as_text=True)
+        self.assertIn('Exceptions <b>4</b>', html)
+        self.assertIn('All <b>10</b>', html)
+        rows = self.rows(html)
+        visible = [r for r in rows if not r['hidden']]
+        self.assertEqual([r['sub'].split(' · ')[0] for r in visible], EXCEPTION_IDS)
+        self.assertEqual([r['word'] for r in visible], ['Needs review'] * 3 + ['Held'])
+        self.assertIn('PO-1042 · Amount is 6× this payee’s usual payout ($790 avg)', html)
+        self.assertIn('PO-1043 · Payee bank details changed 2 days ago', html)
+        self.assertIn('PO-1044 · Same payee and amount as yesterday (possible duplicate)', html)
+        self.assertIn('PO-1038 · Amount is 4× this payee’s usual payout ($520 avg)', html)
+        self.assertNotIn('Held by operator', html)
+        self.assertNotIn('Returned by operator', html)
+        self.assertIn('<aside id="detail" class="detail" aria-label="Payout detail" hidden>', html)
+        self.assertIn('Your changes stay in this browser only.', html)
+        self.assertIn('>Reset demo</button>', html)
+        self.assertIn('Example data · fake money', html)
+        with closing(sqlite3.connect(str(self.database()))) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM payout_events').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM payouts').fetchone()[0], 40)
+
+    # Scenario — a second browser still sees the original seed; Reset demo affects only this viewer
+    def test_reset_only_this_viewer(self):
+        first, second = self.app.test_client(), self.app.test_client()
+        self.assertEqual(self.decide('PO-1042', 'hold', client=first).status_code, 201)
+        first_html = first.get('/desk', base_url='https://demo.example').get_data(as_text=True)
+        second_html = second.get('/desk', base_url='https://demo.example').get_data(as_text=True)
+        self.assertIn('PO-1042 · Held by operator', first_html)
+        self.assertIn('PO-1042 · Amount is 6× this payee’s usual payout ($790 avg)', second_html)
+        self.assertNotIn('Held by operator', second_html)
+        self.assertIn('Exceptions <b>4</b>', second_html)
+        self.assertEqual(self.reset(client=first).status_code, 200)
+        first_after = first.get('/desk', base_url='https://demo.example').get_data(as_text=True)
+        second_after = second.get('/desk', base_url='https://demo.example').get_data(as_text=True)
+        self.assertIn('PO-1042 · Amount is 6× this payee’s usual payout ($790 avg)', first_after)
+        self.assertNotIn('Held by operator', first_after)
+        self.assertEqual(second_after, second_html)
+        databases = sorted(Path(self.temp.name).rglob('payments.sqlite3'))
+        self.assertEqual(len(databases), 2)
+        for db in databases:
+            self.assertEqual(payouts.get_payout(db, 'PO-1042')['status'], 'FLAGGED')
+            self.assertEqual(len(payouts.list_payouts(db)), 40)
+
+    # Scenario — Reset demo cannot run without this viewer's demo, or from another site
+    def test_reset_needs_own_session(self):
+        self.assertEqual(self.decide('PO-1042', 'hold').status_code, 201)
+        stranger = self.app.test_client()
+        refused = stranger.post('/payouts/reset', base_url='https://demo.example',
+                                headers={'Origin': 'https://demo.example'})
+        self.assertEqual(refused.status_code, 409)
+        foreign = self.client.post('/payouts/reset', base_url='https://demo.example',
+                                   headers={'Origin': 'https://evil.example',
+                                            'X-Demo-ID': self.get().headers['X-Demo-ID']})
+        self.assertEqual(foreign.status_code, 403)
+        html = self.get().get_data(as_text=True)
+        self.assertIn('PO-1042 · Held by operator', html)
+
+    # Scenario — a failed reset changes nothing and does not show internal details
+    def test_failed_reset_changes_nothing(self):
+        self.assertEqual(self.decide('PO-1042', 'hold').status_code, 201)
+        before = json.dumps(payouts.list_payouts(self.database()), sort_keys=True)
+        with mock.patch('payouts.reset', side_effect=sqlite3.OperationalError('disk I/O error')):
+            reply = self.reset()
+        self.assertEqual(reply.status_code, 500)
+        body = reply.get_data(as_text=True)
+        self.assertNotIn('disk I/O', body)
+        self.assertEqual(json.dumps(payouts.list_payouts(self.database()), sort_keys=True), before)
+        html = self.get().get_data(as_text=True)
+        self.assertIn('PO-1042 · Held by operator', html)
+
+    # Scenario — the page script posts Reset demo and then drops the hash, so detail closes
+    def test_script_wires_reset(self):
+        script = self.get('/desk.js').get_data(as_text=True)
+        self.assertIn("fetch('/payouts/reset'", script)
+        self.assertIn("'X-Demo-ID': demo ? demo.content : ''", script)
+        self.assertIn('location.replace(location.pathname + location.search)', script)
+        self.assertIn("closest('#reset')", script)
+        # No confirm dialog or new footer words for Reset; notes stay out of this slice.
+        self.assertNotIn('confirm=reset', script)
+        self.assertNotIn('RULES NOTE', script)
+        self.assertNotIn('AI NOTE', script)
 
 
 class CurrentQueueTests(unittest.TestCase):
