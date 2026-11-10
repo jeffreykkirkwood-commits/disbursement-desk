@@ -1,9 +1,10 @@
 # START HERE — Disbursement Desk data: the payout record, its allowed status changes and
-# the fixed set of fictional payouts every new demo starts with. Behind the scenes only:
-# no web route reads this yet (the Desk screens come later, in issue #41).
+# the fixed set of fictional payouts every new demo starts with. The /desk page (desk.py)
+# reads the current queue from here; nothing on the web changes payouts yet.
 """Payout table, status transitions and deterministic synthetic seed data (issue #34)."""
 import random
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from payments import APIError
@@ -275,3 +276,19 @@ def get_payout(database, payout_id):
     if not row:
         raise APIError(404, 'Payout not found.')
     return _public(row)
+
+
+# FEATURE 12 — Read the Desk's current queue
+# Only the current-queue payouts (the CURRENT ids above), never the 30 history rows, which
+# exist only for usual-amount math (a history view was declined, #40). Ordered the way the
+# approved mock lists them: Needs review, then Held, then Returned, then Sent, each by id.
+CURRENT_IDS = tuple(row[0] for row in CURRENT)
+QUEUE_ORDER = {FLAGGED: 0, PENDING: 0, HELD: 1, RETURNED: 2, APPROVED: 3, PAID: 3}
+
+
+def current_queue(database):
+    with closing(sqlite3.connect(str(database))) as db:
+        rows = db.execute(f'SELECT {", ".join(COLUMNS)} FROM payouts WHERE payout_id IN '
+                          f'({", ".join("?" * len(CURRENT_IDS))})', CURRENT_IDS).fetchall()
+    queue = [_public(row) for row in rows]
+    return sorted(queue, key=lambda p: (QUEUE_ORDER[p['status']], p['payout_id']))
