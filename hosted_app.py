@@ -4,6 +4,7 @@
 import atexit
 import logging
 import os
+import sqlite3
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -12,6 +13,7 @@ from werkzeug.exceptions import HTTPException
 from payments import APIError, Payments
 import payouts
 from dashboard import render_dashboard
+from desk import render_desk
 from demo_sessions import DemoStore, DemoCapacityError
 from event_log import event, request_context, make_logger
 from log_view import render_logs
@@ -20,7 +22,8 @@ from log_view import render_logs
 # FEATURE 00 — Open one visitor demo with its Desk payouts
 # Open the visitor's payments database, then add the payout tables and the fictional
 # starting payouts (payouts.py) to that same file the first time it opens. Each visitor
-# gets their own copy. Only the decision routes below touch payouts; no screen shows them.
+# gets their own copy. The /desk page (FEATURE 19) reads them. The decision routes
+# (FEATURE 21) can approve, hold or return a payout; no screen calls those routes yet.
 def payments_with_payouts(database, **options):
     ledger = Payments(database, **options)
     payouts.ensure_seeded(database)
@@ -75,7 +78,7 @@ def create_app(directory=None, public_origin=None, payments=None):
               endpoint=str(request.url_rule) if request.url_rule else '(unknown endpoint)')
         g.cookie = g.demo_id = None
         # Health probes, assets and unknown routes must not allocate databases.
-        if request.endpoint in (None, 'health', 'script', 'home'):
+        if request.endpoint in (None, 'health', 'script', 'desk_script', 'home'):
             return
         # Fixed storage is a test fixture only; normal local and hosted users use cookies.
         if payments:
@@ -178,7 +181,8 @@ def create_app(directory=None, public_origin=None, payments=None):
     # payment.
     @app.get('/health')
     def health():
-        return jsonify(status='ok', mode='fictional payments only')
+        return jsonify(status='ok', mode='fictional payments only',
+                       commit=os.environ.get('RENDER_GIT_COMMIT') or None)
 
     # FEATURE 11 — Deliver the browser form logic
     # Serve this one named JavaScript file instead of exposing an entire directory of
@@ -242,7 +246,27 @@ def create_app(directory=None, public_origin=None, payments=None):
     def process_payment(payment_id):
         return jsonify(g.payments.process(payment_id))
 
-    # FEATURE 19 — Approve, hold or return one payout (Desk back end, issue #35)
+    # FEATURE 19 — Open the Disbursement Desk (read-only queue, #32 slice 1)
+    # Read this visitor's current payouts and render them with the page, so the list is
+    # the first paint (no loading message). If they cannot be read, the page still opens
+    # and shows the approved load-error sentence (503). Nothing is written.
+    @app.get('/desk')
+    @app.get('/desk/')
+    def desk():
+        try:
+            queue = payouts.current_queue(g.payments.database)
+        except (sqlite3.Error, OSError, KeyError) as error:  # unreadable or unexpected data
+            event('desk_load_failed', level=logging.ERROR, error_type=type(error).__name__)
+            return render_desk(None, g.demo_id or 'local-test'), 503
+        return render_desk(queue, g.demo_id or 'local-test')
+
+    # FEATURE 20 — Deliver the Desk filter script
+    # Serve this one named JavaScript file (Exceptions / All switch) without a demo database.
+    @app.get('/desk.js')
+    def desk_script():
+        return Response(Path(__file__).with_name('desk.js').read_text(), mimetype='text/javascript')
+
+    # FEATURE 21 — Approve, hold or return one payout (Desk back end, issue #35)
     # JSON body: reviewer (required) and reason (optional; Hold and Return are
     # confirm-only). Needs an Idempotency-Key header. Works only on this visitor's own
     # demo database. 201 = decision recorded; 200 = same key seen before, nothing changed;
