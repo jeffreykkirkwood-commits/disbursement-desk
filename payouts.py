@@ -1,8 +1,8 @@
 # START HERE — Disbursement Desk data: the payout record, its allowed status changes,
-# the fixed set of fictional payouts every new demo starts with, and the operator's
-# approve / hold / return decisions. The /desk page (desk.py) reads the current queue
-# from here; no screen calls the decision functions yet.
-"""Payout table, transitions, synthetic seed data (#34), operator decisions (#35) and stored rules notes (#37)."""
+# the fixed set of fictional payouts every new demo starts with, the operator's
+# approve / hold / return decisions, and the hook that runs automation after a seed.
+# The /desk page (desk.py) reads the current queue from here.
+"""Payout table, transitions, synthetic seed data (#34), operator decisions (#35), stored rules notes (#37) and automation hook (#44)."""
 import random
 import sqlite3
 from contextlib import closing
@@ -55,7 +55,8 @@ def check_transition(current, target):
 # the payee's usual payout, bank details changed within 7 days, and the same payee and
 # amount within 24 hours. The seed works out each payout's flag from its own data
 # (payee_usual_cents, bank_details_changed_at and earlier payouts) with explain_flag()
-# below, and stores the rule code and sentence. The live rules engine is not built here.
+# below, and stores the rule code and sentence. The live automation path (issue #44,
+# payout_rules.py) uses the same explain_flag() when a payout is created or the seed loads.
 AMOUNT_OVER_3X_AVG = 'AMOUNT_OVER_3X_AVG'
 BANK_CHANGED_7D = 'BANK_CHANGED_7D'
 DUPLICATE_24H = 'DUPLICATE_24H'
@@ -273,6 +274,9 @@ def _insert_seed(db):
     rows = seed_rows()
     db.executemany(f'INSERT INTO payouts ({", ".join(COLUMNS)}) VALUES ({", ".join("?" * len(COLUMNS))})',
                    [tuple(row[c] for c in COLUMNS) for row in rows])
+    # The starting set has no PENDING rows, so automation here changes nothing.
+    import payout_rules
+    payout_rules.route_pending(db)
     return len(rows)
 
 
