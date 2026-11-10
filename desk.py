@@ -1,7 +1,9 @@
 # START HERE — Builds the Disbursement Desk page (HTML): the payout queue, the payout
-# detail and the Approve / Hold / Return confirm dialog (issue #32 slices 1 to 3).
-# This file never changes the database: desk.js sends a confirmed decision to the #35
-# decision API (POST /payouts/<id>/<action>) and reloads. No notes (after #37) yet.
+# detail, the Approve / Hold / Return confirm dialog and the note badges (issue #32
+# slices 1 to 5). This file never changes the database: desk.js sends a confirmed
+# decision to the #35 decision API (POST /payouts/<id>/<action>) and reloads. Notes
+# on screen are static and synthetic (slice 5). They are not stored, and they do not
+# call a model. Stored note columns and the #37 rules-note generator stay unused.
 """Disbursement Desk presentation for the approved #40 design. Never writes to the database."""
 from dashboard import money, text
 
@@ -51,6 +53,115 @@ def shown_flag(payout):
     return OPERATOR_FLAGS.get(payout['status'], payout['flag_text'])
 
 
+# FEATURE 01d — Choose the note badge and helper line (slice 5, Q3 option A)
+# On-screen words are the approved #40 words: AI NOTE plus "Written by AI, may be
+# wrong", or RULES NOTE plus "From fixed rules". When the AI is off, slower than
+# about 3 seconds, or errors, an AI-written note is replaced by a rules note marked
+# "AI unavailable, rules fallback". The wording "AI-drafted, review required" is
+# never shown. Note sentences are the static synthetic lines from the approved #40
+# mock. This slice does not call a model, add an env var or key, or write note
+# columns. The #37 rules-note generator is not built here. The AI never decides
+# the flag; it only chooses the note label and text.
+AI_NOTE_BADGE = 'AI NOTE'
+RULES_NOTE_BADGE = 'RULES NOTE'
+AI_NOTE_HELPER = 'Written by AI, may be wrong'
+RULES_NOTE_HELPER = 'From fixed rules'
+FALLBACK_HELPER = 'AI unavailable, rules fallback'
+AI_TIMEOUT_SECONDS = 3
+# Verbatim from the approved #40 gist. Payouts the mock did not list use the same
+# clean-rules sentence as Cedar Cleaning Co.
+SYNTHETIC_NOTES = {
+    'PO-1042': ('ai', 'Unusually large for Acme Supplies. Their last 5 payouts averaged $790. Check the invoice before approving.'),
+    'PO-1043': ('rules', 'Rule BANK_CHANGED_7D: bank details changed within 7 days. Confirm the change with the payee by phone before sending.'),
+    'PO-1044': ('ai', 'Looks like a repeat of PO-1039 from yesterday: same payee, same amount. Hold unless a second invoice exists.'),
+    'PO-1040': ('rules', 'No rules triggered. Within normal range for this payee.'),
+    'PO-1041': ('ai', 'Routine payout. Matches the monthly pattern for this payee.'),
+    'PO-1038': ('rules', 'Rule MANUAL_HOLD: an operator held this payout. It will not send until approved.'),
+    'PO-1037': ('rules', 'Rule MANUAL_RETURN: returned to sender. No money moves.'),
+}
+CLEAN_RULES_NOTE = 'No rules triggered. Within normal range for this payee.'
+
+
+def ai_unavailable(ai_off=False, error=False, elapsed_seconds=None):
+    if ai_off or error:
+        return True
+    return elapsed_seconds is not None and elapsed_seconds > AI_TIMEOUT_SECONDS
+
+
+def note_kind(payout):
+    listed = SYNTHETIC_NOTES.get(payout['payout_id'])
+    return listed[0] if listed else 'rules'
+
+
+def note_body(payout):
+    listed = SYNTHETIC_NOTES.get(payout['payout_id'])
+    return listed[1] if listed else CLEAN_RULES_NOTE
+
+
+def fallback_note_body(payout):
+    # Same rule as the approved #40 gist: a Needs-review flag that starts with
+    # Amount uses AMOUNT_OVER_3X_AVG; any other Needs-review flag uses
+    # DUPLICATE_24H; otherwise there were no rules.
+    if payout['status'] in ('FLAGGED', 'PENDING'):
+        flag = payout.get('flag_text') or ''
+        code = 'AMOUNT_OVER_3X_AVG' if flag.startswith('Amount') else 'DUPLICATE_24H'
+        return f'Rule {code}: {flag}. Review before sending.'
+    return 'No rules triggered.'
+
+
+def shown_note(payout, ai_off=False, error=False, elapsed_seconds=None):
+    """Badge, helper line, body, kind and whether this is the fallback."""
+    kind = note_kind(payout)
+    if kind == 'ai' and ai_unavailable(ai_off, error, elapsed_seconds):
+        return {
+            'badge': RULES_NOTE_BADGE,
+            'helper': FALLBACK_HELPER,
+            'body': fallback_note_body(payout),
+            'kind': 'rules',
+            'fallback': True,
+        }
+    if kind == 'ai':
+        return {
+            'badge': AI_NOTE_BADGE,
+            'helper': AI_NOTE_HELPER,
+            'body': note_body(payout),
+            'kind': 'ai',
+            'fallback': False,
+        }
+    return {
+        'badge': RULES_NOTE_BADGE,
+        'helper': RULES_NOTE_HELPER,
+        'body': note_body(payout),
+        'kind': 'rules',
+        'fallback': False,
+    }
+
+
+def _note_block(note, hidden=False):
+    css = 'b-ai' if note['kind'] == 'ai' else 'b-rules'
+    if note['fallback']:
+        which = 'fallback'
+    elif note['kind'] == 'ai':
+        which = 'ai'
+    else:
+        which = 'rules'
+    hide = ' hidden' if hidden else ''
+    return (f'<div class="note" data-note="{which}"{hide}><div class="note-h">'
+            f'<span class="badge {css}">{note["badge"]}</span>{text(note["helper"])}</div>'
+            f'<p>{text(note["body"])}</p></div>')
+
+
+def _notes(payout):
+    # Default note is visible on first paint, so the panel never sits empty or
+    # keeps spinning. For a payout whose default note is AI-written, the fallback
+    # block is also in the page, hidden, and desk.js shows it when #ai=off.
+    default = shown_note(payout)
+    blocks = [_note_block(default)]
+    if default['kind'] == 'ai':
+        blocks.append(_note_block(shown_note(payout, ai_off=True), hidden=True))
+    return ''.join(blocks)
+
+
 # FEATURE 02 — Build one queue row
 # Payee, amount like $4,850.00, the payout id plus why it was flagged (or the rail when
 # nothing fired) and the status pill. Each row is a button that opens its detail (slice 2).
@@ -67,12 +178,12 @@ def _row(payout):
             f'<span class="pill {css}">{word}</span></button></li>')
 
 
-# FEATURE 02b — Build one payout's detail and its action buttons (slices 2 and 3)
-# Payee, amount, payout id, account, rail, status and the flag sentence when one exists.
-# No note block: notes come in their own PR after issue #37 stores them. Sent and Returned
-# payouts say they are final. Needs review and Held payouts get Approve / Hold / Return
-# (slice 3); Hold is disabled when the payout is already Held. The panel carries the
-# payee and amount so the dialog can repeat them.
+# FEATURE 02b — Build one payout's detail, its note and its action buttons
+# Payee, amount, payout id, account, rail, status, the flag sentence when one exists,
+# and one note (slice 5). Sent and Returned payouts say they are final. Needs review
+# and Held payouts get Approve / Hold / Return (slice 3); Hold is disabled when the
+# payout is already Held. The panel carries the payee and amount so the dialog can
+# repeat them. Stored note columns are not read.
 def _detail(payout):
     word, css = STATUS_WORDS[payout['status']]
     pid = text(payout['payout_id'])
@@ -87,6 +198,7 @@ def _detail(payout):
              f'<dt>Rail</dt><dd>{text(payout["rail"])} · {text(payout["currency"])}</dd></dl>']
     if flag:
         parts.append(f'<div class="flag"><strong>Why flagged:</strong> {text(flag)}</div>')
+    parts.append(_notes(payout))
     if payout['status'] in FINAL_STATUSES:
         parts.append(f'<p class="done">{FINAL_MESSAGE}</p>')
     else:
@@ -160,6 +272,12 @@ h1{font-size:26px;margin:0;letter-spacing:-.5px}
 .big{font-size:36px;font-weight:700;letter-spacing:-1px;margin:10px 0 0;font-variant-numeric:tabular-nums}
 dl{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:14px 0;font-size:15px}dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}
 .flag{background:var(--amber-bg);color:var(--amber);border-radius:8px;padding:10px 12px;font-size:15px;margin:12px 0}
+.note{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:12px 0}
+.note[hidden]{display:none}
+.note-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-weight:700;font-size:14px;margin-bottom:4px}
+.badge{font-size:12px;font-weight:800;padding:2px 8px;border-radius:5px;letter-spacing:.04em}
+.b-ai{background:#ece8fb;color:#4a2f99}.b-rules{background:#e9ece9;color:#2f3d37}
+.note p{margin:4px 0;font-size:15px}
 .done{font-size:15px;color:var(--muted);margin-top:14px}
 .actions{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:16px}
 .btn{min-height:48px;min-width:44px;border-radius:9px;font-weight:700;border:2px solid var(--ink);background:#fff;color:var(--ink);padding:0 12px}

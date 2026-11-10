@@ -1,8 +1,8 @@
-# Automated checks for the Disbursement Desk (/desk, issue #32 slices 1 to 4): what a
+# Automated checks for the Disbursement Desk (/desk, issue #32 slices 1 to 5): what a
 # viewer sees first, the All filter without history rows, the empty and load-error
 # states, the header links both ways, each payout's detail, the Approve / Hold / Return
-# buttons and confirm dialog words (slice 3), Reset demo (slice 4), and that opening
-# the page writes nothing.
+# buttons and confirm dialog words (slice 3), Reset demo (slice 4), the AI and rules
+# note labels (slice 5, Q3 option A), and that opening the page writes nothing.
 """Exercise /desk through the hosted app with temporary fictional demos."""
 import json
 import re
@@ -13,6 +13,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest import mock
 from hosted_app import create_app
+import desk
 import payouts
 
 EXCEPTION_IDS = ['PO-1042', 'PO-1043', 'PO-1044', 'PO-1038']
@@ -131,8 +132,12 @@ class DeskTests(DeskBase):
         with closing(sqlite3.connect(str(self.database()))) as db, db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM payout_events').fetchone()[0], 0)
         html = self.get().get_data(as_text=True)
-        for word in ('AI NOTE', 'RULES NOTE', '<form'):
-            self.assertNotIn(word, html)
+        self.assertNotIn('<form', html)
+        with closing(sqlite3.connect(str(self.database()))) as db:
+            self.assertEqual(
+                db.execute('SELECT COUNT(*) FROM payouts WHERE note_text IS NOT NULL '
+                           'OR note_source IS NOT NULL OR note_fallback IS NOT NULL').fetchone()[0],
+                0)
 
     # Scenario — the filter script is served without starting a demo
     def test_script_does_not_create_demo(self):
@@ -194,13 +199,7 @@ class DeskDetailTests(DeskBase):
             self.assertIn('<p class="done">This payout is final. No actions available.</p>', panel)
             self.assertNotIn('class="btn', panel)
 
-    # Scenario — no note block on any payout (notes come after #37)
-    def test_no_note_until_stored(self):
-        for panel in self.panels().values():
-            for word in ('class="note"', 'RULES NOTE', 'AI NOTE', 'Written by AI', 'From fixed rules'):
-                self.assertNotIn(word, panel)
-
-    # Scenario — no note block even when a note is stored: notes come after #37 in their own PR
+    # Scenario — a stored #37/#38 note column is not what the Desk shows (slice 5 is synthetic)
     def test_stored_note_is_not_rendered(self):
         self.get()
         with closing(sqlite3.connect(str(self.database()))) as db, db:
@@ -208,7 +207,10 @@ class DeskDetailTests(DeskBase):
                        "WHERE payout_id = 'PO-1043'")
         html = self.get().get_data(as_text=True)
         self.assertNotIn('Stored note', html)
-        self.assertNotIn('class="note"', html)
+        panel = self.panels(html)['PO-1043']
+        self.assertIn('RULES NOTE', panel)
+        self.assertIn('From fixed rules', panel)
+        self.assertIn('Rule BANK_CHANGED_7D', panel)
 
     # Scenario — the load-error page has no detail panels
     def test_load_error_has_no_panels(self):
@@ -479,9 +481,9 @@ class DeskResetTests(DeskBase):
         self.assertIn("getElementById('r-error')", script)
         self.assertIn('resetError.hidden = false', script)
         self.assertIn('resetError.hidden = true', script)
-        # No confirm dialog for Reset; notes stay out of this slice. The failed-reset
-        # line lives in the HTML (option A, c6774718893); the script never copies the
-        # API body onto the page.
+        # No confirm dialog for Reset. Badge wording stays in the HTML. The
+        # failed-reset line lives in the HTML (option A, c6774718893); the script
+        # never copies the API body onto the page.
         self.assertNotIn('confirm=reset', script)
         self.assertNotIn('RULES NOTE', script)
         self.assertNotIn('AI NOTE', script)
@@ -504,6 +506,131 @@ class DeskResetTests(DeskBase):
         self.assertNotIn("didn't reset", foot)
         self.assertNotIn('didn’t save', foot)
         self.assertEqual(foot.count('That didn’t reset. Nothing has changed. Try again.'), 1)
+
+
+
+class DeskNoteTests(DeskBase):
+    def panels(self, html=None):
+        return dict(PANEL.findall(html or self.get().get_data(as_text=True)))
+
+    def visible_note(self, panel):
+        # The first note block in the panel is the default (not hidden).
+        return [block for block in panel.split('<div class="note"')[1:]
+                if not block.startswith(' data-note="fallback" hidden')
+                and not block.startswith(' data-note="ai" hidden')
+                and not block.startswith(' data-note="rules" hidden')][0]
+
+    # Scenario — Acme Supplies shows the approved AI NOTE words and mock sentence
+    def test_acme_ai_note(self):
+        panel = self.panels()['PO-1042']
+        note = self.visible_note(panel)
+        self.assertIn('data-note="ai"', note)
+        self.assertIn('<span class="badge b-ai">AI NOTE</span>Written by AI, may be wrong', note)
+        self.assertIn('Unusually large for Acme Supplies. Their last 5 payouts averaged $790. Check the invoice before approving.', note)
+        self.assertNotIn('AI-drafted, review required', panel)
+        self.assertIn('Why flagged:</strong> Amount is 6× this payee’s usual payout ($790 avg)', panel)
+        self.assertIn('data-note="fallback" hidden', panel)
+        self.assertIn('AI unavailable, rules fallback', panel)
+
+    # Scenario — Bluebird Bakery shows a RULES NOTE from fixed rules, not a fallback
+    def test_bluebird_rules_note(self):
+        panel = self.panels()['PO-1043']
+        note = self.visible_note(panel)
+        self.assertIn('data-note="rules"', note)
+        self.assertIn('<span class="badge b-rules">RULES NOTE</span>From fixed rules', note)
+        self.assertIn('Rule BANK_CHANGED_7D: bank details changed within 7 days. Confirm the change with the payee by phone before sending.', note)
+        self.assertNotIn('AI NOTE', panel)
+        self.assertNotIn('Written by AI', panel)
+        self.assertNotIn('AI unavailable, rules fallback', panel)
+        self.assertNotIn('data-note="fallback"', panel)
+        self.assertNotIn('AI-drafted, review required', panel)
+
+    # Scenario — every current-queue payout has one default note, labelled AI or rules
+    def test_every_payout_has_one_default_note(self):
+        panels = self.panels()
+        self.assertEqual(list(panels), ALL_IDS)
+        expected_ai = {'PO-1042', 'PO-1044', 'PO-1041'}
+        for pid, panel in panels.items():
+            visible = []
+            hidden = []
+            for raw in panel.split('<div class="note"')[1:]:
+                tag, _, _rest = raw.partition('>')
+                (hidden if ' hidden' in tag else visible).append(tag)
+            self.assertEqual(len(visible), 1, pid)
+            if pid in expected_ai:
+                self.assertIn('data-note="ai"', visible[0])
+                self.assertEqual(len(hidden), 1)
+                self.assertIn('data-note="fallback"', hidden[0])
+            else:
+                self.assertIn('data-note="rules"', visible[0])
+                self.assertEqual(hidden, [])
+        html = self.get().get_data(as_text=True)
+        self.assertNotIn('AI-drafted, review required', html)
+
+    # Scenario — off, slow (over 3s) or error replaces an AI note with the fallback helper
+    def test_ai_unavailable_uses_fallback(self):
+        self.get()
+        acme = next(p for p in payouts.current_queue(self.database()) if p['payout_id'] == 'PO-1042')
+        bluebird = next(p for p in payouts.current_queue(self.database()) if p['payout_id'] == 'PO-1043')
+        pine = next(p for p in payouts.current_queue(self.database()) if p['payout_id'] == 'PO-1041')
+        expected_body = 'Rule AMOUNT_OVER_3X_AVG: Amount is 6× this payee’s usual payout ($790 avg). Review before sending.'
+        for kwargs in ({'ai_off': True}, {'error': True}, {'elapsed_seconds': 3.01}):
+            note = desk.shown_note(acme, **kwargs)
+            self.assertEqual(note['badge'], 'RULES NOTE')
+            self.assertEqual(note['helper'], 'AI unavailable, rules fallback')
+            self.assertEqual(note['body'], expected_body)
+            self.assertTrue(note['fallback'])
+            self.assertEqual(note['kind'], 'rules')
+        still_ai = desk.shown_note(acme, elapsed_seconds=3)
+        self.assertEqual(still_ai['badge'], 'AI NOTE')
+        self.assertEqual(still_ai['helper'], 'Written by AI, may be wrong')
+        self.assertFalse(still_ai['fallback'])
+        # A rules note does not change when the AI is unavailable.
+        for kwargs in ({'ai_off': True}, {'error': True}, {'elapsed_seconds': 5}):
+            note = desk.shown_note(bluebird, **kwargs)
+            self.assertEqual(note['badge'], 'RULES NOTE')
+            self.assertEqual(note['helper'], 'From fixed rules')
+            self.assertFalse(note['fallback'])
+        # A Sent AI note falls back to the gist's "No rules triggered."
+        self.assertEqual(desk.shown_note(pine, ai_off=True)['body'], 'No rules triggered.')
+
+    # Scenario — the AI never decides the flag; opening the Desk still writes no notes
+    def test_ai_does_not_change_the_flag_or_store_notes(self):
+        html = self.get().get_data(as_text=True)
+        panel = self.panels(html)['PO-1042']
+        self.assertIn('Why flagged:</strong> Amount is 6× this payee’s usual payout ($790 avg)', panel)
+        payout = payouts.get_payout(self.database(), 'PO-1042')
+        self.assertEqual(payout['flag_text'], 'Amount is 6× this payee’s usual payout ($790 avg)')
+        self.assertIsNone(payout['note_text'])
+        self.assertIsNone(payout['note_source'])
+        self.assertIsNone(payout['note_fallback'])
+        self.assertNotIn('cloudflare', html.lower())
+        self.assertNotIn('CF_API', html)
+        self.assertNotIn('WORKERS_AI', html)
+
+    # Scenario — fallback body text is escaped
+    def test_fallback_flag_text_is_escaped(self):
+        self.get()
+        with closing(sqlite3.connect(str(self.database()))) as db, db:
+            db.execute("UPDATE payouts SET flag_text = '<script>z</script> Amount' WHERE payout_id = 'PO-1042'")
+        panel = self.panels()['PO-1042']
+        self.assertIn('&lt;script&gt;z&lt;/script&gt; Amount', panel)
+        self.assertNotIn('<script>z</script>', panel)
+
+    # Scenario — the page script honors #ai=off and keeps it in the hash, without calling a model
+    def test_script_honors_ai_off(self):
+        script = self.get('/desk.js').get_data(as_text=True)
+        self.assertIn("q.get('ai') === 'off'", script)
+        self.assertIn("q.set('ai', 'off')", script)
+        self.assertIn('.note[data-note="fallback"]', script)
+        self.assertIn('.note[data-note="ai"]', script)
+        # The only fetches are the existing decision and reset routes; no model endpoint.
+        self.assertEqual(script.count('fetch('), 2)
+        self.assertIn("fetch('/payouts/' + encodeURIComponent(pending.id)", script)
+        self.assertIn("fetch('/payouts/reset'", script)
+        self.assertNotIn('workers.ai', script.lower())
+        self.assertNotIn('openai', script.lower())
+        self.assertNotIn('AI-drafted, review required', script)
 
 
 class CurrentQueueTests(unittest.TestCase):
