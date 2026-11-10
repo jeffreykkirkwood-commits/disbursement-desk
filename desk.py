@@ -23,6 +23,7 @@ EMPTY_EXCEPTIONS = 'No exceptions left. Nice.'
 FINAL_STATUSES = frozenset({'PAID', 'RETURNED'})
 FINAL_MESSAGE = 'This payout is final. No actions available.'
 ACTION_FAILED = 'That didn’t save. Nothing has changed. Try again.'
+RESET_FAILED = 'That didn’t reset. Nothing has changed. Try again.'
 
 # FEATURE 01b — The three confirm dialogs, word for word from #40
 # action: (button, heading, body, confirm-button classes). Return's confirm is red.
@@ -173,6 +174,8 @@ dialog .row2{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}
 dialog .btn{min-width:110px}
 .err-inline{background:var(--red-bg);color:var(--red);border-radius:8px;padding:10px 12px;margin:12px 0 0;font-size:15px}
 .err-inline[hidden]{display:none}
+.foot .err-inline{display:inline;margin:0 0 0 .4em;padding:4px 8px;font-size:14px}
+.foot .err-inline[hidden]{display:none}
 @media(max-width:760px){
  .top{padding:12px 16px}.brand{font-size:17px}.tag{font-size:12px}
  .layout{grid-template-columns:minmax(0,1fr);padding:16px}
@@ -196,7 +199,7 @@ dialog .btn{min-width:110px}
       </div>
     </div>
     <ul id="list" class="list">''' + items + '''</ul>
-    <p class="foot">Your changes stay in this browser only. <button type="button" id="reset" class="link">Reset demo</button></p>
+    <p class="foot">Your changes stay in this browser only. <button type="button" id="reset" class="link">Reset demo</button><span id="r-error" class="err-inline" role="status" hidden>''' + RESET_FAILED + '''</span></p>
   </section>
   <aside id="detail" class="detail" aria-label="Payout detail" hidden>''' + details + '''</aside>
 </main>

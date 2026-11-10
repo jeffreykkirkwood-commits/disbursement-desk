@@ -54,7 +54,9 @@ class DeskTests(DeskBase):
         for words in ('<title>Disbursement Desk · Example data</title>', '>Disbursement Desk</div>',
                       'Example data · fake money', '<h1 id="qh">Outgoing payouts</h1>',
                       'aria-pressed="true">Exceptions <b>4</b></button>', 'aria-pressed="false">All <b>10</b></button>',
-                      'Your changes stay in this browser only.', '>Reset demo</button>'):
+                      'Your changes stay in this browser only.', '>Reset demo</button>',
+                      '<span id="r-error" class="err-inline" role="status" hidden>'
+                      'That didn’t reset. Nothing has changed. Try again.</span>'):
             self.assertIn(words, html)
         rows = self.rows(html)
         visible = [r for r in rows if not r['hidden']]
@@ -456,9 +458,16 @@ class DeskResetTests(DeskBase):
         self.assertEqual(reply.status_code, 500)
         body = reply.get_data(as_text=True)
         self.assertNotIn('disk I/O', body)
+        self.assertNotIn('OperationalError', body)
+        self.assertNotIn('That didn’t reset. Nothing has changed. Try again.', body)
         self.assertEqual(json.dumps(payouts.list_payouts(self.database()), sort_keys=True), before)
         html = self.get().get_data(as_text=True)
         self.assertIn('PO-1042 · Held by operator', html)
+        # The approved line is on the page, hidden, ready for the script to show. A
+        # reload keeps it hidden (the line only appears after a failed POST in-page).
+        self.assertIn('<span id="r-error" class="err-inline" role="status" hidden>'
+                      'That didn’t reset. Nothing has changed. Try again.</span>', html)
+        self.assertNotIn('disk I/O', html)
 
     # Scenario — the page script posts Reset demo and then drops the hash, so detail closes
     def test_script_wires_reset(self):
@@ -467,10 +476,34 @@ class DeskResetTests(DeskBase):
         self.assertIn("'X-Demo-ID': demo ? demo.content : ''", script)
         self.assertIn('location.replace(location.pathname + location.search)', script)
         self.assertIn("closest('#reset')", script)
-        # No confirm dialog or new footer words for Reset; notes stay out of this slice.
+        self.assertIn("getElementById('r-error')", script)
+        self.assertIn('resetError.hidden = false', script)
+        self.assertIn('resetError.hidden = true', script)
+        # No confirm dialog for Reset; notes stay out of this slice. The failed-reset
+        # line lives in the HTML (option A, c6774718893); the script never copies the
+        # API body onto the page.
         self.assertNotIn('confirm=reset', script)
         self.assertNotIn('RULES NOTE', script)
         self.assertNotIn('AI NOTE', script)
+        self.assertNotIn('reply.json', script)
+        self.assertNotIn('reply.text', script)
+        self.assertNotIn('.json()', script)
+        self.assertNotIn('internal_error', script)
+        # The approved sentence is in the page HTML, not built from the response.
+        self.assertNotIn('That didn’t reset. Nothing has changed. Try again.', script)
+
+    # Scenario — the failed-reset line is the exact approved sentence, next to Reset demo
+    def test_failed_reset_wording_is_exact(self):
+        html = self.get().get_data(as_text=True)
+        foot = html[html.index('class="foot"'):html.index('id="detail"')]
+        self.assertIn('>Reset demo</button>', foot)
+        self.assertIn('<span id="r-error" class="err-inline" role="status" hidden>'
+                      'That didn’t reset. Nothing has changed. Try again.</span>', foot)
+        # Curly apostrophe (U+2019), never a straight quote or the slice-3 sentence.
+        self.assertIn('didn’t reset', foot)
+        self.assertNotIn("didn't reset", foot)
+        self.assertNotIn('didn’t save', foot)
+        self.assertEqual(foot.count('That didn’t reset. Nothing has changed. Try again.'), 1)
 
 
 class CurrentQueueTests(unittest.TestCase):
