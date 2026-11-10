@@ -1,7 +1,7 @@
 # Automated checks for the Disbursement Desk (/desk, issue #32 slices 1 and 2): what a
 # viewer sees first, the All filter without history rows, the empty and load-error
-# states, the header links both ways, each payout's read-only detail, and that opening
-# the page writes nothing.
+# states, the header links both ways, each payout's detail, the Approve / Hold / Return
+# buttons and confirm dialog words (slice 3), and that opening the page writes nothing.
 """Exercise /desk through the hosted app with temporary fictional demos."""
 import json
 import re
@@ -20,7 +20,7 @@ ROW = re.compile(r'<li data-ex="(\d)"( hidden)?><button type="button" class="row
                  r'aria-current="false"><span class="payee">(.*?)</span>'
                  r'<span class="amt">(.*?)</span><span class="sub">(.*?)</span>'
                  r'<span class="pill (s-\w+)">(.*?)</span></button></li>')
-PANEL = re.compile(r'<div class="panel" data-id="(PO-\d+)" hidden>(.*?)</div>(?=<div class="panel"|</aside>)', re.S)
+PANEL = re.compile(r'<div class="panel" data-id="(PO-\d+)"[^>]* hidden>(.*?)</div>(?=<div class="panel"|</aside>)', re.S)
 
 
 class DeskBase(unittest.TestCase):
@@ -128,7 +128,7 @@ class DeskTests(DeskBase):
         with closing(sqlite3.connect(str(self.database()))) as db, db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM payout_events').fetchone()[0], 0)
         html = self.get().get_data(as_text=True)
-        for word in ('Approve', 'Hold', 'Return<', 'AI NOTE', 'RULES NOTE', '<form'):
+        for word in ('AI NOTE', 'RULES NOTE', '<form'):
             self.assertNotIn(word, html)
 
     # Scenario — the filter script is served without starting a demo
@@ -172,13 +172,11 @@ class DeskDetailTests(DeskBase):
         self.assertNotIn('This payout is final', panel)
 
     # Scenario — Held shows its flag and no final message; no action buttons in slice 2
-    def test_held_detail_has_no_actions(self):
+    def test_held_detail(self):
         panel = self.panels()['PO-1038']
         self.assertIn('<span class="pill s-held">Held</span>', panel)
         self.assertIn('Why flagged:</strong> Amount is 4× this payee’s usual payout ($520 avg)', panel)
         self.assertNotIn('This payout is final', panel)
-        for word in ('Approve', 'Hold<', '>Return<', 'class="actions"', 'class="btn'):
-            self.assertNotIn(word, panel)
 
     # Scenario — Sent and Returned payouts are final: message, no buttons
     def test_final_payouts(self):
@@ -224,6 +222,134 @@ class DeskDetailTests(DeskBase):
         self.assertIn('&lt;i&gt;X&lt;/i&gt;', panel)
         self.assertIn('&lt;script&gt;y&lt;/script&gt;', panel)
         self.assertNotIn('<script>', panel)
+
+
+APPROVE_BUTTON = ('<button type="button" class="btn primary" data-act="approve" data-heading="Approve and send?" '
+                  'data-body="The payout is sent to the payee." data-ok="Approve" data-ok-class="btn primary">Approve</button>')
+HOLD_BUTTON = ('<button type="button" class="btn" data-act="hold" data-heading="Hold this payout?" '
+               'data-body="It stays in Exceptions and will not send until someone approves it." data-ok="Hold" '
+               'data-ok-class="btn primary"{}>Hold</button>')
+RETURN_BUTTON = ('<button type="button" class="btn danger" data-act="return" data-heading="Return this payout?" '
+                 'data-body="It is cancelled and no money moves. This cannot be undone." data-ok="Return" '
+                 'data-ok-class="btn danger fill">Return</button>')
+
+
+class DeskActionTests(DeskBase):
+    def panels(self):
+        return dict(PANEL.findall(self.get().get_data(as_text=True)))
+
+    def decide(self, payout_id, status, when='2026-11-10T16:00:00+00:00'):
+        # Stand-in for the #35 decision API (PR #51): change status and updated_at only.
+        self.get()
+        with closing(sqlite3.connect(str(self.database()))) as db, db:
+            db.execute('UPDATE payouts SET status = ?, updated_at = ? WHERE payout_id = ?', (status, when, payout_id))
+
+    # Scenario — Needs review payouts get Approve, Hold and Return with the #40 dialog words
+    def test_needs_review_buttons(self):
+        panel = self.panels()['PO-1043']
+        self.assertIn('<div class="actions">' + APPROVE_BUTTON + HOLD_BUTTON.format('') + RETURN_BUTTON + '</div>', panel)
+        self.assertIn('data-payee="Bluebird Bakery" data-amount="$312.40"', self.get().get_data(as_text=True))
+
+    # Scenario — a Held payout can still be approved or returned; Hold is disabled
+    def test_held_buttons(self):
+        panel = self.panels()['PO-1038']
+        self.assertIn(APPROVE_BUTTON + HOLD_BUTTON.format(' disabled') + RETURN_BUTTON, panel)
+
+    # Scenario — Sent and Returned payouts have no action buttons
+    def test_final_payouts_have_no_buttons(self):
+        panels = self.panels()
+        for pid in ('PO-1037', 'PO-1036', 'PO-1040'):
+            self.assertNotIn('data-act=', panels[pid])
+            self.assertIn('This payout is final. No actions available.', panels[pid])
+
+    # Scenario — one confirm dialog: Cancel, a confirm button, and the Q2 A failure line, hidden
+    def test_confirm_dialog_markup(self):
+        html = self.get().get_data(as_text=True)
+        self.assertEqual(html.count('<dialog'), 1)
+        self.assertIn('<dialog id="confirm" aria-labelledby="ch">', html)
+        self.assertIn('<p><strong id="c-payee"></strong> · <span id="c-amount"></span> · <span id="c-id"></span></p>', html)
+        self.assertIn('<p id="c-error" class="err-inline" role="alert" hidden>'
+                      'That didn’t save. Nothing has changed. Try again.</p>', html)
+        self.assertIn('<button type="button" class="btn" id="cancel">Cancel</button>', html)
+        for word in ('<select', '<textarea', 'reason', 'Reason', 'note'):
+            self.assertNotIn(word, html.split('<dialog')[1])
+
+    # Scenario — after an operator Hold: Held, "Held by operator", still in Exceptions, Hold disabled
+    def test_after_hold(self):
+        self.decide('PO-1042', 'HELD')
+        html = self.get().get_data(as_text=True)
+        self.assertIn('PO-1042 · Held by operator', html)
+        self.assertIn('Exceptions <b>4</b>', html)
+        panel = dict(PANEL.findall(html))['PO-1042']
+        self.assertIn('Why flagged:</strong> Held by operator', panel)
+        self.assertIn(HOLD_BUTTON.format(' disabled'), panel)
+        self.assertIn(APPROVE_BUTTON, panel)
+        self.assertIn(RETURN_BUTTON, panel)
+
+    # Scenario — after an operator Return: Returned, "Returned by operator", final, no buttons
+    def test_after_return(self):
+        self.decide('PO-1044', 'RETURNED')
+        html = self.get().get_data(as_text=True)
+        self.assertIn('PO-1044 · Returned by operator', html)
+        self.assertIn('Exceptions <b>3</b>', html)
+        panel = dict(PANEL.findall(html))['PO-1044']
+        self.assertIn('<span class="pill s-returned">Returned</span>', panel)
+        self.assertIn('Why flagged:</strong> Returned by operator', panel)
+        self.assertIn('This payout is final. No actions available.', panel)
+        self.assertNotIn('data-act=', panel)
+
+    # Scenario — after Approve: Sent, the why-flagged line is gone, final, no buttons
+    def test_after_approve(self):
+        self.decide('PO-1043', 'PAID')
+        html = self.get().get_data(as_text=True)
+        self.assertIn('PO-1043 · RTP', html)
+        panel = dict(PANEL.findall(html))['PO-1043']
+        self.assertIn('<span class="pill s-sent">Sent</span>', panel)
+        self.assertNotIn('Why flagged', panel)
+        self.assertIn('This payout is final. No actions available.', panel)
+        self.assertNotIn('data-act=', panel)
+
+    # Scenario — the seeded Held and Returned payouts keep their stored rule sentence
+    def test_seeded_flags_unchanged(self):
+        html = self.get().get_data(as_text=True)
+        self.assertIn('PO-1038 · Amount is 4× this payee’s usual payout ($520 avg)', html)
+        self.assertIn('PO-1037 · Payee bank details changed 1 day ago', html)
+        self.assertNotIn('by operator', html)
+
+    # Scenario — the page script posts to the #35 decision API with a key, never a reason
+    def test_script_uses_decision_api(self):
+        script = self.get('/desk.js').get_data(as_text=True)
+        self.assertIn("fetch('/payouts/' + encodeURIComponent(pending.id) + '/' + pending.action", script)
+        self.assertIn("'Idempotency-Key': pending.key", script)
+        self.assertIn("JSON.stringify({reviewer: 'Desk operator'})", script)
+        self.assertNotIn('reason', script)
+
+    # Scenario — end to end through the #35 route, once PR #51 is merged (skipped before that)
+    def test_decisions_through_api(self):
+        rules = {str(rule) for rule in self.app.url_map.iter_rules()}
+        if not any(r.startswith('/payouts/') for r in rules):
+            self.skipTest('Needs the #35 decision API (PR #51).')
+        page = self.get()
+        demo = page.headers['X-Demo-ID']
+        def post(pid, action, key):
+            return self.client.post(f'/payouts/{pid}/{action}', json={'reviewer': 'Desk operator'},
+                                    base_url='https://demo.example',
+                                    headers={'Idempotency-Key': key, 'Origin': 'https://demo.example',
+                                             'X-Demo-ID': demo})
+        self.assertEqual(post('PO-1042', 'hold', 'k1').status_code, 201)
+        self.assertEqual(post('PO-1042', 'hold', 'k1').status_code, 200)  # same key: saved once
+        self.assertEqual(post('PO-1043', 'return', 'k2').status_code, 201)
+        self.assertEqual(post('PO-1044', 'approve', 'k3').status_code, 201)
+        self.assertEqual(post('PO-1038', 'approve', 'k4').status_code, 201)  # Held can be approved
+        html = self.get().get_data(as_text=True)
+        panels = dict(PANEL.findall(html))
+        self.assertIn('PO-1042 · Held by operator', html)
+        self.assertIn('PO-1043 · Returned by operator', html)
+        self.assertNotIn('Why flagged', panels['PO-1044'])
+        self.assertIn('<span class="pill s-sent">Sent</span>', panels['PO-1038'])
+        self.assertIn('Exceptions <b>1</b>', html)
+        for code in ('APPROVED', 'PENDING'):
+            self.assertNotIn(code, html)
 
 
 class CurrentQueueTests(unittest.TestCase):

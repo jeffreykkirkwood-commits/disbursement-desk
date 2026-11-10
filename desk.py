@@ -1,6 +1,7 @@
-# START HERE — Builds the Disbursement Desk page (HTML): the read-only payout queue.
-# Read-only: it never changes the database. Slices 1 and 2 of issue #32: the queue and
-# the payout detail. No actions (slice 3) and no notes (after #37) yet.
+# START HERE — Builds the Disbursement Desk page (HTML): the payout queue, the payout
+# detail and the Approve / Hold / Return confirm dialog (issue #32 slices 1 to 3).
+# This file never changes the database: desk.js sends a confirmed decision to the #35
+# decision API (POST /payouts/<id>/<action>) and reloads. No notes (after #37) yet.
 """Disbursement Desk presentation for the approved #40 design. Never writes to the database."""
 from dashboard import money, text
 
@@ -21,6 +22,32 @@ LOAD_ERROR = 'The payout list couldn’t be loaded. Refresh the page to try agai
 EMPTY_EXCEPTIONS = 'No exceptions left. Nice.'
 FINAL_STATUSES = frozenset({'PAID', 'RETURNED'})
 FINAL_MESSAGE = 'This payout is final. No actions available.'
+ACTION_FAILED = 'That didn’t save. Nothing has changed. Try again.'
+
+# FEATURE 01b — The three confirm dialogs, word for word from #40
+# action: (button, heading, body, confirm-button classes). Return's confirm is red.
+ACTIONS = {
+    'approve': ('Approve', 'Approve and send?', 'The payout is sent to the payee.', 'btn primary'),
+    'hold': ('Hold', 'Hold this payout?',
+             'It stays in Exceptions and will not send until someone approves it.', 'btn primary'),
+    'return': ('Return', 'Return this payout?',
+               'It is cancelled and no money moves. This cannot be undone.', 'btn danger fill'),
+}
+PANEL_BUTTON_CLASS = {'approve': 'btn primary', 'hold': 'btn', 'return': 'btn danger'}
+OPERATOR_FLAGS = {'HELD': 'Held by operator', 'RETURNED': 'Returned by operator'}
+
+
+# FEATURE 01c — Which flag sentence to show
+# A payout an operator has decided (its updated_at moved past created_at; the seed keeps
+# them equal) shows Held by operator / Returned by operator, and an approved (Sent) one
+# shows no flag. Undecided payouts keep their stored rule sentence. Read-only.
+def shown_flag(payout):
+    decided = payout.get('updated_at') and payout['updated_at'] != payout.get('created_at')
+    if not decided:
+        return payout['flag_text']
+    if payout['status'] in ('PAID', 'APPROVED'):
+        return None
+    return OPERATOR_FLAGS.get(payout['status'], payout['flag_text'])
 
 
 # FEATURE 02 — Build one queue row
@@ -30,7 +57,7 @@ FINAL_MESSAGE = 'This payout is final. No actions available.'
 def _row(payout):
     word, css = STATUS_WORDS[payout['status']]
     exception = payout['status'] in EXCEPTION_STATUSES
-    why = payout['flag_text'] or payout['rail']
+    why = shown_flag(payout) or payout['rail']
     return (f'<li data-ex="{int(exception)}"{"" if exception else " hidden"}>'
             f'<button type="button" class="row" data-id="{text(payout["payout_id"])}" aria-current="false">'
             f'<span class="payee">{text(payout["payee_name"])}</span>'
@@ -39,24 +66,36 @@ def _row(payout):
             f'<span class="pill {css}">{word}</span></button></li>')
 
 
-# FEATURE 02b — Build one payout's detail (read-only, slice 2)
+# FEATURE 02b — Build one payout's detail and its action buttons (slices 2 and 3)
 # Payee, amount, payout id, account, rail, status and the flag sentence when one exists.
 # No note block: notes come in their own PR after issue #37 stores them. Sent and Returned
-# payouts say they are final; no Approve/Hold/Return buttons yet (slice 3 adds them).
+# payouts say they are final. Needs review and Held payouts get Approve / Hold / Return
+# (slice 3); Hold is disabled when the payout is already Held. The panel carries the
+# payee and amount so the dialog can repeat them.
 def _detail(payout):
     word, css = STATUS_WORDS[payout['status']]
     pid = text(payout['payout_id'])
-    parts = [f'<div class="panel" data-id="{pid}" hidden>',
+    flag = shown_flag(payout)
+    parts = [f'<div class="panel" data-id="{pid}" data-payee="{text(payout["payee_name"])}" '
+             f'data-amount="{money(payout["amount"])}" hidden>',
              '<div class="dtop"><button type="button" class="back" aria-label="Back to list">← Back</button>'
              f'<span class="pill {css}">{word}</span></div>',
              f'<h2 tabindex="-1">{text(payout["payee_name"])}</h2>',
              f'<p class="big">{money(payout["amount"])}</p>',
              f'<dl><dt>Payout</dt><dd>{pid}</dd><dt>To account</dt><dd>{text(payout["payee_account"])}</dd>'
              f'<dt>Rail</dt><dd>{text(payout["rail"])} · {text(payout["currency"])}</dd></dl>']
-    if payout['flag_text']:
-        parts.append(f'<div class="flag"><strong>Why flagged:</strong> {text(payout["flag_text"])}</div>')
+    if flag:
+        parts.append(f'<div class="flag"><strong>Why flagged:</strong> {text(flag)}</div>')
     if payout['status'] in FINAL_STATUSES:
         parts.append(f'<p class="done">{FINAL_MESSAGE}</p>')
+    else:
+        buttons = []
+        for action, (label, heading, body, ok_class) in ACTIONS.items():
+            disabled = ' disabled' if action == 'hold' and payout['status'] == 'HELD' else ''
+            buttons.append(f'<button type="button" class="{PANEL_BUTTON_CLASS[action]}" data-act="{action}" '
+                           f'data-heading="{text(heading)}" data-body="{text(body)}" data-ok="{label}" '
+                           f'data-ok-class="{ok_class}"{disabled}>{label}</button>')
+        parts.append('<div class="actions">' + ''.join(buttons) + '</div>')
     parts.append('</div>')
     return ''.join(parts)
 
@@ -121,10 +160,24 @@ h1{font-size:26px;margin:0;letter-spacing:-.5px}
 dl{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:14px 0;font-size:15px}dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}
 .flag{background:var(--amber-bg);color:var(--amber);border-radius:8px;padding:10px 12px;font-size:15px;margin:12px 0}
 .done{font-size:15px;color:var(--muted);margin-top:14px}
+.actions{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:16px}
+.btn{min-height:48px;min-width:44px;border-radius:9px;font-weight:700;border:2px solid var(--ink);background:#fff;color:var(--ink);padding:0 12px}
+.btn.primary{background:var(--green);border-color:var(--green);color:#fff}
+.btn.danger{border-color:var(--red);color:var(--red)}
+.btn.danger.fill{background:var(--red);color:#fff}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+dialog{border:0;border-radius:14px;padding:22px;max-width:420px;width:calc(100% - 32px);color:var(--ink)}
+dialog::backdrop{background:rgba(23,59,53,.45)}
+dialog p{margin:8px 0}dialog h2{margin:0}
+dialog .row2{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}
+dialog .btn{min-width:110px}
+.err-inline{background:var(--red-bg);color:var(--red);border-radius:8px;padding:10px 12px;margin:12px 0 0;font-size:15px}
+.err-inline[hidden]{display:none}
 @media(max-width:760px){
  .top{padding:12px 16px}.brand{font-size:17px}.tag{font-size:12px}
  .layout{grid-template-columns:minmax(0,1fr);padding:16px}
  .detail{position:static;padding:16px}
+ .actions{grid-template-columns:1fr}
  .layout:has(.detail:not([hidden])) .queue{display:none}
 }
 </style></head>
@@ -147,5 +200,12 @@ dl{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:14px 0;font-s
   </section>
   <aside id="detail" class="detail" aria-label="Payout detail" hidden>''' + details + '''</aside>
 </main>
+<dialog id="confirm" aria-labelledby="ch">
+  <h2 id="ch"></h2>
+  <p><strong id="c-payee"></strong> · <span id="c-amount"></span> · <span id="c-id"></span></p>
+  <p id="c-body"></p>
+  <p id="c-error" class="err-inline" role="alert" hidden>''' + ACTION_FAILED + '''</p>
+  <div class="row2"><button type="button" class="btn" id="cancel">Cancel</button><button type="button" id="ok"></button></div>
+</dialog>
 <script src="/desk.js"></script>
 </body></html>'''
