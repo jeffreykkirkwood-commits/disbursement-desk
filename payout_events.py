@@ -27,6 +27,7 @@ STATUS_CHANGED = 'status-changed'
 HOLD_SECONDS = 20
 POLL_SECONDS = 0.5
 STREAM_FILE = 'payout_stream.json'
+MAX_EVENTS = 500
 MAX_STREAMS = 2
 RETRY_AFTER_SECONDS = 5
 
@@ -49,10 +50,20 @@ def _path(database):
 # FEATURE 02 — Load and save this visitor's event log
 # The log sits next to the demo SQLite file, not in a new table, so this is not
 # a schema change. Event ids only increase. A missing file starts at id 1.
+# The file keeps at most MAX_EVENTS events (the newest ones). The stored
+# shape is unchanged: next_id, statuses, and events.
 def _load(path):
     if not path.is_file():
         return {'next_id': 1, 'statuses': {}, 'events': []}
     return json.loads(path.read_text())
+
+
+def _trim(state):
+    events = state['events']
+    if len(events) > MAX_EVENTS:
+        state['events'] = events[-MAX_EVENTS:]
+        return True
+    return False
 
 
 def _save(path, state):
@@ -78,7 +89,8 @@ def _payload(event):
 # Compares the current payouts table to the last statuses we stored. A new
 # payout_id becomes a created event; a later status change becomes
 # status-changed. Works on the one database file it is given, so workspaces
-# stay isolated. Calling it twice with no change adds nothing.
+# stay isolated. Calling it twice with no change adds nothing and does not
+# rewrite the file. An oversized existing log is trimmed to MAX_EVENTS once.
 def sync(database):
     with _lock(database):
         path = _path(database)
@@ -112,21 +124,28 @@ def sync(database):
                 state['events'].append(event)
                 seen[payout_id] = payout['status']
                 added.append(event)
+        dropped = False
         for payout_id in [payout_id for payout_id in seen if payout_id not in present]:
             del seen[payout_id]
-        _save(path, state)
+            dropped = True
+        trimmed = _trim(state)
+        if added or dropped or trimmed:
+            _save(path, state)
         return added
 
 
 # FEATURE 04 — After Reset demo, treat the restored seed as new created events
 # reset() deletes and reseeds the same payout ids. Forgetting the remembered
 # statuses makes the next sync emit created events for the starting set, with
-# ids that keep counting up so a reconnect can still resume.
+# ids that keep counting up so a reconnect can still resume. Pre-reset events
+# are dropped so a client that resumes from id 0 sees only the new created
+# set, not a duplicate created event for the same payout id.
 def after_reset(database):
     with _lock(database):
         path = _path(database)
         state = _load(path)
         state['statuses'] = {}
+        state['events'] = []
         _save(path, state)
     return sync(database)
 
