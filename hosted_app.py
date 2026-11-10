@@ -310,12 +310,43 @@ def create_app(directory=None, public_origin=None, payments=None):
     # The connection closes after a short hold so the one Gunicorn worker's
     # four threads stay available; EventSource reconnects. The Desk page does
     # not subscribe yet, so nothing on screen changes.
+    # FEATURE 24 — Cap concurrent streams so they cannot block /health (#83)
+    # At most two streams may be open in this process. A third request gets
+    # 503 with Retry-After and a short plain body, so two of the four
+    # Gunicorn threads stay free for /health and other work. The slot is
+    # acquired before the response starts and released in a finally block
+    # when the generator ends, errors, or the client disconnects. This does
+    # not change the Render start command or thread count.
     @app.get('/payouts/stream')
     def payout_stream():
         last_id = payout_events.parse_last_id(
             request.headers.get('Last-Event-ID') or request.args.get('lastEventId'))
-        return Response(stream_with_context(payout_events.stream(g.payments.database, last_id)),
-                        mimetype='text/event-stream',
-                        headers={'X-Accel-Buffering': 'no', 'Connection': 'keep-alive'})
+        if not payout_events.acquire_stream():
+            return Response(
+                'Too many live update streams are open. Try again shortly.\n',
+                status=503,
+                mimetype='text/plain',
+                headers={'Retry-After': str(payout_events.RETRY_AFTER_SECONDS)})
+        released = False
+
+        def release_slot():
+            nonlocal released
+            if not released:
+                released = True
+                payout_events.release_stream()
+
+        def body():
+            try:
+                yield from payout_events.stream(g.payments.database, last_id)
+            finally:
+                release_slot()
+
+        try:
+            return Response(stream_with_context(body()),
+                            mimetype='text/event-stream',
+                            headers={'X-Accel-Buffering': 'no', 'Connection': 'keep-alive'})
+        except Exception:
+            release_slot()
+            raise
 
     return app
