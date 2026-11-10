@@ -1,6 +1,6 @@
 # START HERE — Builds the Disbursement Desk page (HTML): the read-only payout queue.
 # Read-only: it never changes the database. Slices 1 and 2 of issue #32: the queue and
-# the payout detail. No actions (slice 3) and no AI notes (slice 5) yet.
+# the payout detail. No actions (slice 3) and no notes (after #37) yet.
 """Disbursement Desk presentation for the approved #40 design. Never writes to the database."""
 from dashboard import money, text
 
@@ -40,9 +40,8 @@ def _row(payout):
 
 
 # FEATURE 02b — Build one payout's detail (read-only, slice 2)
-# Payee, amount, payout id, account, rail, status, the flag sentence when one exists, and
-# a stored rules note when issue #37 has written one (RULES NOTE / From fixed rules). No
-# note is invented: until #37 stores note text the block is left out. Sent and Returned
+# Payee, amount, payout id, account, rail, status and the flag sentence when one exists.
+# No note block: notes come in their own PR after issue #37 stores them. Sent and Returned
 # payouts say they are final; no Approve/Hold/Return buttons yet (slice 3 adds them).
 def _detail(payout):
     word, css = STATUS_WORDS[payout['status']]
@@ -56,9 +55,6 @@ def _detail(payout):
              f'<dt>Rail</dt><dd>{text(payout["rail"])} · {text(payout["currency"])}</dd></dl>']
     if payout['flag_text']:
         parts.append(f'<div class="flag"><strong>Why flagged:</strong> {text(payout["flag_text"])}</div>')
-    if payout.get('note_text') and payout.get('note_source') == 'rules' and not payout.get('note_fallback'):
-        parts.append('<div class="note"><div class="note-h"><span class="badge b-rules">RULES NOTE</span>'
-                     f'From fixed rules</div><p>{text(payout["note_text"])}</p></div>')
     if payout['status'] in FINAL_STATUSES:
         parts.append(f'<p class="done">{FINAL_MESSAGE}</p>')
     parts.append('</div>')
@@ -124,10 +120,6 @@ h1{font-size:26px;margin:0;letter-spacing:-.5px}
 .big{font-size:36px;font-weight:700;letter-spacing:-1px;margin:10px 0 0;font-variant-numeric:tabular-nums}
 dl{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:14px 0;font-size:15px}dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}
 .flag{background:var(--amber-bg);color:var(--amber);border-radius:8px;padding:10px 12px;font-size:15px;margin:12px 0}
-.note{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:12px 0}
-.note-h{display:flex;align-items:center;gap:8px;font-weight:700;font-size:14px;margin-bottom:4px}
-.badge{font-size:12px;font-weight:800;padding:2px 8px;border-radius:5px;letter-spacing:.04em}.b-rules{background:#e9ece9;color:#2f3d37}
-.note p{margin:4px 0;font-size:15px}
 .done{font-size:15px;color:var(--muted);margin-top:14px}
 @media(max-width:760px){
  .top{padding:12px 16px}.brand{font-size:17px}.tag{font-size:12px}
