@@ -303,20 +303,26 @@ class HostedSeedTests(unittest.TestCase):
         self.assertEqual(payouts.get_payout(databases[1], 'PO-1044')['status'], 'FLAGGED')
         self.assertEqual(len(payouts.list_payouts(databases[1])), SEED_COUNT)
 
-    # FEATURE 12 — Scenario — payouts show only on the Desk and its two POST routes.
-    # The payout APIs are the decision route (#35) and Reset demo (#32 slice 4). The
-    # Payments Lab dashboard still lists no payouts.
+    # FEATURE 12 — Scenario — payouts show only on the Desk, its two POST routes, and the stream.
+    # The payout APIs are the decision route (#35), Reset demo (#32 slice 4) and the
+    # live update stream (#43). The Payments Lab dashboard still lists no payouts.
     def test_no_new_routes(self):
         client = self.app.test_client()
         page = client.get('/dashboard', base_url='https://demo.example').get_data(as_text=True)
         self.assertNotIn('PO-10', page)
         rules = [rule for rule in self.app.url_map.iter_rules() if re.search('payout', str(rule))]
         self.assertEqual({str(r) for r in rules},
-                         {'/payouts/<payout_id>/<any(approve, hold, return):action>', '/payouts/reset'})
-        self.assertTrue(all((r.methods - {'OPTIONS'}) == {'POST'} for r in rules))
+                         {'/payouts/<payout_id>/<any(approve, hold, return):action>',
+                          '/payouts/reset', '/payouts/stream'})
+        posts = {str(r) for r in rules if (r.methods - {'OPTIONS'}) == {'POST'}}
+        self.assertEqual(posts, {'/payouts/<payout_id>/<any(approve, hold, return):action>',
+                                 '/payouts/reset'})
+        stream = next(r for r in rules if str(r) == '/payouts/stream')
+        self.assertEqual(stream.methods - {'OPTIONS', 'HEAD'}, {'GET'})
         self.assertEqual({str(r) for r in self.app.url_map.iter_rules() if 'desk' in str(r)}, {'/desk', '/desk/', '/desk.js'})
         self.assertEqual(client.get('/payouts', base_url='https://demo.example').status_code, 404)
         self.assertEqual(client.get('/payouts/reset', base_url='https://demo.example').status_code, 405)
+        self.assertEqual(client.get('/payouts/stream', base_url='https://demo.example').status_code, 200)
 
 
 # sha256 of the seed rows as sorted JSON; update only on purpose when the seed changes.
