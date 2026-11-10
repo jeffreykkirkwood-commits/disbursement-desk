@@ -1,11 +1,16 @@
-// Disbursement Desk, slices 1 to 3 (#32): switch the queue between Exceptions and All,
-// open one payout's detail, and Approve / Hold / Return it after a confirm dialog.
-// The server already rendered every row, panel and the dialog words; this shows or hides
-// them. A confirmed action is sent to the #35 decision API (POST /payouts/<id>/<action>)
-// and the page reloads, so the list and detail show the saved state. If it does not save,
-// the dialog stays open and says so; nothing on screen changes. Cancel changes nothing.
+// Disbursement Desk, slices 1 to 4 (#32): switch the queue between Exceptions and All,
+// open one payout's detail, Approve / Hold / Return it after a confirm dialog, and
+// Reset demo. The server already rendered every row, panel and the dialog words; this
+// shows or hides them. A confirmed action is sent to the #35 decision API
+// (POST /payouts/<id>/<action>) and the page reloads, so the list and detail show the
+// saved state. If it does not save, the dialog stays open and says so; nothing on
+// screen changes. Cancel changes nothing. Reset demo posts to /payouts/reset, which
+// restores this visitor's synthetic seed only, then reloads on Exceptions with no
+// payout open. If reset does not save, nothing on screen changes, and one approved
+// line appears next to Reset demo. There is no confirm step for Reset (the approved
+// mock and slice 4 spec have none). The API body is never shown.
 // URL hash for reproducible screenshots: #f=all opens on All, #id=PO-1042 opens a payout,
-// #id=PO-1043&confirm=hold also opens that dialog. Reset demo is wired in slice 4.
+// #id=PO-1043&confirm=hold also opens that dialog.
 (function () {
   const chips = document.querySelectorAll('.chip[data-f]');
   const rows = document.querySelectorAll('#list li[data-ex]');
@@ -111,7 +116,33 @@
 
   if (dialog) dialog.addEventListener('close', () => { pending = null; });
 
+  // Reset is immediate: the approved mock and slice 4 spec have no confirm dialog.
+  // A failed reset leaves the page as it is and shows the approved line next to
+  // Reset demo (option A, c6774718893). The line clears on the next successful
+  // reset or reload. The API body is never shown.
+  let resetting = false;
+  const resetError = document.getElementById('r-error');
+  async function resetDemo() {
+    if (resetting) return;
+    resetting = true;
+    if (resetError) resetError.hidden = true;
+    const demo = document.querySelector('meta[name="demo-id"]');
+    try {
+      const reply = await fetch('/payouts/reset', {
+        method: 'POST',
+        headers: {'X-Demo-ID': demo ? demo.content : ''},
+      });
+      if (!reply.ok) throw new Error('not reset');
+    } catch (error) {
+      resetting = false;
+      if (resetError) resetError.hidden = false;
+      return;
+    }
+    location.replace(location.pathname + location.search);
+  }
+
   document.addEventListener('click', e => {
+    if (e.target.closest('#reset')) { resetDemo(); return; }
     if (e.target.closest('#cancel')) { dialog.close(); return; }
     if (e.target.closest('#ok')) { confirmAction(); return; }
     const act = e.target.closest('.panel [data-act]');
