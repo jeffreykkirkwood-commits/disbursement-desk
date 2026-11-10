@@ -1,7 +1,7 @@
 # START HERE — Rules-based notes stored on each payout (issue #37).
 # A fixed sentence is worked out from the rule that fired (or a short clean-payout
 # line) and saved on the payout row. Nothing here calls a network, a model, or a
-# paid API. The Desk does not show these notes yet (slice 5 will).
+# paid API. The Desk reads these stored notes and shows them as a rules note.
 """Deterministic rules-based payout notes. No network and no AI."""
 
 # FEATURE 01 — Name the clean-payout sentence and the three rule templates
