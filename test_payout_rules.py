@@ -1,5 +1,6 @@
 # Automated checks for payout_rules.py: the in-process automation path that
-# routes payouts through the exception rules (issue #44).
+# routes payouts through the exception rules (issue #44), including the
+# new-payee first-payout limit (issue #86).
 """Exercise clean, flagged and repeat automation runs with temporary fictional databases."""
 import json
 import tempfile
@@ -188,6 +189,78 @@ class AutomationTests(unittest.TestCase):
             self.create('PO-TEST-ONCE', 'Cedar Cleaning Co.', 'DEMO-CEDR-004', 64000)
         self.assertEqual(exists.exception.status, 409)
         self.assertEqual(json.dumps(payouts.list_payouts(self.db), sort_keys=True).count('PO-TEST-ONCE'), 1)
+
+    # FEATURE 08 — Scenario — a new payee's first payout over $1,000 is flagged (#86)
+    def test_new_payee_first_payout_over_1000_is_flagged(self):
+        result = self.create('PO-TEST-NEW-OVER', 'Oak Street Books', 'DEMO-OAKS-010', 100001)
+        self.assertTrue(result['changed'])
+        self.assertEqual(result['status'], 'FLAGGED')
+        payout = payouts.get_payout(self.db, 'PO-TEST-NEW-OVER')
+        self.assertEqual(payout['status'], 'FLAGGED')
+        self.assertEqual(payout['flag_code'], 'NEW_PAYEE_OVER_1000')
+        self.assertEqual(payout['flag_text'], 'First payout to this payee is over $1,000')
+        self.assertEqual(
+            payout['note_text'],
+            'Rule NEW_PAYEE_OVER_1000: First payout to this payee is over $1,000. '
+            'Review before sending.')
+        self.assertEqual(payout['note_source'], 'rules')
+        self.assertFalse(payout['note_fallback'])
+        self.assertNotIn('Written by AI', payout['note_text'])
+        event = result['event']
+        self.assertEqual(event['action'], 'route')
+        self.assertEqual(event['actor'], 'automation')
+        self.assertEqual(event['from_status'], 'PENDING')
+        self.assertEqual(event['to_status'], 'FLAGGED')
+        self.assertEqual(event['reason'], payout['flag_text'])
+
+    # FEATURE 08b — Scenario — a new payee's first payout of exactly $1,000 auto-pays
+    def test_new_payee_first_payout_of_1000_is_paid(self):
+        result = self.create('PO-TEST-NEW-LIMIT', 'Oak Street Books', 'DEMO-OAKS-010', 100000)
+        self.assertTrue(result['changed'])
+        self.assertEqual(result['status'], 'PAID')
+        payout = payouts.get_payout(self.db, 'PO-TEST-NEW-LIMIT')
+        self.assertEqual(payout['status'], 'PAID')
+        self.assertIsNone(payout['flag_code'])
+        self.assertIsNone(payout['flag_text'])
+        self.assertEqual(payout['note_text'], payout_notes.CLEAN_NOTE)
+
+    # FEATURE 08c — Scenario — an existing payee is not flagged by the new-payee rule
+    def test_existing_payee_is_unaffected_by_new_payee_rule(self):
+        # Cedar's usual amount is $640, so $1,000.01 is under 3× and should auto-pay.
+        result = self.create('PO-TEST-EXISTING', 'Cedar Cleaning Co.', 'DEMO-CEDR-004', 100001)
+        self.assertEqual(result['status'], 'PAID')
+        payout = payouts.get_payout(self.db, 'PO-TEST-EXISTING')
+        self.assertIsNone(payout['flag_code'])
+        self.assertEqual(payout['note_text'], payout_notes.CLEAN_NOTE)
+        # Harbor's large amount still trips the usual-amount rule, not the new-payee rule.
+        flagged = self.create('PO-TEST-EXISTING-AMT', 'Harbor Hardware', 'DEMO-HRBR-006', 207550)
+        self.assertEqual(flagged['status'], 'FLAGGED')
+        self.assertEqual(payouts.get_payout(self.db, 'PO-TEST-EXISTING-AMT')['flag_code'],
+                         'AMOUNT_OVER_3X_AVG')
+
+    # FEATURE 08d — Scenario — routing a new-payee flag twice changes nothing
+    def test_new_payee_flag_repeat_run_changes_nothing(self):
+        first = self.create('PO-TEST-NEW-REPEAT', 'Oak Street Books', 'DEMO-OAKS-010', 100001)
+        self.assertEqual(first['status'], 'FLAGGED')
+        payout = payouts.get_payout(self.db, 'PO-TEST-NEW-REPEAT')
+        events = payouts.list_events(self.db, 'PO-TEST-NEW-REPEAT')
+        second = payout_rules.route(self.db, 'PO-TEST-NEW-REPEAT', now=LATER)
+        self.assertFalse(second['changed'])
+        self.assertIsNone(second['event'])
+        self.assertEqual(second['status'], 'FLAGGED')
+        self.assertEqual(payouts.get_payout(self.db, 'PO-TEST-NEW-REPEAT'), payout)
+        self.assertEqual(payouts.list_events(self.db, 'PO-TEST-NEW-REPEAT'), events)
+        self.assertEqual(len(events), 1)
+
+    # FEATURE 08e — Scenario — the seed still has no new-payee flags
+    def test_seed_is_unchanged_by_the_new_payee_rule(self):
+        self.assertFalse(any(row['flag_code'] == 'NEW_PAYEE_OVER_1000'
+                             for row in payouts.list_payouts(self.db)))
+        self.assertEqual(json.dumps(payouts.list_payouts(self.db), sort_keys=True), self.seeded)
+        self.assertEqual(payouts.list_events(self.db), self.seed_events)
+        self.assertEqual(payouts.reset(self.db), 40)
+        self.assertEqual(json.dumps(payouts.list_payouts(self.db), sort_keys=True), self.seeded)
+        self.assertEqual(payouts.list_events(self.db), [])
 
 
 if __name__ == '__main__':

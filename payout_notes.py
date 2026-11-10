@@ -4,9 +4,9 @@
 # paid API. The Desk reads these stored notes and shows them as a rules note.
 """Deterministic rules-based payout notes. No network and no AI."""
 
-# FEATURE 01 — Name the clean-payout sentence and the three rule templates
-# Wording matches the approved #40 mock's rules notes. Amount and duplicate notes
-# include the stored flag sentence (so Harbor's 4× amount is not Acme's 6×) and
+# FEATURE 01 — Name the clean-payout sentence and the rule templates
+# Wording matches the approved #40 mock's rules notes. Amount, duplicate and new-payee
+# notes include the stored flag sentence (so Harbor's 4× amount is not Acme's 6×) and
 # the same "Review before sending." close the mock uses for those fallbacks.
 # Bank-change notes use the Bluebird Bakery sentence word for word. Harbor starts
 # Held because of its amount flag, so it gets the amount template, not an
@@ -15,6 +15,7 @@
 AMOUNT_OVER_3X_AVG = 'AMOUNT_OVER_3X_AVG'
 BANK_CHANGED_7D = 'BANK_CHANGED_7D'
 DUPLICATE_24H = 'DUPLICATE_24H'
+NEW_PAYEE_OVER_1000 = 'NEW_PAYEE_OVER_1000'
 SOURCE_RULES = 'rules'
 CLEAN_NOTE = 'No rules triggered. Within normal range for this payee.'
 BANK_CHANGED_NOTE = (
@@ -37,6 +38,8 @@ def rules_note(payout):
         text = BANK_CHANGED_NOTE
     elif code == DUPLICATE_24H:
         text = f'Rule {DUPLICATE_24H}: {flag}. {REVIEW_BEFORE_SENDING}'
+    elif code == NEW_PAYEE_OVER_1000:
+        text = f'Rule {NEW_PAYEE_OVER_1000}: {flag}. {REVIEW_BEFORE_SENDING}'
     else:
         text = CLEAN_NOTE
     return text, SOURCE_RULES, False
