@@ -1,0 +1,72 @@
+[
+  {
+    "event_id": "evt-replay-settle-submitted",
+    "payout_id": "PO-REPLAY-SETTLE",
+    "execution_status": "SUBMITTED",
+    "execution_ref": "replay:settle:submitted",
+    "at": "2026-11-11T18:00:00+00:00"
+  },
+  {
+    "event_id": "evt-replay-settle-submitted",
+    "payout_id": "PO-REPLAY-SETTLE",
+    "execution_status": "SUBMITTED",
+    "execution_ref": "replay:settle:submitted",
+    "at": "2026-11-11T18:00:00+00:00"
+  },
+  {
+    "event_id": "evt-replay-settle-settled",
+    "payout_id": "PO-REPLAY-SETTLE",
+    "execution_status": "SETTLED",
+    "execution_ref": "replay:settle:settled",
+    "at": "2026-11-11T18:01:00+00:00"
+  },
+  {
+    "event_id": "evt-replay-fail-submitted",
+    "payout_id": "PO-REPLAY-FAIL",
+    "execution_status": "SUBMITTED",
+    "execution_ref": "replay:fail:submitted",
+    "at": "2026-11-11T18:02:00+00:00"
+  },
+  {
+    "event_id": "evt-replay-fail-failed",
+    "payout_id": "PO-REPLAY-FAIL",
+    "execution_status": "FAILED",
+    "execution_ref": "replay:fail:failed",
+    "at": "2026-11-11T18:03:00+00:00"
+  },
+  {
+    "event_id": "evt-replay-unknown-submitted",
+    "payout_id": "PO-REPLAY-UNKNOWN",
+    "execution_status": "SUBMITTED",
+    "execution_ref": "replay:unknown:submitted",
+    "at": "2026-11-11T18:04:00+00:00"
+  },
+  {
+    "event_id": "evt-replay-unknown-unknown",
+    "payout_id": "PO-REPLAY-UNKNOWN",
+    "execution_status": "UNKNOWN",
+    "execution_ref": "replay:unknown:unknown",
+    "at": "2026-11-11T18:05:00+00:00"
+  },
+  {
+    "event_id": "evt-replay-unknown-retry",
+    "payout_id": "PO-REPLAY-UNKNOWN",
+    "execution_status": "SUBMITTED",
+    "execution_ref": "replay:unknown:retry",
+    "at": "2026-11-11T18:06:00+00:00"
+  },
+  {
+    "event_id": "evt-replay-unapproved-submitted",
+    "payout_id": "PO-REPLAY-UNAPPROVED",
+    "execution_status": "SUBMITTED",
+    "execution_ref": "replay:unapproved:submitted",
+    "at": "2026-11-11T18:07:00+00:00"
+  },
+  {
+    "event_id": "evt-replay-order-settled",
+    "payout_id": "PO-REPLAY-ORDER",
+    "execution_status": "SETTLED",
+    "execution_ref": "replay:order:settled",
+    "at": "2026-11-11T18:08:00+00:00"
+  }
+]
