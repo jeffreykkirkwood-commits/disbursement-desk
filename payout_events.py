@@ -105,6 +105,10 @@ def sync(database):
         added = []
         for payout in rows:
             payout_id = payout['payout_id']
+            # #56 replay targets stay off the live stream; payment-outcome moves
+            # belong in execution_events, not as created or status-changed events.
+            if payout_id in payouts.hidden_queue_ids() - payouts.HISTORY_IDS:
+                continue
             if payout_id not in seen:
                 event = dict(id=state['next_id'], type=CREATED, payout_id=payout_id,
                              status=payout['status'], payee_name=payout['payee_name'],
