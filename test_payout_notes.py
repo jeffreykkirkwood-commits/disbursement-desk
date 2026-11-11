@@ -106,6 +106,22 @@ class RulesNoteTests(unittest.TestCase):
         self.assertNotIn('Written by AI', text)
         self.assertNotIn('AI NOTE', text)
 
+    # FEATURE 05c — Scenario — a payout with two flags stores both rules notes (#89)
+    def test_multiple_rules_note_lists_every_reason(self):
+        text, source, fallback = payout_notes.rules_note({
+            'flag_code': 'NEW_PAYEE_OVER_1000,BANK_CHANGED_7D',
+            'flag_text': 'First payout to this payee is over $1,000. Payee bank details changed today',
+        })
+        self.assertEqual(
+            text,
+            'Rule NEW_PAYEE_OVER_1000: First payout to this payee is over $1,000. '
+            'Review before sending. ' + payout_notes.BANK_CHANGED_NOTE)
+        self.assertEqual((source, fallback), ('rules', False))
+        self.assertIn('Rule NEW_PAYEE_OVER_1000:', text)
+        self.assertIn('Rule BANK_CHANGED_7D:', text)
+        self.assertNotIn('Written by AI', text)
+        self.assertNotIn('AI NOTE', text)
+
 
 class StoredNoteTests(unittest.TestCase):
     def setUp(self):

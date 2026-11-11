@@ -165,13 +165,14 @@ class SeedTests(unittest.TestCase):
                 self.assertTrue(any(r['flag_code'] == code and r['status'] == 'FLAGGED' for r in rows))
         self.assertFalse(any(r['flag_code'] == 'NEW_PAYEE_OVER_1000' for r in rows))
         for r in rows:
-            self.assertIn(r['flag_code'], set(payouts.FLAG_TEXT) | {None})
+            codes = payouts.split_flag_codes(r['flag_code'])
+            self.assertTrue(all(code in payouts.FLAG_TEXT for code in codes), r['flag_code'])
             self.assertEqual(r['flag_code'] is None, r['flag_text'] is None)
             if r['status'] in ('FLAGGED', 'HELD'):
                 self.assertIsNotNone(r['flag_code'])
         for r in rows:
             with self.subTest(payout=r['payout_id']):
-                self.assertEqual(sorted(tripped_rules(r, rows)), [r['flag_code']] if r['flag_code'] else [])
+                self.assertEqual(sorted(tripped_rules(r, rows)), sorted(payouts.split_flag_codes(r['flag_code'])))
 
     # FEATURE 06b — Scenario — stored "usual" amounts equal the payee's earlier average
     def test_usual_amount_matches_history(self):

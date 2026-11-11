@@ -28,20 +28,37 @@ REVIEW_BEFORE_SENDING = 'Review before sending.'
 # Same payout facts always produce the same (text, source, fallback) triple.
 # Source is always "rules" and fallback is always False: these are the primary
 # stored rules notes, not an AI-unavailable stand-in. Unknown or missing flags
-# get the clean line. No clock and no I/O.
-def rules_note(payout):
-    code = payout.get('flag_code')
-    flag = payout.get('flag_text') or ''
+# get the clean line. When more than one rule is stored (comma-separated codes,
+# issue #89), the note lists every matching template, still as a rules note.
+# No clock and no I/O.
+def _note_for(code, flag):
     if code == AMOUNT_OVER_3X_AVG:
-        text = f'Rule {AMOUNT_OVER_3X_AVG}: {flag}. {REVIEW_BEFORE_SENDING}'
-    elif code == BANK_CHANGED_7D:
-        text = BANK_CHANGED_NOTE
-    elif code == DUPLICATE_24H:
-        text = f'Rule {DUPLICATE_24H}: {flag}. {REVIEW_BEFORE_SENDING}'
-    elif code == NEW_PAYEE_OVER_1000:
-        text = f'Rule {NEW_PAYEE_OVER_1000}: {flag}. {REVIEW_BEFORE_SENDING}'
-    else:
+        return f'Rule {AMOUNT_OVER_3X_AVG}: {flag}. {REVIEW_BEFORE_SENDING}'
+    if code == BANK_CHANGED_7D:
+        return BANK_CHANGED_NOTE
+    if code == DUPLICATE_24H:
+        return f'Rule {DUPLICATE_24H}: {flag}. {REVIEW_BEFORE_SENDING}'
+    if code == NEW_PAYEE_OVER_1000:
+        return f'Rule {NEW_PAYEE_OVER_1000}: {flag}. {REVIEW_BEFORE_SENDING}'
+    return None
+
+
+def rules_note(payout):
+    codes = [part for part in (payout.get('flag_code') or '').split(',') if part]
+    flag = payout.get('flag_text') or ''
+    if not codes:
         text = CLEAN_NOTE
+    elif len(codes) == 1:
+        text = _note_for(codes[0], flag) or CLEAN_NOTE
+    else:
+        parts = flag.split('. ') if flag else [''] * len(codes)
+        notes = []
+        for i, code in enumerate(codes):
+            piece = parts[i] if i < len(parts) else ''
+            note = _note_for(code, piece)
+            if note:
+                notes.append(note)
+        text = ' '.join(notes) if notes else CLEAN_NOTE
     return text, SOURCE_RULES, False
 
 
