@@ -473,17 +473,19 @@ def get_payout(database, payout_id):
 # approved mock lists them: Needs review, then Held, then Returned, then Sent, each
 # by the id's number so PO-998 comes before PO-1046 (and PO-1046 before PO-10000).
 # Ids with no trailing number keep a stable fallback: they sort after numbered ids
-# in the same status group, by the id text. Synthetic #56 replay targets stay off
-# the Desk and off the live stream (hidden_queue_ids); they are JSON/API only.
+# in the same status group, by the id text. Synthetic #56 replay and #57
+# reconciliation targets stay off the Desk and off the live stream
+# (hidden_queue_ids); they are JSON/API only.
 CURRENT_IDS = tuple(row[0] for row in CURRENT)
 HISTORY_IDS = frozenset(row['payout_id'] for row in seed_rows() if row['payout_id'] not in CURRENT_IDS)
 QUEUE_ORDER = {FLAGGED: 0, PENDING: 0, HELD: 1, RETURNED: 2, APPROVED: 3, PAID: 3}
 
 
 def hidden_queue_ids():
-    """History rows plus the synthetic #56 replay targets, which never appear on the Desk."""
+    """History rows plus synthetic replay and reconciliation targets, which never appear on the Desk."""
     from execution_replay import REPLAY_PAYOUT_IDS
-    return HISTORY_IDS | REPLAY_PAYOUT_IDS
+    from reconciliation import RECON_PAYOUT_IDS
+    return HISTORY_IDS | REPLAY_PAYOUT_IDS | RECON_PAYOUT_IDS
 
 
 _ID_NUMBER = re.compile(r'(\d+)$')

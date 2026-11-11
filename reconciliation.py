@@ -12,12 +12,53 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from payments import APIError
+import payout_notes
 import payouts
 
 
 logger = logging.getLogger('reconciliation')
 
 FIXTURE = Path(__file__).resolve().parent / 'fixtures' / 'settlement_demo.csv'
+AT = '2026-11-11T18:00:00+00:00'
+
+# Synthetic targets used only by this reconciliation. Unique payee names, so
+# seed flags and usual amounts stay as they are. current_queue and the live
+# stream hide these ids, so the Desk does not change. SETTLED targets carry an
+# execution_ref so they are in scope; seed rows backfilled to SETTLED without
+# a ref are not compared.
+_SETTLED = dict(status=payouts.PAID, review_status=payouts.APPROVED,
+                execution_status=payouts.SETTLED, execution_updated_at=AT)
+_UNKNOWN = dict(status=payouts.APPROVED, review_status=payouts.APPROVED,
+                execution_status=payouts.UNKNOWN)
+
+
+def _target(payout_id, payee, account, cents, extra):
+    row = payouts._row(payout_id, payee, account, cents, 'ACH', extra['status'], AT)
+    row.update(extra)
+    return row
+
+
+RECON_TARGETS = {
+    'PO-RECON-MATCH': _target(
+        'PO-RECON-MATCH', 'Recon Match Payee', 'DEMO-RCON-001', 25000,
+        dict(_SETTLED, execution_ref='recon-target:PO-RECON-MATCH')),
+    'PO-RECON-STATUS': _target(
+        'PO-RECON-STATUS', 'Recon Status Payee', 'DEMO-RCON-002', 26000,
+        dict(_SETTLED, execution_ref='recon-target:PO-RECON-STATUS')),
+    'PO-RECON-AMOUNT': _target(
+        'PO-RECON-AMOUNT', 'Recon Amount Payee', 'DEMO-RCON-003', 27000,
+        dict(_SETTLED, execution_ref='recon-target:PO-RECON-AMOUNT')),
+    'PO-RECON-MISSING': _target(
+        'PO-RECON-MISSING', 'Recon Missing Payee', 'DEMO-RCON-004', 30000,
+        dict(_SETTLED, execution_ref='recon-target:PO-RECON-MISSING')),
+    'PO-RECON-UNKNOWN': _target(
+        'PO-RECON-UNKNOWN', 'Recon Unknown Payee', 'DEMO-RCON-005', 28000, _UNKNOWN),
+}
+RECON_PAYOUT_IDS = frozenset(RECON_TARGETS)
+
+# Compare payouts that settlement should know about: sent or in flight, not
+# NOT_STARTED (nothing was sent) and not backfilled SETTLED rows with no ref.
+COMPARABLE = frozenset({payouts.SUBMITTED, payouts.UNKNOWN, payouts.SETTLED, payouts.FAILED})
 
 MATCHED = 'matched'
 STATUS_MISMATCH = 'status_mismatch'
@@ -68,9 +109,47 @@ def _open(database):
     return db
 
 
+def _prepare(db):
+    """Add the hidden synthetic targets if they are not already in this demo."""
+    existing = {row[0] for row in db.execute('SELECT payout_id FROM payouts')}
+    added = 0
+    for payout_id, row in RECON_TARGETS.items():
+        if payout_id in existing:
+            continue
+        row = payout_notes.apply(dict(row))
+        db.execute(
+            f'INSERT INTO payouts ({", ".join(payouts.COLUMNS)}) VALUES '
+            f'({", ".join("?" * len(payouts.COLUMNS))})',
+            tuple(row[c] for c in payouts.COLUMNS))
+        added += 1
+    return added
+
+
+def _hidden_other_ids():
+    """Synthetic targets from other behind-the-scenes cards; they are not reconciled here."""
+    try:
+        from execution_replay import REPLAY_PAYOUT_IDS
+    except ImportError:
+        return frozenset()
+    return REPLAY_PAYOUT_IDS
+
+
+def _in_scope(payout):
+    payout_id = payout['payout_id']
+    if payout_id in _hidden_other_ids():
+        return False
+    status = payout['execution_status']
+    if status not in COMPARABLE:
+        return False
+    if status == payouts.SETTLED and not payout.get('execution_ref'):
+        return False
+    return True
+
+
 def _load_ours(db):
     rows = db.execute(f'SELECT {", ".join(payouts.COLUMNS)} FROM payouts').fetchall()
-    return {row[0]: dict(zip(payouts.COLUMNS, row)) for row in rows}
+    ours = {row[0]: dict(zip(payouts.COLUMNS, row)) for row in rows}
+    return {payout_id: payout for payout_id, payout in ours.items() if _in_scope(payout)}
 
 
 def _item(run_id, payout_id, our_status, settlement_status, result, reason):
@@ -132,16 +211,22 @@ def _compare(payout, settlement):
 def reconcile(database, fixture=None, now=None):
     """Compare this database's payment outcomes with the settlement file and store one run.
 
-    UNKNOWN moves to SETTLED or FAILED only when settlement confirms it (same amount,
-    payout is Approved). The move is logged in execution_events. review_status and
-    status are never rewritten, so the Desk queue, stream and Sent word stay as they are.
+    Hidden synthetic targets are prepared first, the way #56 prepares replay
+    targets, so a real seeded demo produces the six expected cases. UNKNOWN
+    moves to SETTLED or FAILED only when settlement confirms it (same amount,
+    payout is Approved). The move is logged in execution_events. review_status
+    and status are never rewritten, so the Desk queue, stream and Sent word
+    stay as they are. NOT_STARTED payouts and SETTLED rows with no
+    execution_ref are left out of the comparison.
     """
     path = Path(fixture or FIXTURE)
     settlement = load_settlement(path)
     started = (now or datetime.now(timezone.utc)).isoformat()
+    payouts.ensure_seeded(database)
     db = _open(database)
     try:
         db.execute('BEGIN IMMEDIATE')
+        _prepare(db)
         ours = _load_ours(db)
         cursor = db.execute(
             'INSERT INTO reconciliation_runs (started_at, fixture_name, matched_count, '
