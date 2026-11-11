@@ -493,6 +493,18 @@ class DeskResetTests(DeskBase):
         # The approved sentence is in the page HTML, not built from the response.
         self.assertNotIn('That didn’t reset. Nothing has changed. Try again.', script)
 
+    # Scenario — Escape closes the open detail panel the same way Back does (#73)
+    def test_script_closes_detail_on_escape(self):
+        script = self.get('/desk.js').get_data(as_text=True)
+        self.assertIn("addEventListener('keydown'", script)
+        self.assertIn("e.key !== 'Escape'", script)
+        self.assertIn('dialog.open', script)
+        self.assertIn('close(true)', script)
+        self.assertIn('writeHash()', script)
+        # Leave Escape to the confirm dialog while it is open; do not add a third fetch.
+        self.assertIn('if (dialog && dialog.open) return;', script)
+        self.assertEqual(script.count('fetch('), 2)
+
     # Scenario — the failed-reset line is the exact approved sentence, next to Reset demo
     def test_failed_reset_wording_is_exact(self):
         html = self.get().get_data(as_text=True)
