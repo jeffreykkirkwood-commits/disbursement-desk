@@ -333,4 +333,4 @@ class HostedSeedTests(unittest.TestCase):
 
 
 # sha256 of the seed rows as sorted JSON; update only on purpose when the seed changes.
-PINNED_FINGERPRINT = '0358950ade9286335672c786b077cfcae0e3ece26dad8c3172cbfe5a334a9876'
+PINNED_FINGERPRINT = '308856bd86fd9ed521ec2fefb784741fe5061f6290ce3010c7685d7fe0b7bea1'

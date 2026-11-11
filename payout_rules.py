@@ -55,10 +55,12 @@ def route_one(db, payout_id, now=None):
         payouts.check_transition(step, target)
         step = target
     at = (now or datetime.now(timezone.utc)).isoformat()
+    review, outcome = payouts.review_and_outcome(step)
     db.execute(
-        'UPDATE payouts SET status = ?, flag_code = ?, flag_text = ?, note_text = ?, '
+        'UPDATE payouts SET status = ?, review_status = ?, execution_status = ?, '
+        'flag_code = ?, flag_text = ?, note_text = ?, '
         'note_source = ?, note_fallback = ?, updated_at = ? WHERE payout_id = ?',
-        (step, payout['flag_code'], payout['flag_text'], payout['note_text'],
+        (step, review, outcome, payout['flag_code'], payout['flag_text'], payout['note_text'],
          payout['note_source'], int(payout['note_fallback']), at, payout_id))
     key = f'route:{payout_id}'
     cursor = db.execute(
@@ -129,6 +131,7 @@ def create(database, payout_id, payee_name, payee_account, amount_cents, rail,
         db.execute('BEGIN IMMEDIATE')
         for statement in payouts.SCHEMA:
             db.execute(statement)
+        payouts._upgrade(db)
         if db.execute('SELECT 1 FROM payouts WHERE payout_id = ?', (payout_id,)).fetchone():
             raise APIError(409, 'A payout with this id already exists.')
         # Usual amount is the average of earlier paid payouts, matching the seed,
@@ -137,12 +140,15 @@ def create(database, payout_id, payee_name, payee_account, amount_cents, rail,
             'SELECT amount_cents FROM payouts WHERE payee_name = ? AND status = ?',
             (payee_name, payouts.PAID))]
         usual = sum(past) // len(past) if past else None
+        review, outcome = payouts.review_and_outcome(payouts.PENDING)
         row = dict(payout_id=payout_id, payee_name=payee_name, payee_account=payee_account,
                    account_name=payee_name, amount_cents=amount_cents, currency='USD', rail=rail,
                    status=payouts.PENDING, flag_code=None, flag_text=None,
                    payee_usual_cents=usual, bank_details_changed_at=bank_details_changed_at,
                    note_text=None, note_source=None, note_fallback=None,
-                   created_at=at, updated_at=at)
+                   created_at=at, updated_at=at,
+                   review_status=review, execution_status=outcome, execution_ref=None,
+                   execution_updated_at=None)
         db.execute(
             f'INSERT INTO payouts ({", ".join(payouts.COLUMNS)}) VALUES '
             f'({", ".join("?" * len(payouts.COLUMNS))})',

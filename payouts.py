@@ -2,7 +2,7 @@
 # the fixed set of fictional payouts every new demo starts with, the operator's
 # approve / hold / return decisions, and the hook that runs automation after a seed.
 # The /desk page (desk.py) reads the current queue from here.
-"""Payout table, transitions, synthetic seed data (#34), operator decisions (#35), stored rules notes (#37) and automation hook (#44)."""
+"""Payout table, transitions, synthetic seed data (#34), operator decisions (#35), stored rules notes (#37), automation hook (#44) and review/outcome columns (#54)."""
 import random
 import sqlite3
 from contextlib import closing
@@ -19,6 +19,30 @@ from payments import APIError
 PENDING, FLAGGED, APPROVED, HELD, RETURNED, PAID = (
     'PENDING', 'FLAGGED', 'APPROVED', 'HELD', 'RETURNED', 'PAID')
 STATUSES = (PENDING, FLAGGED, APPROVED, HELD, RETURNED, PAID)
+
+# FEATURE 01b — Name the review decision and payment outcome (#54, docs/DESK-STATES.md)
+# These are stored separately from today's status column. #54 is schema only: status
+# stays the source for the queue, the stream and the Sent word, and for the new-payee
+# and usual-amount rules until #55. review_status uses the same codes as status except
+# there is no PAID (Approved is APPROVED; Needs review is FLAGGED; not checked is
+# PENDING). execution_status is the payment outcome.
+NOT_STARTED, SUBMITTED, UNKNOWN, SETTLED, FAILED = (
+    'NOT_STARTED', 'SUBMITTED', 'UNKNOWN', 'SETTLED', 'FAILED')
+EXECUTION_STATUSES = (NOT_STARTED, SUBMITTED, UNKNOWN, SETTLED, FAILED)
+REVIEW_STATUSES = (PENDING, FLAGGED, APPROVED, HELD, RETURNED)
+EXECUTION_SOURCES = ('replay', 'reconciliation')
+
+
+def review_and_outcome(status):
+    """Map today's status to (review_status, execution_status) for backfill and writes."""
+    if status == PAID:
+        return APPROVED, SETTLED
+    if status == APPROVED:
+        return APPROVED, NOT_STARTED
+    if status in (FLAGGED, PENDING, HELD, RETURNED):
+        return status, NOT_STARTED
+    raise ValueError(f'Unknown payout status: {status}')
+
 
 # FEATURE 02 — List the allowed status changes
 # Every move a payout may make. Anything not listed is blocked. Held payouts can still be
@@ -84,6 +108,9 @@ FLAG_TEXT_SEP = '. '
 # behind a flag. Note fields are filled by payout_notes.apply() from those stored rules
 # (#37). They stay 'rules' notes with fallback off; an AI source is reserved for later
 # (#38). payout_events is the operator action log (who, what, when, why).
+# review_status, execution_status, execution_ref and execution_updated_at are the #54
+# state split (docs/DESK-STATES.md). New tables hold later replay and reconciliation
+# rows; they start empty. Today's status column is not replaced.
 SCHEMA = (
     '''CREATE TABLE IF NOT EXISTS payouts (
         payout_id TEXT PRIMARY KEY,
@@ -102,7 +129,11 @@ SCHEMA = (
         note_source TEXT CHECK(note_source IS NULL OR note_source IN ('ai', 'rules')),
         note_fallback INTEGER CHECK(note_fallback IS NULL OR note_fallback IN (0, 1)),
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        review_status TEXT CHECK(review_status IS NULL OR review_status IN ('PENDING', 'FLAGGED', 'APPROVED', 'HELD', 'RETURNED')),
+        execution_status TEXT NOT NULL DEFAULT 'NOT_STARTED' CHECK(execution_status IN ('NOT_STARTED', 'SUBMITTED', 'UNKNOWN', 'SETTLED', 'FAILED')),
+        execution_ref TEXT,
+        execution_updated_at TEXT
     )''',
     '''CREATE TABLE IF NOT EXISTS payout_events (
         event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -115,10 +146,37 @@ SCHEMA = (
         idempotency_key TEXT UNIQUE,
         at TEXT NOT NULL
     )''',
+    '''CREATE TABLE IF NOT EXISTS execution_events (
+        event_id TEXT PRIMARY KEY,
+        payout_id TEXT NOT NULL REFERENCES payouts(payout_id),
+        execution_status TEXT NOT NULL CHECK(execution_status IN ('NOT_STARTED', 'SUBMITTED', 'UNKNOWN', 'SETTLED', 'FAILED')),
+        execution_ref TEXT,
+        at TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('replay', 'reconciliation'))
+    )''',
+    '''CREATE TABLE IF NOT EXISTS reconciliation_runs (
+        run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        fixture_name TEXT NOT NULL,
+        matched_count INTEGER NOT NULL DEFAULT 0,
+        mismatched_count INTEGER NOT NULL DEFAULT 0,
+        unknown_count INTEGER NOT NULL DEFAULT 0
+    )''',
+    '''CREATE TABLE IF NOT EXISTS reconciliation_items (
+        item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER NOT NULL REFERENCES reconciliation_runs(run_id),
+        payout_id TEXT,
+        our_status TEXT,
+        settlement_status TEXT,
+        result TEXT NOT NULL,
+        reason TEXT
+    )''',
 )
 COLUMNS = ('payout_id', 'payee_name', 'payee_account', 'account_name', 'amount_cents', 'currency',
            'rail', 'status', 'flag_code', 'flag_text', 'payee_usual_cents', 'bank_details_changed_at', 'note_text', 'note_source', 'note_fallback',
-           'created_at', 'updated_at')
+           'created_at', 'updated_at', 'review_status', 'execution_status', 'execution_ref',
+           'execution_updated_at')
 
 # FEATURE 07 — Fix the fictional starting set
 # Every name and DEMO- account below is invented. The current queue mirrors the approved
@@ -151,10 +209,13 @@ HISTORY_PAYEES = (  # payee, account, usual amount in dollars
 
 
 def _row(payout_id, payee, account, cents, rail, status, when, usual=None, changed=None):
+    review, outcome = review_and_outcome(status)
     return dict(payout_id=payout_id, payee_name=payee, payee_account=account, account_name=payee,
                 amount_cents=cents, currency='USD', rail=rail, status=status, flag_code=None,
                 flag_text=None, payee_usual_cents=usual, bank_details_changed_at=changed,
-                note_text=None, note_source=None, note_fallback=None, created_at=when, updated_at=when)
+                note_text=None, note_source=None, note_fallback=None, created_at=when, updated_at=when,
+                review_status=review, execution_status=outcome, execution_ref=None,
+                execution_updated_at=None)
 
 
 # FEATURE 07b — Work out why a payout is flagged, from its data
@@ -241,7 +302,15 @@ def seed_rows():
 # don't linger. Otherwise only an empty payout table is seeded, so a restart keeps that
 # visitor's changes. Returns how many rows were added.
 ADDED_COLUMNS = (('payee_usual_cents', 'INTEGER CHECK(payee_usual_cents IS NULL OR payee_usual_cents > 0)'),
-                 ('bank_details_changed_at', 'TEXT'))
+                 ('bank_details_changed_at', 'TEXT'),
+                 ('review_status',
+                  "TEXT CHECK(review_status IS NULL OR review_status IN "
+                  "('PENDING', 'FLAGGED', 'APPROVED', 'HELD', 'RETURNED'))"),
+                 ('execution_status',
+                  "TEXT NOT NULL DEFAULT 'NOT_STARTED' CHECK(execution_status IN "
+                  "('NOT_STARTED', 'SUBMITTED', 'UNKNOWN', 'SETTLED', 'FAILED'))"),
+                 ('execution_ref', 'TEXT'),
+                 ('execution_updated_at', 'TEXT'))
 
 
 def _upgrade(db):
@@ -259,25 +328,26 @@ def ensure_seeded(database):
             db.execute(statement)
         upgraded = _upgrade(db)
         if upgraded and not db.execute('SELECT COUNT(*) FROM payout_events').fetchone()[0]:
-            db.execute('DELETE FROM payouts')
+            _clear_payout_data(db)
         if db.execute('SELECT COUNT(*) FROM payouts').fetchone()[0]:
             _backfill_notes(db)
+            _backfill_state(db)
             return 0
         return _insert_seed(db)
 
 
 # FEATURE 10 — Put this one demo back to the starting set
-# Clears this database's payouts and action log and reseeds them. It only touches the
-# file it is given (one visitor's demo), never anyone else's. The Desk footer calls
-# this through POST /payouts/reset (#32 slice 4).
+# Clears this database's payouts, action log, execution events and reconciliation
+# rows, and reseeds them. It only touches the file it is given (one visitor's demo),
+# never anyone else's. The Desk footer calls this through POST /payouts/reset
+# (#32 slice 4).
 def reset(database):
     with sqlite3.connect(str(database), timeout=10) as db:
         db.execute('BEGIN IMMEDIATE')
         for statement in SCHEMA:
             db.execute(statement)
         _upgrade(db)
-        db.execute('DELETE FROM payout_events')
-        db.execute('DELETE FROM payouts')
+        _clear_payout_data(db)
         return _insert_seed(db)
 
 
@@ -285,6 +355,14 @@ def reset(database):
 # Writes a rules note only where note_text is still NULL. Status, flags and the
 # action log are left alone, so an operator's work is kept. Running it again
 # after notes exist does nothing.
+def _clear_payout_data(db):
+    db.execute('DELETE FROM reconciliation_items')
+    db.execute('DELETE FROM reconciliation_runs')
+    db.execute('DELETE FROM execution_events')
+    db.execute('DELETE FROM payout_events')
+    db.execute('DELETE FROM payouts')
+
+
 def _backfill_notes(db):
     rows = db.execute(
         f'SELECT {", ".join(COLUMNS)} FROM payouts WHERE note_text IS NULL').fetchall()
@@ -295,6 +373,22 @@ def _backfill_notes(db):
             'WHERE payout_id = ?',
             (payout['note_text'], payout['note_source'],
              int(payout['note_fallback']), payout['payout_id']))
+    return len(rows)
+
+
+# FEATURE 10c — Fill review and outcome from today's status
+# Writes review_status and execution_status only where review_status is still NULL,
+# using the #54 mapping in docs/DESK-STATES.md. Does not change status, so the queue,
+# the stream and the Sent word stay as they are. Running it again after a backfill
+# changes nothing.
+def _backfill_state(db):
+    rows = db.execute(
+        'SELECT payout_id, status FROM payouts WHERE review_status IS NULL').fetchall()
+    for payout_id, status in rows:
+        review, outcome = review_and_outcome(status)
+        db.execute(
+            'UPDATE payouts SET review_status = ?, execution_status = ? WHERE payout_id = ?',
+            (review, outcome, payout_id))
     return len(rows)
 
 
@@ -397,6 +491,7 @@ def decide(database, payout_id, action, actor, idempotency_key, reason=None, now
         db.execute('BEGIN IMMEDIATE')
         for statement in SCHEMA:
             db.execute(statement)
+        _upgrade(db)
         existing = db.execute(f'SELECT {", ".join(EVENT_COLUMNS)} FROM payout_events WHERE idempotency_key = ?',
                               (idempotency_key,)).fetchone()
         if existing:
@@ -417,7 +512,11 @@ def decide(database, payout_id, action, actor, idempotency_key, reason=None, now
             check_transition(step, target)
             step = target
         at = (now or datetime.now(timezone.utc)).isoformat()
-        db.execute('UPDATE payouts SET status = ?, updated_at = ? WHERE payout_id = ?', (step, at, payout_id))
+        review, outcome = review_and_outcome(step)
+        db.execute(
+            'UPDATE payouts SET status = ?, review_status = ?, execution_status = ?, updated_at = ? '
+            'WHERE payout_id = ?',
+            (step, review, outcome, at, payout_id))
         cursor = db.execute('INSERT INTO payout_events (payout_id, action, from_status, to_status, actor, reason, '
                             'idempotency_key, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
                             (payout_id, action, current, step, actor, reason, idempotency_key, at))
