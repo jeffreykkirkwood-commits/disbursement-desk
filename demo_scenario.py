@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import execution_replay
+import payout_events
 import payouts
 
 
@@ -93,6 +94,9 @@ def run(database, now=None, reset=True):
     """
     if reset:
         payouts.reset(database)
+        # Same as POST /payouts/reset: drop the old stream log so the next
+        # sync starts from the fresh seed, not the previous demo's statuses.
+        payout_events.after_reset(database)
     else:
         payouts.ensure_seeded(database)
     when = now or NOW

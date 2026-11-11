@@ -103,6 +103,40 @@ class DemoScenarioTests(unittest.TestCase):
         self.assertEqual(desk.STATUS_WORDS[queue['PO-1044']['status']], ('Returned', 's-returned'))
         self.assertTrue(set(execution_replay_ids()).isdisjoint(queue))
 
+    # FEATURE 08 — Scenario — after an already-used demo, the stream shows only the scripted moves
+    def test_scenario_resets_the_stream_before_scripted_moves(self):
+        payouts.ensure_seeded(self.db)
+        payout_events.sync(self.db)
+        earlier = demo_scenario.NOW
+        payouts.decide(self.db, 'PO-1043', 'approve', 'Prior Reviewer', 'prior-approve', now=earlier)
+        payouts.decide(self.db, 'PO-1044', 'return', 'Prior Reviewer', 'prior-return', now=earlier)
+        payout_events.sync(self.db)
+        prior = {(event['payout_id'], event.get('from_status'), event.get('to_status'))
+                 for event in payout_events.events_after(self.db, 0)
+                 if event['type'] == 'status-changed'}
+        self.assertIn(('PO-1043', 'FLAGGED', 'PAID'), prior)
+        self.assertIn(('PO-1044', 'FLAGGED', 'RETURNED'), prior)
+        demo_scenario.run(self.db)
+        added = payout_events.sync(self.db)
+        moves = [(event['payout_id'], event['from_status'], event['to_status'])
+                 for event in added if event['type'] == 'status-changed']
+        self.assertEqual(moves, [
+            ('PO-1042', 'FLAGGED', 'PAID'),
+            ('PO-1043', 'FLAGGED', 'HELD'),
+            ('PO-1044', 'FLAGGED', 'RETURNED'),
+        ])
+        self.assertNotIn(('PO-1043', 'PAID', 'HELD'), moves)
+        self.assertTrue(any(event['payout_id'] == 'PO-1044' and event['to_status'] == 'RETURNED'
+                            for event in added if event['type'] == 'status-changed'))
+        changed = [event for event in payout_events.events_after(self.db, 0)
+                   if event['type'] == 'status-changed']
+        for event in changed:
+            self.assertNotIn(event['from_status'], payouts.FINAL_STATUSES,
+                             f'forbidden stream move {event["from_status"]}→{event["to_status"]}')
+        self.assertNotIn(('PO-1043', 'PAID', 'HELD'),
+                         [(event['payout_id'], event['from_status'], event['to_status'])
+                          for event in changed])
+
     # FEATURE 05 — Scenario — no network calls
     def test_scenario_makes_no_network_calls(self):
         def blocked(*args, **kwargs):
