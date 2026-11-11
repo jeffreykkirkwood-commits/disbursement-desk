@@ -4,6 +4,7 @@
 # The /desk page (desk.py) reads the current queue from here.
 """Payout table, transitions, synthetic seed data (#34), operator decisions (#35), stored rules notes (#37), automation hook (#44) and review/outcome columns (#54)."""
 import random
+import re
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -432,10 +433,24 @@ def get_payout(database, payout_id):
 # Every payout except the 30 history rows, which exist only for usual-amount math
 # (a history view was declined, #40). Newly created payouts, including ones flagged
 # after the seed, are included so they appear on the Desk (#80). Ordered the way the
-# approved mock lists them: Needs review, then Held, then Returned, then Sent, each by id.
+# approved mock lists them: Needs review, then Held, then Returned, then Sent, each
+# by the id's number so PO-998 comes before PO-1046 (and PO-1046 before PO-10000).
+# Ids with no trailing number keep a stable fallback: they sort after numbered ids
+# in the same status group, by the id text.
 CURRENT_IDS = tuple(row[0] for row in CURRENT)
 HISTORY_IDS = frozenset(row['payout_id'] for row in seed_rows() if row['payout_id'] not in CURRENT_IDS)
 QUEUE_ORDER = {FLAGGED: 0, PENDING: 0, HELD: 1, RETURNED: 2, APPROVED: 3, PAID: 3}
+
+
+_ID_NUMBER = re.compile(r'(\d+)$')
+
+
+def payout_id_sort_key(payout_id):
+    """Sort key for a payout id: the trailing number, then the id itself."""
+    match = _ID_NUMBER.search(payout_id)
+    if match:
+        return (0, int(match.group(1)), payout_id)
+    return (1, 0, payout_id)
 
 
 def current_queue(database):
@@ -444,7 +459,7 @@ def current_queue(database):
         rows = db.execute(f'SELECT {", ".join(COLUMNS)} FROM payouts WHERE payout_id NOT IN '
                           f'({", ".join("?" * len(history))})', history).fetchall()
     queue = [_public(row) for row in rows]
-    return sorted(queue, key=lambda p: (QUEUE_ORDER[p['status']], p['payout_id']))
+    return sorted(queue, key=lambda p: (QUEUE_ORDER[p['status']], payout_id_sort_key(p['payout_id'])))
 
 
 # FEATURE 13 — Name the three Desk decisions
