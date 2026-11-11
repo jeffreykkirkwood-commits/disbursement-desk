@@ -272,6 +272,24 @@ def create_app(directory=None, public_origin=None, payments=None):
     def desk_script():
         return Response(Path(__file__).with_name('desk.js').read_text(), mimetype='text/javascript')
 
+    # FEATURE 28 — Run the fixed demo scenario (#61)
+    # Behind the scenes only. POST uses this visitor's existing demo session
+    # cookie (a POST cannot start a new session). Resets this visitor's demo,
+    # applies the scripted Approve, Hold and Return, and runs the #56 replay
+    # once. Results are JSON only. No page, link or button is added. The Desk
+    # words and layout are unchanged. Reset demo still restores the starting
+    # set, including execution_events and the reconciliation tables.
+    # Reconciliation (#57, PR #107) is not on main yet and is not run here.
+    @app.post('/demo-scenario')
+    def run_demo_scenario():
+        import demo_scenario
+        database = g.payments.database
+        report = demo_scenario.run(database)
+        event('demo_scenario_run',
+              decisions=len(report['decisions']),
+              replay_applied=report['replay']['applied'])
+        return jsonify(report)
+
     # FEATURE 21 — Approve, hold or return one payout (Desk back end, issue #35)
     # JSON body: reviewer (required) and reason (optional; Hold and Return are
     # confirm-only). Needs an Idempotency-Key header. Works only on this visitor's own
