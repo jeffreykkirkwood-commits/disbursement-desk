@@ -125,6 +125,12 @@ class DeskTests(DeskBase):
         self.assertIn('<a class="desk-link" href="/desk">Disbursement Desk</a>', lab)
         self.assertEqual(self.get('/').headers['Location'], '/dashboard')
 
+    # Scenario — the queue row keyboard focus ring is drawn inside the row so .list does not clip it (#102)
+    def test_queue_row_focus_ring_is_inset(self):
+        html = self.get().get_data(as_text=True)
+        self.assertIn(':focus-visible{outline:3px solid #b38528;outline-offset:2px}', html)
+        self.assertIn('.row:focus-visible{outline-offset:-3px}', html)
+
     # Scenario — read-only: opening the Desk changes no payout and logs no action
     def test_opening_desk_writes_nothing(self):
         self.get()
