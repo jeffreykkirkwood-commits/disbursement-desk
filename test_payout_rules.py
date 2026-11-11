@@ -188,7 +188,8 @@ class AutomationTests(unittest.TestCase):
         with self.assertRaises(APIError) as exists:
             self.create('PO-TEST-ONCE', 'Cedar Cleaning Co.', 'DEMO-CEDR-004', 64000)
         self.assertEqual(exists.exception.status, 409)
-        self.assertEqual(json.dumps(payouts.list_payouts(self.db), sort_keys=True).count('PO-TEST-ONCE'), 1)
+        self.assertEqual(sum(1 for payout in payouts.list_payouts(self.db)
+                             if payout['payout_id'] == 'PO-TEST-ONCE'), 1)
 
     # FEATURE 08 — Scenario — a new payee's first payout over $1,000 is flagged (#86)
     def test_new_payee_first_payout_over_1000_is_flagged(self):

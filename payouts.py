@@ -2,7 +2,8 @@
 # the fixed set of fictional payouts every new demo starts with, the operator's
 # approve / hold / return decisions, and the hook that runs automation after a seed.
 # The /desk page (desk.py) reads the current queue from here.
-"""Payout table, transitions, synthetic seed data (#34), operator decisions (#35), stored rules notes (#37), automation hook (#44) and review/outcome columns (#54)."""
+"""Payout table, transitions, synthetic seed data (#34), operator decisions (#35), stored rules notes (#37), automation hook (#44), review/outcome columns (#54) and decision evidence plus demo settle (#55 option B)."""
+import json
 import random
 import re
 import sqlite3
@@ -22,16 +23,25 @@ PENDING, FLAGGED, APPROVED, HELD, RETURNED, PAID = (
 STATUSES = (PENDING, FLAGGED, APPROVED, HELD, RETURNED, PAID)
 
 # FEATURE 01b — Name the review decision and payment outcome (#54, docs/DESK-STATES.md)
-# These are stored separately from today's status column. #54 is schema only: status
-# stays the source for the queue, the stream and the Sent word, and for the new-payee
-# and usual-amount rules until #55. review_status uses the same codes as status except
-# there is no PAID (Approved is APPROVED; Needs review is FLAGGED; not checked is
-# PENDING). execution_status is the payment outcome.
+# These are stored separately from today's status column. status stays the source for
+# the queue, the stream and the Sent word. The new-payee rule and the usual-amount
+# average read execution_status SETTLED (#55). review_status uses the same codes as
+# status except there is no PAID (Approved is APPROVED; Needs review is FLAGGED; not
+# checked is PENDING). execution_status is the payment outcome.
 NOT_STARTED, SUBMITTED, UNKNOWN, SETTLED, FAILED = (
     'NOT_STARTED', 'SUBMITTED', 'UNKNOWN', 'SETTLED', 'FAILED')
 EXECUTION_STATUSES = (NOT_STARTED, SUBMITTED, UNKNOWN, SETTLED, FAILED)
 REVIEW_STATUSES = (PENDING, FLAGGED, APPROVED, HELD, RETURNED)
-EXECUTION_SOURCES = ('replay', 'reconciliation')
+DEMO, REPLAY, RECONCILIATION = 'demo', 'replay', 'reconciliation'
+EXECUTION_SOURCES = (DEMO, REPLAY, RECONCILIATION)
+RULES_VERSION = 'desk-rules-1'
+EXECUTION_TRANSITIONS = {
+    NOT_STARTED: frozenset({SUBMITTED}),
+    SUBMITTED: frozenset({SETTLED, FAILED, UNKNOWN}),
+    UNKNOWN: frozenset({SETTLED, FAILED}),
+    SETTLED: frozenset(),
+    FAILED: frozenset(),
+}
 
 
 def review_and_outcome(status):
@@ -43,6 +53,16 @@ def review_and_outcome(status):
     if status in (FLAGGED, PENDING, HELD, RETURNED):
         return status, NOT_STARTED
     raise ValueError(f'Unknown payout status: {status}')
+
+
+def check_execution_transition(current, target):
+    """Refuse an illegal payment-outcome move. UNKNOWN cannot go back to SUBMITTED."""
+    if current not in EXECUTION_TRANSITIONS or target not in EXECUTION_TRANSITIONS:
+        raise APIError(422, 'Unknown payment outcome.')
+    if target not in EXECUTION_TRANSITIONS[current]:
+        if current == UNKNOWN and target == SUBMITTED:
+            raise APIError(409, 'An UNKNOWN payment outcome cannot be submitted or retried automatically.')
+        raise APIError(409, f'A {current} payment outcome cannot move to {target}.')
 
 
 # FEATURE 02 — List the allowed status changes
@@ -145,7 +165,8 @@ SCHEMA = (
         actor TEXT NOT NULL,
         reason TEXT,
         idempotency_key TEXT UNIQUE,
-        at TEXT NOT NULL
+        at TEXT NOT NULL,
+        evidence TEXT
     )''',
     '''CREATE TABLE IF NOT EXISTS execution_events (
         event_id TEXT PRIMARY KEY,
@@ -153,7 +174,7 @@ SCHEMA = (
         execution_status TEXT NOT NULL CHECK(execution_status IN ('NOT_STARTED', 'SUBMITTED', 'UNKNOWN', 'SETTLED', 'FAILED')),
         execution_ref TEXT,
         at TEXT NOT NULL,
-        source TEXT NOT NULL CHECK(source IN ('replay', 'reconciliation'))
+        source TEXT NOT NULL CHECK(source IN ('demo', 'replay', 'reconciliation'))
     )''',
     '''CREATE TABLE IF NOT EXISTS reconciliation_runs (
         run_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -223,8 +244,8 @@ def _row(payout_id, payee, account, cents, rail, status, when, usual=None, chang
 # Checks the approved rules in order against the payout's own facts and the earlier
 # payouts given, and returns every rule that fires as (rule codes, plain sentences),
 # or (None, None) if none fires. Used to build the seed so every stored reason is
-# backed by data. A payee counts as new until earlier contains at least one PAID
-# payout for the same payee name (issue #89). Several rules can fire at once, so a
+# backed by data. A payee counts as new until earlier contains at least one SETTLED
+# payout for the same payee name (issue #89, #55 option B). Several rules can fire at once, so a
 # new-payee flag no longer hides a bank-details change.
 def split_flag_codes(flag_code):
     if not flag_code:
@@ -242,7 +263,7 @@ def explain_flag(payout, earlier):
     prior_paid = [other for other in earlier
                   if other['payout_id'] != payout['payout_id']
                   and other['payee_name'] == payout['payee_name']
-                  and other.get('status') == PAID]
+                  and other.get('execution_status') == SETTLED]
     if not prior_paid and payout['amount_cents'] > NEW_PAYEE_LIMIT_CENTS:
         flags.append((NEW_PAYEE_OVER_1000, FLAG_TEXT[NEW_PAYEE_OVER_1000]))
     changed = payout.get('bank_details_changed_at')
@@ -315,15 +336,30 @@ ADDED_COLUMNS = (('payee_usual_cents', 'INTEGER CHECK(payee_usual_cents IS NULL 
 
 
 def _upgrade(db):
+    changed = False
     existing = {row[1] for row in db.execute('PRAGMA table_info(payouts)')}
     missing = [(name, kind) for name, kind in ADDED_COLUMNS if name not in existing]
     for name, kind in missing:
         db.execute(f'ALTER TABLE payouts ADD COLUMN {name} {kind}')
-    return bool(missing)
+        changed = True
+    event_cols = {row[1] for row in db.execute('PRAGMA table_info(payout_events)')}
+    if event_cols and 'evidence' not in event_cols:
+        db.execute('ALTER TABLE payout_events ADD COLUMN evidence TEXT')
+        changed = True
+    row = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='execution_events'").fetchone()
+    if row and "'demo'" not in (row[0] or ''):
+        db.execute('ALTER TABLE execution_events RENAME TO execution_events_old')
+        db.execute(SCHEMA[2])
+        db.execute('INSERT INTO execution_events SELECT * FROM execution_events_old')
+        db.execute('DROP TABLE execution_events_old')
+        changed = True
+    return changed
 
 
 def ensure_seeded(database):
     with sqlite3.connect(str(database), timeout=10) as db:
+        db.execute('PRAGMA foreign_keys = ON')
         db.execute('BEGIN IMMEDIATE')
         for statement in SCHEMA:
             db.execute(statement)
@@ -344,6 +380,7 @@ def ensure_seeded(database):
 # (#32 slice 4).
 def reset(database):
     with sqlite3.connect(str(database), timeout=10) as db:
+        db.execute('PRAGMA foreign_keys = ON')
         db.execute('BEGIN IMMEDIATE')
         for statement in SCHEMA:
             db.execute(statement)
@@ -472,7 +509,8 @@ APPROVE, HOLD, RETURN = 'approve', 'hold', 'return'
 DECISIONS = {APPROVE: (APPROVED, PAID), HOLD: (HELD,), RETURN: (RETURNED,)}
 DECIDABLE = frozenset({FLAGGED, HELD})
 EVENT_COLUMNS = ('event_id', 'payout_id', 'action', 'from_status', 'to_status', 'actor', 'reason',
-                 'idempotency_key', 'at')
+                 'idempotency_key', 'at', 'evidence')
+EXECUTION_EVENT_COLUMNS = ('event_id', 'payout_id', 'execution_status', 'execution_ref', 'at', 'source')
 
 
 # FEATURE 14 — Check the decision details
@@ -496,13 +534,18 @@ def _clean(action, actor, reason, key):
 
 # FEATURE 15 — Record one decision, at most once per key
 # One locked save: look up the key, check the move, update the payout and append one row
-# to the action log (reviewer, from/to status, reason, key, time). Repeating the same
-# decision with the same key changes nothing and returns the first result (200); the same
-# key with different details is refused (409). Illegal moves are refused with a clear
-# 409 and change nothing. Works only on the one viewer database it is given.
+# to the action log (reviewer, from/to status, reason, key, time, and an evidence snapshot).
+# Repeating the same decision with the same key changes nothing and returns the first
+# result (200); the same key with different details is refused (409). Illegal moves are
+# refused with a clear 409 and change nothing. Works only on the one viewer database it
+# is given. Approve (#55 option B) records review_status APPROVED and the evidence, then
+# the demo settle step in the same save writes execution_status SETTLED, an execution
+# event, execution_ref and execution_updated_at, and status PAID, so the queue, stream
+# and Sent word still see PAID. Approve itself does not write PAID.
 def decide(database, payout_id, action, actor, idempotency_key, reason=None, now=None):
     actor, reason = _clean(action, actor, reason, idempotency_key)
     with sqlite3.connect(str(database), timeout=10) as db:
+        db.execute('PRAGMA foreign_keys = ON')
         db.execute('BEGIN IMMEDIATE')
         for statement in SCHEMA:
             db.execute(statement)
@@ -510,15 +553,17 @@ def decide(database, payout_id, action, actor, idempotency_key, reason=None, now
         existing = db.execute(f'SELECT {", ".join(EVENT_COLUMNS)} FROM payout_events WHERE idempotency_key = ?',
                               (idempotency_key,)).fetchone()
         if existing:
-            previous = dict(zip(EVENT_COLUMNS, existing))
+            previous = _as_event(existing)
             if (previous['payout_id'], previous['action'], previous['actor'], previous['reason']) != (
                     payout_id, action, actor, reason):
                 raise APIError(409, 'This Idempotency-Key was already used for a different decision.')
             return 200, previous
-        row = db.execute('SELECT status FROM payouts WHERE payout_id = ?', (payout_id,)).fetchone()
+        row = db.execute(f'SELECT {", ".join(COLUMNS)} FROM payouts WHERE payout_id = ?',
+                         (payout_id,)).fetchone()
         if not row:
             raise APIError(404, 'Payout not found.')
-        current = row[0]
+        payout = dict(zip(COLUMNS, row))
+        current = payout['status']
         if current not in DECIDABLE:
             raise APIError(409, f'A {current} payout cannot be decided; only FLAGGED or HELD payouts can '
                                 f'be approved, held or returned.')
@@ -527,24 +572,109 @@ def decide(database, payout_id, action, actor, idempotency_key, reason=None, now
             check_transition(step, target)
             step = target
         at = (now or datetime.now(timezone.utc)).isoformat()
-        review, outcome = review_and_outcome(step)
-        db.execute(
-            'UPDATE payouts SET status = ?, review_status = ?, execution_status = ?, updated_at = ? '
-            'WHERE payout_id = ?',
-            (step, review, outcome, at, payout_id))
-        cursor = db.execute('INSERT INTO payout_events (payout_id, action, from_status, to_status, actor, reason, '
-                            'idempotency_key, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                            (payout_id, action, current, step, actor, reason, idempotency_key, at))
+        if action == APPROVE:
+            # Record the review only; the settle step writes PAID and SETTLED.
+            db.execute(
+                'UPDATE payouts SET review_status = ?, updated_at = ? WHERE payout_id = ?',
+                (APPROVED, at, payout_id))
+            _settle(db, payout_id, at)
+        else:
+            review, outcome = review_and_outcome(step)
+            db.execute(
+                'UPDATE payouts SET status = ?, review_status = ?, execution_status = ?, updated_at = ? '
+                'WHERE payout_id = ?',
+                (step, review, outcome, at, payout_id))
+        evidence = _decision_evidence(payout, actor, reason, at)
+        cursor = db.execute(
+            'INSERT INTO payout_events (payout_id, action, from_status, to_status, actor, reason, '
+            'idempotency_key, at, evidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            (payout_id, action, current, step, actor, reason, idempotency_key, at,
+             json.dumps(evidence, sort_keys=True)))
         return 201, dict(event_id=cursor.lastrowid, payout_id=payout_id, action=action, from_status=current,
-                         to_status=step, actor=actor, reason=reason, idempotency_key=idempotency_key, at=at)
+                         to_status=step, actor=actor, reason=reason, idempotency_key=idempotency_key, at=at,
+                         evidence=evidence)
 
 
 # FEATURE 16 — Read the action log
 # Oldest first, for one payout or the whole demo. Read-only.
+def _decision_evidence(payout, actor, reason, at):
+    return {
+        'amount_cents': payout['amount_cents'],
+        'flag_code': payout['flag_code'],
+        'flag_text': payout['flag_text'],
+        'payee_usual_cents': payout['payee_usual_cents'],
+        'bank_details_changed_at': payout['bank_details_changed_at'],
+        'rules_version': RULES_VERSION,
+        'actor': actor,
+        'reason': reason,
+        'at': at,
+    }
+
+
+def _as_event(row):
+    event = dict(zip(EVENT_COLUMNS, row))
+    raw = event.get('evidence')
+    if isinstance(raw, str):
+        event['evidence'] = json.loads(raw)
+    return event
+
+
+def _settle(db, payout_id, at):
+    """Option B demo settle: check NOT_STARTED → SUBMITTED → SETTLED, then store SETTLED.
+
+    Writes status PAID, execution_status SETTLED, execution_ref, execution_updated_at,
+    and one execution_events row. Approve and clean automation call this; they do not
+    write PAID themselves. A second call with the same payout is a no-op.
+    """
+    row = db.execute(
+        f'SELECT {", ".join(COLUMNS)} FROM payouts WHERE payout_id = ?', (payout_id,)).fetchone()
+    if not row:
+        raise APIError(404, 'Payout not found.')
+    payout = dict(zip(COLUMNS, row))
+    ref = payout['execution_ref'] or f'demo:{payout_id}'
+    event_id = f'demo-settle:{payout_id}'
+    already = payout['execution_status'] == SETTLED and payout['status'] == PAID
+    if not already:
+        if payout['review_status'] != APPROVED:
+            raise APIError(409, 'Only an Approved payout can be settled.')
+        current = payout['execution_status']
+        if current == UNKNOWN:
+            check_execution_transition(current, SUBMITTED)
+        # Honour the allowed-move table without skipping submit, then store SETTLED.
+        if current == NOT_STARTED:
+            check_execution_transition(NOT_STARTED, SUBMITTED)
+            current = SUBMITTED
+        check_execution_transition(current, SETTLED)
+        db.execute(
+            'UPDATE payouts SET status = ?, review_status = ?, execution_status = ?, '
+            'execution_ref = ?, execution_updated_at = ?, updated_at = ? WHERE payout_id = ?',
+            (PAID, APPROVED, SETTLED, ref, at, at, payout_id))
+    elif not payout['execution_ref'] or not payout['execution_updated_at']:
+        db.execute(
+            'UPDATE payouts SET execution_ref = ?, execution_updated_at = ? WHERE payout_id = ?',
+            (ref, payout['execution_updated_at'] or at, payout_id))
+    if db.execute('SELECT 1 FROM execution_events WHERE event_id = ?', (event_id,)).fetchone():
+        return
+    db.execute(
+        'INSERT INTO execution_events (event_id, payout_id, execution_status, execution_ref, at, source) '
+        'VALUES (?, ?, ?, ?, ?, ?)',
+        (event_id, payout_id, SETTLED, ref, at, DEMO))
+
+
 def list_events(database, payout_id=None):
     query = f'SELECT {", ".join(EVENT_COLUMNS)} FROM payout_events'
     args = ()
     if payout_id is not None:
         query, args = query + ' WHERE payout_id = ?', (payout_id,)
     with sqlite3.connect(str(database)) as db:
-        return [dict(zip(EVENT_COLUMNS, row)) for row in db.execute(query + ' ORDER BY event_id', args)]
+        return [_as_event(row) for row in db.execute(query + ' ORDER BY event_id', args)]
+
+
+def list_execution_events(database, payout_id=None):
+    query = f'SELECT {", ".join(EXECUTION_EVENT_COLUMNS)} FROM execution_events'
+    args = ()
+    if payout_id is not None:
+        query, args = query + ' WHERE payout_id = ?', (payout_id,)
+    with sqlite3.connect(str(database)) as db:
+        return [dict(zip(EXECUTION_EVENT_COLUMNS, row))
+                for row in db.execute(query + ' ORDER BY at, event_id', args)]

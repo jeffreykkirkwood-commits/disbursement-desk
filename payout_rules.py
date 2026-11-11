@@ -62,6 +62,10 @@ def route_one(db, payout_id, now=None):
         'note_source = ?, note_fallback = ?, updated_at = ? WHERE payout_id = ?',
         (step, review, outcome, payout['flag_code'], payout['flag_text'], payout['note_text'],
          payout['note_source'], int(payout['note_fallback']), at, payout_id))
+    if step == payouts.PAID:
+        # The settle step writes PAID/SETTLED details; route_one already moved status
+        # through APPROVED to PAID, and settle fills the execution event if needed.
+        payouts._settle(db, payout_id, at)
     key = f'route:{payout_id}'
     cursor = db.execute(
         'INSERT INTO payout_events (payout_id, action, from_status, to_status, actor, reason, '
@@ -131,14 +135,15 @@ def create(database, payout_id, payee_name, payee_account, amount_cents, rail,
         db.execute('BEGIN IMMEDIATE')
         for statement in payouts.SCHEMA:
             db.execute(statement)
+        db.execute('PRAGMA foreign_keys = ON')
         payouts._upgrade(db)
         if db.execute('SELECT 1 FROM payouts WHERE payout_id = ?', (payout_id,)).fetchone():
             raise APIError(409, 'A payout with this id already exists.')
-        # Usual amount is the average of earlier paid payouts, matching the seed,
+        # Usual amount is the average of earlier SETTLED payouts, matching the seed,
         # so a prior flagged or held outlier does not hide a new amount exception.
         past = [row[0] for row in db.execute(
-            'SELECT amount_cents FROM payouts WHERE payee_name = ? AND status = ?',
-            (payee_name, payouts.PAID))]
+            'SELECT amount_cents FROM payouts WHERE payee_name = ? AND execution_status = ?',
+            (payee_name, payouts.SETTLED))]
         usual = sum(past) // len(past) if past else None
         review, outcome = payouts.review_and_outcome(payouts.PENDING)
         row = dict(payout_id=payout_id, payee_name=payee_name, payee_account=payee_account,
