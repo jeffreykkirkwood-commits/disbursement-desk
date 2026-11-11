@@ -53,12 +53,13 @@ def check_transition(current, target):
 # FEATURE 05 — Name the exception rules
 # The three rules approved for the Desk (issue #35 decision log): an amount more than 3x
 # the payee's usual payout, bank details changed within 7 days, and the same payee and
-# amount within 24 hours. A fourth rule (issue #86, option C on #79) flags a brand-new
-# payee's first payout when it is over $1,000; $1,000 exactly is not over. The seed works
-# out each payout's flag from its own data (payee_usual_cents, bank_details_changed_at and
-# earlier payouts) with explain_flag() below, and stores the rule code and sentence. The
-# live automation path (issue #44, payout_rules.py) uses the same explain_flag() when a
-# payout is created or the seed loads.
+# amount within 24 hours. A fourth rule (issue #86, option C on #79, tightened in #89)
+# flags a payout over $1,000 to a payee who does not yet have a PAID payout; $1,000
+# exactly is not over. When more than one rule trips, every reason is stored, not just
+# the first. The seed works out each payout's flag from its own data (payee_usual_cents,
+# bank_details_changed_at and earlier payouts) with explain_flag() below, and stores the
+# rule code and sentence. The live automation path (issue #44, payout_rules.py) uses the
+# same explain_flag() when a payout is created or the seed loads.
 AMOUNT_OVER_3X_AVG = 'AMOUNT_OVER_3X_AVG'
 BANK_CHANGED_7D = 'BANK_CHANGED_7D'
 DUPLICATE_24H = 'DUPLICATE_24H'
@@ -72,7 +73,9 @@ FLAG_TEXT = {  # generic wording per rule; explain_flag() writes the exact sente
 USUAL_MULTIPLIER = 3
 BANK_CHANGE_WINDOW = timedelta(days=7)
 DUPLICATE_WINDOW = timedelta(hours=24)
-NEW_PAYEE_LIMIT_CENTS = 100000  # $1,000; a first payout flags only when it is over this
+NEW_PAYEE_LIMIT_CENTS = 100000  # $1,000; flags only when the amount is over this and the payee has no PAID payout yet
+FLAG_CODE_SEP = ','
+FLAG_TEXT_SEP = '. '
 
 # FEATURE 06 — Create the payout and audit tables
 # Payouts live in the same per-visitor SQLite file as payments. Amounts are whole cents.
@@ -156,32 +159,47 @@ def _row(payout_id, payee, account, cents, rail, status, when, usual=None, chang
 
 # FEATURE 07b — Work out why a payout is flagged, from its data
 # Checks the approved rules in order against the payout's own facts and the earlier
-# payouts given, and returns (rule code, plain sentence), or (None, None) if none fires.
-# Used to build the seed so every stored reason is backed by data. A payee is new when
-# earlier contains no other payout for the same payee name.
+# payouts given, and returns every rule that fires as (rule codes, plain sentences),
+# or (None, None) if none fires. Used to build the seed so every stored reason is
+# backed by data. A payee counts as new until earlier contains at least one PAID
+# payout for the same payee name (issue #89). Several rules can fire at once, so a
+# new-payee flag no longer hides a bank-details change.
+def split_flag_codes(flag_code):
+    if not flag_code:
+        return []
+    return [part for part in flag_code.split(FLAG_CODE_SEP) if part]
+
+
 def explain_flag(payout, earlier):
     when = datetime.fromisoformat(payout['created_at'])
+    flags = []
     usual = payout.get('payee_usual_cents')
     if usual and payout['amount_cents'] > USUAL_MULTIPLIER * usual:
         ratio = round(payout['amount_cents'] / usual)
-        return AMOUNT_OVER_3X_AVG, f'Amount is {ratio}× this payee’s usual payout (${usual / 100:,.0f} avg)'
-    prior = [other for other in earlier
-             if other['payout_id'] != payout['payout_id'] and other['payee_name'] == payout['payee_name']]
-    if not prior and payout['amount_cents'] > NEW_PAYEE_LIMIT_CENTS:
-        return NEW_PAYEE_OVER_1000, FLAG_TEXT[NEW_PAYEE_OVER_1000]
+        flags.append((AMOUNT_OVER_3X_AVG, f'Amount is {ratio}× this payee’s usual payout (${usual / 100:,.0f} avg)'))
+    prior_paid = [other for other in earlier
+                  if other['payout_id'] != payout['payout_id']
+                  and other['payee_name'] == payout['payee_name']
+                  and other.get('status') == PAID]
+    if not prior_paid and payout['amount_cents'] > NEW_PAYEE_LIMIT_CENTS:
+        flags.append((NEW_PAYEE_OVER_1000, FLAG_TEXT[NEW_PAYEE_OVER_1000]))
     changed = payout.get('bank_details_changed_at')
     if changed and timedelta(0) <= when - datetime.fromisoformat(changed) <= BANK_CHANGE_WINDOW:
         days = (when.date() - datetime.fromisoformat(changed).date()).days
         ago = 'today' if days == 0 else f'{days} day{"s" if days > 1 else ""} ago'
-        return BANK_CHANGED_7D, f'Payee bank details changed {ago}'
+        flags.append((BANK_CHANGED_7D, f'Payee bank details changed {ago}'))
     for other in earlier:
         then = datetime.fromisoformat(other['created_at'])
         if (other['payout_id'] != payout['payout_id'] and other['payee_name'] == payout['payee_name']
                 and other['amount_cents'] == payout['amount_cents']
                 and timedelta(0) < when - then <= DUPLICATE_WINDOW):
             day = 'yesterday' if (when.date() - then.date()).days == 1 else 'earlier today'
-            return DUPLICATE_24H, f'Same payee and amount as {day} (possible duplicate)'
-    return None, None
+            flags.append((DUPLICATE_24H, f'Same payee and amount as {day} (possible duplicate)'))
+            break
+    if not flags:
+        return None, None
+    return (FLAG_CODE_SEP.join(code for code, _ in flags),
+            FLAG_TEXT_SEP.join(text for _, text in flags))
 
 
 # FEATURE 08 — Build the seed rows

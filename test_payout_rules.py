@@ -1,6 +1,6 @@
 # Automated checks for payout_rules.py: the in-process automation path that
 # routes payouts through the exception rules (issue #44), including the
-# new-payee first-payout limit (issue #86).
+# new-payee limit (issues #86 and #89).
 """Exercise clean, flagged and repeat automation runs with temporary fictional databases."""
 import json
 import tempfile
@@ -254,7 +254,7 @@ class AutomationTests(unittest.TestCase):
 
     # FEATURE 08e — Scenario — the seed still has no new-payee flags
     def test_seed_is_unchanged_by_the_new_payee_rule(self):
-        self.assertFalse(any(row['flag_code'] == 'NEW_PAYEE_OVER_1000'
+        self.assertFalse(any('NEW_PAYEE_OVER_1000' in payouts.split_flag_codes(row['flag_code'])
                              for row in payouts.list_payouts(self.db)))
         self.assertEqual(json.dumps(payouts.list_payouts(self.db), sort_keys=True), self.seeded)
         self.assertEqual(payouts.list_events(self.db), self.seed_events)
@@ -262,7 +262,56 @@ class AutomationTests(unittest.TestCase):
         self.assertEqual(json.dumps(payouts.list_payouts(self.db), sort_keys=True), self.seeded)
         self.assertEqual(payouts.list_events(self.db), [])
 
-    # FEATURE 09 — Scenario — a bank-details time must be ISO 8601 with a timezone (#91)
+    # FEATURE 09 — Scenario — a second payout is still new until one is PAID (#89)
+    def test_second_payout_is_flagged_until_payee_has_a_paid_payout(self):
+        first = self.create('PO-TEST-SPLIT-1', 'Oak Street Books', 'DEMO-OAKS-010', 100001)
+        self.assertEqual(first['status'], 'FLAGGED')
+        self.assertEqual(payouts.get_payout(self.db, 'PO-TEST-SPLIT-1')['flag_code'],
+                         'NEW_PAYEE_OVER_1000')
+        second = self.create('PO-TEST-SPLIT-2', 'Oak Street Books', 'DEMO-OAKS-010', 200000,
+                             when=LATER)
+        self.assertEqual(second['status'], 'FLAGGED')
+        payout = payouts.get_payout(self.db, 'PO-TEST-SPLIT-2')
+        self.assertEqual(payout['flag_code'], 'NEW_PAYEE_OVER_1000')
+        self.assertEqual(payout['flag_text'], 'First payout to this payee is over $1,000')
+        self.assertIn('Rule NEW_PAYEE_OVER_1000:', payout['note_text'])
+        self.assertEqual(payout['note_source'], 'rules')
+        self.assertFalse(payout['note_fallback'])
+        self.assertNotIn('Written by AI', payout['note_text'])
+        # Exactly $1,000 still auto-pays even while the first payout is in review.
+        exact = self.create('PO-TEST-SPLIT-EXACT', 'Oak Street Books', 'DEMO-OAKS-010', 100000,
+                            when=LATER + timedelta(hours=1))
+        self.assertEqual(exact['status'], 'PAID')
+        self.assertIsNone(payouts.get_payout(self.db, 'PO-TEST-SPLIT-EXACT')['flag_code'])
+        # After that paid payout, a later one over $1,000 is no longer a new payee.
+        # Use $1,500 (not a 24-hour duplicate of the earlier $1,000.01 or $1,000).
+        # Usual amount is the $1,000 paid payout, so $1,500 is under 3× and auto-pays.
+        after = self.create('PO-TEST-SPLIT-AFTER', 'Oak Street Books', 'DEMO-OAKS-010', 150000,
+                            when=LATER + timedelta(hours=2))
+        self.assertEqual(after['status'], 'PAID')
+        self.assertIsNone(payouts.get_payout(self.db, 'PO-TEST-SPLIT-AFTER')['flag_code'])
+
+    # FEATURE 09b — Scenario — every tripped rule is stored, not just the first (#89)
+    def test_new_payee_and_bank_change_both_show(self):
+        result = self.create(
+            'PO-TEST-MULTI', 'Oak Street Books', 'DEMO-OAKS-010', 150000,
+            changed=NOW, when=NOW)
+        self.assertEqual(result['status'], 'FLAGGED')
+        payout = payouts.get_payout(self.db, 'PO-TEST-MULTI')
+        self.assertEqual(payout['flag_code'], 'NEW_PAYEE_OVER_1000,BANK_CHANGED_7D')
+        self.assertEqual(
+            payout['flag_text'],
+            'First payout to this payee is over $1,000. Payee bank details changed today')
+        self.assertEqual(
+            payout['note_text'],
+            'Rule NEW_PAYEE_OVER_1000: First payout to this payee is over $1,000. '
+            'Review before sending. ' + payout_notes.BANK_CHANGED_NOTE)
+        self.assertEqual(payout['note_source'], 'rules')
+        self.assertFalse(payout['note_fallback'])
+        self.assertNotIn('Written by AI', payout['note_text'])
+        self.assertEqual(result['event']['reason'], payout['flag_text'])
+
+    # FEATURE 10 — Scenario — a bank-details time must be ISO 8601 with a timezone (#91)
     def test_invalid_bank_details_changed_at_is_refused(self):
         before = json.dumps(payouts.list_payouts(self.db), sort_keys=True)
         before_events = payouts.list_events(self.db)
@@ -284,7 +333,6 @@ class AutomationTests(unittest.TestCase):
         payout = payouts.get_payout(self.db, 'PO-TEST-BANK-OK')
         self.assertEqual(payout['bank_details_changed_at'], iso(NOW))
         self.assertEqual(payout['flag_code'], 'BANK_CHANGED_7D')
-
 
 if __name__ == '__main__':
     unittest.main()
