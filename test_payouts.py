@@ -309,9 +309,10 @@ class HostedSeedTests(unittest.TestCase):
 
     # FEATURE 12 — Scenario — payouts show only on the Desk, its POST routes, and the stream.
     # The payout APIs are the decision route (#35), Reset demo (#32 slice 4), the
-    # live update stream (#43), and the behind-the-scenes simulate route (#91).
-    # The Payments Lab dashboard still lists no payouts, and no Desk control
-    # points at the simulate route.
+    # live update stream (#43), the behind-the-scenes simulate route (#91), and
+    # the behind-the-scenes execution replay route (#56). The Payments Lab
+    # dashboard still lists no payouts, and no Desk control points at simulate
+    # or execution-replay.
     def test_no_new_routes(self):
         client = self.app.test_client()
         page = client.get('/dashboard', base_url='https://demo.example').get_data(as_text=True)
@@ -319,16 +320,19 @@ class HostedSeedTests(unittest.TestCase):
         rules = [rule for rule in self.app.url_map.iter_rules() if re.search('payout', str(rule))]
         self.assertEqual({str(r) for r in rules},
                          {'/payouts/<payout_id>/<any(approve, hold, return):action>',
-                          '/payouts/reset', '/payouts/simulate', '/payouts/stream'})
+                          '/payouts/reset', '/payouts/simulate', '/payouts/stream',
+                          '/payouts/execution-replay'})
         posts = {str(r) for r in rules if (r.methods - {'OPTIONS'}) == {'POST'}}
         self.assertEqual(posts, {'/payouts/<payout_id>/<any(approve, hold, return):action>',
-                                 '/payouts/reset', '/payouts/simulate'})
+                                 '/payouts/reset', '/payouts/simulate',
+                                 '/payouts/execution-replay'})
         stream = next(r for r in rules if str(r) == '/payouts/stream')
         self.assertEqual(stream.methods - {'OPTIONS', 'HEAD'}, {'GET'})
         self.assertEqual({str(r) for r in self.app.url_map.iter_rules() if 'desk' in str(r)}, {'/desk', '/desk/', '/desk.js'})
         self.assertEqual(client.get('/payouts', base_url='https://demo.example').status_code, 404)
         self.assertEqual(client.get('/payouts/reset', base_url='https://demo.example').status_code, 405)
         self.assertEqual(client.get('/payouts/simulate', base_url='https://demo.example').status_code, 405)
+        self.assertEqual(client.get('/payouts/execution-replay', base_url='https://demo.example').status_code, 405)
         self.assertEqual(client.get('/payouts/stream', base_url='https://demo.example').status_code, 200)
 
 
