@@ -170,6 +170,18 @@
     writeHash();
   });
 
+  // Escape closes the payout detail the same way Back does: hide the panel,
+  // clear the hash, and return focus to the row that opened it. Leave Escape
+  // to the confirm dialog while that dialog is open.
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    if (dialog && dialog.open) return;
+    if (!selected) return;
+    e.preventDefault();
+    close(true);
+    writeHash();
+  });
+
   const q = new URLSearchParams(location.hash.slice(1));
   aiOff = q.get('ai') === 'off';
   showFallback(aiOff);
