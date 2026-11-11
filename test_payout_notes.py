@@ -95,11 +95,11 @@ class RulesNoteTests(unittest.TestCase):
     def test_new_payee_rule_uses_rules_note(self):
         text, source, fallback = payout_notes.rules_note({
             'flag_code': 'NEW_PAYEE_OVER_1000',
-            'flag_text': 'First payout to this payee is over $1,000',
+            'flag_text': 'No paid payout to this payee yet; amount is over $1,000',
         })
         self.assertEqual(
             text,
-            'Rule NEW_PAYEE_OVER_1000: First payout to this payee is over $1,000. '
+            'Rule NEW_PAYEE_OVER_1000: No paid payout to this payee yet; amount is over $1,000. '
             'Review before sending.')
         self.assertEqual((source, fallback), ('rules', False))
         self.assertTrue(text.startswith('Rule NEW_PAYEE_OVER_1000:'))
@@ -110,11 +110,11 @@ class RulesNoteTests(unittest.TestCase):
     def test_multiple_rules_note_lists_every_reason(self):
         text, source, fallback = payout_notes.rules_note({
             'flag_code': 'NEW_PAYEE_OVER_1000,BANK_CHANGED_7D',
-            'flag_text': 'First payout to this payee is over $1,000. Payee bank details changed today',
+            'flag_text': 'No paid payout to this payee yet; amount is over $1,000. Payee bank details changed today',
         })
         self.assertEqual(
             text,
-            'Rule NEW_PAYEE_OVER_1000: First payout to this payee is over $1,000. '
+            'Rule NEW_PAYEE_OVER_1000: No paid payout to this payee yet; amount is over $1,000. '
             'Review before sending. ' + payout_notes.BANK_CHANGED_NOTE)
         self.assertEqual((source, fallback), ('rules', False))
         self.assertIn('Rule NEW_PAYEE_OVER_1000:', text)

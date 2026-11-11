@@ -198,10 +198,10 @@ class AutomationTests(unittest.TestCase):
         payout = payouts.get_payout(self.db, 'PO-TEST-NEW-OVER')
         self.assertEqual(payout['status'], 'FLAGGED')
         self.assertEqual(payout['flag_code'], 'NEW_PAYEE_OVER_1000')
-        self.assertEqual(payout['flag_text'], 'First payout to this payee is over $1,000')
+        self.assertEqual(payout['flag_text'], 'No paid payout to this payee yet; amount is over $1,000')
         self.assertEqual(
             payout['note_text'],
-            'Rule NEW_PAYEE_OVER_1000: First payout to this payee is over $1,000. '
+            'Rule NEW_PAYEE_OVER_1000: No paid payout to this payee yet; amount is over $1,000. '
             'Review before sending.')
         self.assertEqual(payout['note_source'], 'rules')
         self.assertFalse(payout['note_fallback'])
@@ -273,7 +273,7 @@ class AutomationTests(unittest.TestCase):
         self.assertEqual(second['status'], 'FLAGGED')
         payout = payouts.get_payout(self.db, 'PO-TEST-SPLIT-2')
         self.assertEqual(payout['flag_code'], 'NEW_PAYEE_OVER_1000')
-        self.assertEqual(payout['flag_text'], 'First payout to this payee is over $1,000')
+        self.assertEqual(payout['flag_text'], 'No paid payout to this payee yet; amount is over $1,000')
         self.assertIn('Rule NEW_PAYEE_OVER_1000:', payout['note_text'])
         self.assertEqual(payout['note_source'], 'rules')
         self.assertFalse(payout['note_fallback'])
@@ -301,10 +301,10 @@ class AutomationTests(unittest.TestCase):
         self.assertEqual(payout['flag_code'], 'NEW_PAYEE_OVER_1000,BANK_CHANGED_7D')
         self.assertEqual(
             payout['flag_text'],
-            'First payout to this payee is over $1,000. Payee bank details changed today')
+            'No paid payout to this payee yet; amount is over $1,000. Payee bank details changed today')
         self.assertEqual(
             payout['note_text'],
-            'Rule NEW_PAYEE_OVER_1000: First payout to this payee is over $1,000. '
+            'Rule NEW_PAYEE_OVER_1000: No paid payout to this payee yet; amount is over $1,000. '
             'Review before sending. ' + payout_notes.BANK_CHANGED_NOTE)
         self.assertEqual(payout['note_source'], 'rules')
         self.assertFalse(payout['note_fallback'])
