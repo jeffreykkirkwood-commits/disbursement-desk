@@ -214,6 +214,8 @@ h1{font-size:26px;margin:0;letter-spacing:-.5px}
 .list li[hidden]{display:none}
 .row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 16px;width:100%;min-height:64px;padding:14px 18px;border:0;background:#fff;color:var(--ink);text-align:left;box-shadow:0 -1px 0 var(--line)}
 .row[aria-current=true]{background:#eef3ea;box-shadow:0 -1px 0 var(--line),inset 4px 0 0 var(--green)}
+/* Draw the keyboard focus ring inside the row so .list overflow:hidden does not clip it (#102). */
+.row:focus-visible{outline-offset:-3px}
 /* The line above each row; .list clips it above the first visible row. */
 .payee{font-weight:650;overflow-wrap:anywhere}.amt{font-weight:700;text-align:right;font-variant-numeric:tabular-nums}
 .sub{font-size:14px;color:var(--muted)}
