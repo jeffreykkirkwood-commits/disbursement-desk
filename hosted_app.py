@@ -11,6 +11,7 @@ from uuid import uuid4
 from flask import Flask, Response, g, jsonify, redirect, request, stream_with_context
 from werkzeug.exceptions import HTTPException
 from payments import APIError, Payments
+import execution_replay
 import payouts
 import payout_rules
 import payout_events
@@ -304,6 +305,21 @@ def create_app(directory=None, public_origin=None, payments=None):
         event('payouts_reset', restored=restored)
         payout_events.after_reset(database)
         return jsonify(restored=restored)
+
+    # FEATURE 26 — Replay the bundled synthetic payment-outcome events (#56)
+    # Behind the scenes only: a POST that uses this visitor's existing demo
+    # session cookie (a POST cannot start a new session). Plays fixtures/
+    # execution_events_demo.json once, in order, into this visitor's database.
+    # Results are JSON only. No page, link or button is added. Replay does not
+    # emit stream events or change Desk words, layout or queue order. Reset
+    # demo still restores the starting set.
+    @app.post('/payouts/execution-replay')
+    def replay_execution_events():
+        database = g.payments.database
+        report = execution_replay.replay(database)
+        event('execution_events_replayed', applied=report['applied'],
+              skipped=report['skipped'], refused=report['refused'])
+        return jsonify(report)
 
     # FEATURE 25 — Create one synthetic payee payout in this visitor's demo (#91)
     # Behind the scenes only: POST JSON, requires this visitor's existing demo
