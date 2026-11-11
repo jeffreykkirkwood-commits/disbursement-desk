@@ -166,7 +166,7 @@ class SimulatePayoutTests(unittest.TestCase):
         self.assertEqual(ok.status_code, 201)
         self.assertEqual(ok.json['payout']['bank_details_changed_at'],
                          '2026-11-10T18:00:00+00:00')
-        self.assertEqual(ok.json['payout']['flag_code'], 'NEW_PAYEE_OVER_1000')
+        self.assertEqual(ok.json['payout']['flag_code'], 'NEW_PAYEE_OVER_1000,BANK_CHANGED_7D')
 
 
 if __name__ == '__main__':
