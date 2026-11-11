@@ -382,4 +382,23 @@ def create_app(directory=None, public_origin=None, payments=None):
             release_slot()
             raise
 
+    # FEATURE 27 — Reconcile payment outcomes with a separate settlement file (#57)
+    # Behind the scenes only. POST uses this visitor's existing demo session
+    # cookie (a POST cannot start a new session). Compares this visitor's
+    # payouts with fixtures/settlement_demo.csv, which was written by hand
+    # and not generated from the replay event file. Results are JSON only.
+    # No page, link or button is added. review_status and status are not
+    # rewritten, so the Desk does not change. Reset demo still restores the
+    # starting set.
+    @app.post('/reconciliation')
+    def run_reconciliation():
+        import reconciliation
+        database = g.payments.database
+        report = reconciliation.reconcile(database)
+        event('reconciliation_run', run_id=report['run']['run_id'],
+              matched=report['run']['matched_count'],
+              mismatched=report['run']['mismatched_count'],
+              unknown=report['run']['unknown_count'])
+        return jsonify(report)
+
     return app
