@@ -26,12 +26,34 @@ MAIN_SEED_FLAGS = {
 }
 
 
+EXPECTED_RECON_RESULTS = {
+    'PO-RECON-MATCH': 'matched',
+    'PO-RECON-STATUS': 'status_mismatch',
+    'PO-RECON-AMOUNT': 'amount_mismatch',
+    'PO-RECON-MISSING': 'missing_from_settlement',
+    'PO-RECON-UNEXPECTED': 'unexpected_settlement',
+    'PO-RECON-UNKNOWN': 'resolved',
+}
+SCRIPTED_STREAM_MOVES = [
+    ('PO-1042', 'FLAGGED', 'PAID'),
+    ('PO-1043', 'FLAGGED', 'HELD'),
+    ('PO-1044', 'FLAGGED', 'RETURNED'),
+]
+
+
 def visible_flags(database):
     import execution_replay
-    hidden = execution_replay.REPLAY_PAYOUT_IDS
+    import reconciliation
+    hidden = execution_replay.REPLAY_PAYOUT_IDS | reconciliation.RECON_PAYOUT_IDS
     return {payout['payout_id']: (payout['flag_code'], payout['flag_text'])
             for payout in payouts.list_payouts(database) if payout['flag_code']
             and payout['payout_id'] not in hidden}
+
+
+def hidden_target_ids():
+    import execution_replay
+    import reconciliation
+    return execution_replay.REPLAY_PAYOUT_IDS | reconciliation.RECON_PAYOUT_IDS
 
 
 class DemoScenarioTests(unittest.TestCase):
@@ -69,13 +91,32 @@ class DemoScenarioTests(unittest.TestCase):
             ('PO-1044', 'return', 'RETURNED'),
         ])
         self.assertEqual(report['replay']['applied'], 6)
-        self.assertEqual(report['reconciliation_runs'], [])
-        self.assertEqual(report['reconciliation_items'], [])
+        self.assertEqual(report['reconciliation_runs'], [{
+            'fixture_name': 'settlement_demo.csv',
+            'matched_count': 2,
+            'mismatched_count': 4,
+            'unknown_count': 0,
+        }])
+        self.assertEqual({item['payout_id']: item['result'] for item in report['reconciliation_items']},
+                         EXPECTED_RECON_RESULTS)
+        self.assertNotIn('PO-1042', {item['payout_id'] for item in report['reconciliation_items']})
+        self.assertEqual(
+            [(payout['payout_id'], payout['review_status'], payout['status'])
+             for payout in report['payouts'][:3]],
+            [('PO-1042', 'APPROVED', 'PAID'),
+             ('PO-1043', 'HELD', 'HELD'),
+             ('PO-1044', 'RETURNED', 'RETURNED')])
+        unknown = payouts.get_payout(self.db, 'PO-RECON-UNKNOWN')
+        self.assertEqual((unknown['review_status'], unknown['status']), ('APPROVED', 'APPROVED'))
 
     # FEATURE 03 — Scenario — Reset demo clears execution and reconciliation tables
     def test_reset_clears_execution_and_reconciliation_tables(self):
         demo_scenario.run(self.db)
         self.assertTrue(payouts.list_execution_events(self.db))
+        self.assertTrue(self.recon(self.db, 'reconciliation_runs'))
+        self.assertTrue(self.recon(self.db, 'reconciliation_items'))
+        ids = {payout['payout_id'] for payout in payouts.list_payouts(self.db)}
+        self.assertTrue(hidden_target_ids().issubset(ids))
         self.assertNotEqual(
             [payout['payout_id'] for payout in payouts.current_queue(self.db)], MAIN_QUEUE_IDS)
         restored = payouts.reset(self.db)
@@ -85,6 +126,8 @@ class DemoScenarioTests(unittest.TestCase):
         self.assertEqual(payouts.list_execution_events(self.db), [])
         self.assertEqual(self.recon(self.db, 'reconciliation_runs'), [])
         self.assertEqual(self.recon(self.db, 'reconciliation_items'), [])
+        ids = {payout['payout_id'] for payout in payouts.list_payouts(self.db)}
+        self.assertTrue(ids.isdisjoint(hidden_target_ids()))
         self.assertEqual([payout['payout_id'] for payout in payouts.current_queue(self.db)],
                          MAIN_QUEUE_IDS)
         self.assertEqual(visible_flags(self.db), MAIN_SEED_FLAGS)
@@ -101,7 +144,9 @@ class DemoScenarioTests(unittest.TestCase):
         self.assertEqual(desk.STATUS_WORDS[queue['PO-1042']['status']], ('Sent', 's-sent'))
         self.assertEqual(desk.STATUS_WORDS[queue['PO-1043']['status']], ('Held', 's-held'))
         self.assertEqual(desk.STATUS_WORDS[queue['PO-1044']['status']], ('Returned', 's-returned'))
-        self.assertTrue(set(execution_replay_ids()).isdisjoint(queue))
+        self.assertTrue(set(hidden_target_ids()).isdisjoint(queue))
+        self.assertEqual(desk.STATUS_WORDS['FLAGGED'], ('Needs review', 's-review'))
+        self.assertNotIn('PO-RECON-', ''.join(queue))
 
     # FEATURE 08 — Scenario — after an already-used demo, the stream shows only the scripted moves
     def test_scenario_resets_the_stream_before_scripted_moves(self):
@@ -120,11 +165,7 @@ class DemoScenarioTests(unittest.TestCase):
         added = payout_events.sync(self.db)
         moves = [(event['payout_id'], event['from_status'], event['to_status'])
                  for event in added if event['type'] == 'status-changed']
-        self.assertEqual(moves, [
-            ('PO-1042', 'FLAGGED', 'PAID'),
-            ('PO-1043', 'FLAGGED', 'HELD'),
-            ('PO-1044', 'FLAGGED', 'RETURNED'),
-        ])
+        self.assertEqual(moves, SCRIPTED_STREAM_MOVES)
         self.assertNotIn(('PO-1043', 'PAID', 'HELD'), moves)
         self.assertTrue(any(event['payout_id'] == 'PO-1044' and event['to_status'] == 'RETURNED'
                             for event in added if event['type'] == 'status-changed'))
@@ -136,6 +177,27 @@ class DemoScenarioTests(unittest.TestCase):
         self.assertNotIn(('PO-1043', 'PAID', 'HELD'),
                          [(event['payout_id'], event['from_status'], event['to_status'])
                           for event in changed])
+
+    # FEATURE 08b — Scenario — reconcile leaves the stream, review_status and status alone
+    def test_reconcile_leaves_stream_and_review_untouched(self):
+        report = demo_scenario.run(self.db)
+        added = payout_events.sync(self.db)
+        moves = [(event['payout_id'], event['from_status'], event['to_status'])
+                 for event in added if event['type'] == 'status-changed']
+        self.assertEqual(moves, SCRIPTED_STREAM_MOVES)
+        reviews = {
+            payout['payout_id']: (payout['review_status'], payout['status'])
+            for payout in payouts.list_payouts(self.db)
+            if payout['payout_id'] in ('PO-1042', 'PO-1043', 'PO-1044', 'PO-RECON-UNKNOWN')
+        }
+        self.assertEqual(reviews, {
+            'PO-1042': ('APPROVED', 'PAID'),
+            'PO-1043': ('HELD', 'HELD'),
+            'PO-1044': ('RETURNED', 'RETURNED'),
+            'PO-RECON-UNKNOWN': ('APPROVED', 'APPROVED'),
+        })
+        self.assertEqual({item['payout_id']: item['result'] for item in report['reconciliation_items']},
+                         EXPECTED_RECON_RESULTS)
 
     # FEATURE 05 — Scenario — no network calls
     def test_scenario_makes_no_network_calls(self):
@@ -208,6 +270,7 @@ class HostedDemoScenarioTests(unittest.TestCase):
         self.assertNotIn('demo-scenario', html)
         self.assertNotIn('Scenario Reviewer', html)
         self.assertNotIn('PO-REPLAY-', html)
+        self.assertNotIn('PO-RECON-', html)
         self.assertNotIn('settlement_demo', html)
         # After the scenario, Reset demo restores the starting set for this visitor.
         reset = self.reset()
@@ -217,6 +280,8 @@ class HostedDemoScenarioTests(unittest.TestCase):
         self.assertEqual(payouts.list_execution_events(db), [])
         self.assertEqual(demo_scenario._recon_rows(db, 'reconciliation_runs', ('run_id',)), [])
         self.assertEqual(demo_scenario._recon_rows(db, 'reconciliation_items', ('item_id',)), [])
+        self.assertTrue({payout['payout_id'] for payout in payouts.list_payouts(db)
+                         }.isdisjoint(hidden_target_ids()))
         self.assertEqual([payout['payout_id'] for payout in payouts.current_queue(db)],
                          MAIN_QUEUE_IDS)
         html_reset = self.open_desk().get_data(as_text=True)
@@ -238,6 +303,10 @@ class HostedDemoScenarioTests(unittest.TestCase):
         self.assertEqual(payouts.list_events(theirs), [])
         self.assertEqual(payouts.list_execution_events(theirs), [])
         self.assertEqual(len(payouts.list_payouts(theirs)), 40)
+        self.assertEqual(demo_scenario._recon_rows(theirs, 'reconciliation_runs', ('run_id',)), [])
+        self.assertEqual(demo_scenario._recon_rows(theirs, 'reconciliation_items', ('item_id',)), [])
+        self.assertTrue({payout['payout_id'] for payout in payouts.list_payouts(theirs)
+                         }.isdisjoint(hidden_target_ids()))
         self.assertEqual([payout['payout_id'] for payout in payouts.current_queue(theirs)],
                          MAIN_QUEUE_IDS)
         self.assertEqual(visible_flags(theirs), MAIN_SEED_FLAGS)
