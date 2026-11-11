@@ -311,6 +311,28 @@ class AutomationTests(unittest.TestCase):
         self.assertNotIn('Written by AI', payout['note_text'])
         self.assertEqual(result['event']['reason'], payout['flag_text'])
 
+    # FEATURE 10 — Scenario — a bank-details time must be ISO 8601 with a timezone (#91)
+    def test_invalid_bank_details_changed_at_is_refused(self):
+        before = json.dumps(payouts.list_payouts(self.db), sort_keys=True)
+        before_events = payouts.list_events(self.db)
+        for bad in ('nope', '2026-11-10', '2026-11-10T00:00:00'):
+            with self.subTest(value=bad):
+                with self.assertRaises(APIError) as raised:
+                    payout_rules.create(
+                        self.db, 'PO-TEST-BAD-BANK', 'Oak Street Books', 'DEMO-OAKS-010',
+                        150000, 'ACH', bank_details_changed_at=bad, now=NOW)
+                self.assertEqual(raised.exception.status, 422)
+                self.assertIn('timezone offset', raised.exception.message)
+        self.assertEqual(json.dumps(payouts.list_payouts(self.db), sort_keys=True), before)
+        self.assertEqual(payouts.list_events(self.db), before_events)
+        # A valid time with a timezone offset is still accepted.
+        result = payout_rules.create(
+            self.db, 'PO-TEST-BANK-OK', 'Cedar Cleaning Co.', 'DEMO-CEDR-004',
+            64000, 'ACH', bank_details_changed_at=iso(NOW), now=NOW)
+        self.assertEqual(result['status'], 'FLAGGED')
+        payout = payouts.get_payout(self.db, 'PO-TEST-BANK-OK')
+        self.assertEqual(payout['bank_details_changed_at'], iso(NOW))
+        self.assertEqual(payout['flag_code'], 'BANK_CHANGED_7D')
 
 if __name__ == '__main__':
     unittest.main()
