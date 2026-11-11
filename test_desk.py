@@ -715,6 +715,34 @@ class CurrentQueueTests(unittest.TestCase):
         self.assertEqual(len(listed), 40)
         self.assertEqual({p['payout_id'] for p in queue}, set(payouts.CURRENT_IDS))
 
+    def _flagged(self, db, payout_id):
+        payout_rules.create(
+            db, payout_id, f'Sort Payee {payout_id}', 'DEMO-SORT-001', 100001, 'ACH')
+
+    def test_queue_sorts_ids_by_number_not_text(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = Path(folder) / 'payments.sqlite3'
+            payouts.ensure_seeded(db)
+            # Starting seed ids are all four digits, so the visible order is unchanged.
+            self.assertEqual([p['payout_id'] for p in payouts.current_queue(db)], ALL_IDS)
+            self._flagged(db, 'PO-998')
+            self._flagged(db, 'PO-10000')
+            self._flagged(db, 'DEMO-7')
+            self._flagged(db, 'MANUAL')
+            flagged = [p['payout_id'] for p in payouts.current_queue(db)
+                       if p['status'] == payouts.FLAGGED]
+        # Text sort would put PO-10000 before PO-1042, and PO-1042 before PO-998.
+        self.assertEqual(
+            flagged, ['DEMO-7', 'PO-998', 'PO-1042', 'PO-1043', 'PO-1044', 'PO-10000', 'MANUAL'])
+        self.assertEqual(payouts.payout_id_sort_key('PO-998'), (0, 998, 'PO-998'))
+        self.assertEqual(payouts.payout_id_sort_key('PO-1046'), (0, 1046, 'PO-1046'))
+        self.assertEqual(payouts.payout_id_sort_key('PO-10000'), (0, 10000, 'PO-10000'))
+        self.assertEqual(payouts.payout_id_sort_key('MANUAL'), (1, 0, 'MANUAL'))
+        self.assertLess(payouts.payout_id_sort_key('PO-998'),
+                        payouts.payout_id_sort_key('PO-1046'))
+        self.assertLess(payouts.payout_id_sort_key('PO-1046'),
+                        payouts.payout_id_sort_key('PO-10000'))
+
 
 class DeskNewFlaggedTests(DeskBase):
     # Scenario — a payout created and flagged after the seed shows on the Desk
