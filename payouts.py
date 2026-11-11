@@ -68,7 +68,7 @@ FLAG_TEXT = {  # generic wording per rule; explain_flag() writes the exact sente
     AMOUNT_OVER_3X_AVG: 'Amount is more than 3× this payee’s usual payout',
     BANK_CHANGED_7D: 'Payee bank details changed within the last 7 days',
     DUPLICATE_24H: 'Same payee and amount within 24 hours (possible duplicate)',
-    NEW_PAYEE_OVER_1000: 'First payout to this payee is over $1,000',
+    NEW_PAYEE_OVER_1000: 'No paid payout to this payee yet; amount is over $1,000',
 }
 USUAL_MULTIPLIER = 3
 BANK_CHANGE_WINDOW = timedelta(days=7)
