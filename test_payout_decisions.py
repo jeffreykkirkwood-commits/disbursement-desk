@@ -7,12 +7,17 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+import desk
+import payout_events
+import payout_rules
 import payouts
 from hosted_app import create_app
 from payments import APIError
 
 NOW = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc)
 SITE = 'https://demo.example'
+MAIN_QUEUE_IDS = ['PO-1042', 'PO-1043', 'PO-1044', 'PO-1038', 'PO-1037',
+                  'PO-1036', 'PO-1039', 'PO-1040', 'PO-1041', 'PO-1045']
 
 
 class DecisionTests(unittest.TestCase):
@@ -149,6 +154,180 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(self.decide('PO-1042', 'approve', 'r1')[0], 201)  # old key free again
 
 
+    def flags(self, database=None):
+        return {p['payout_id']: (p['flag_code'], p['flag_text'])
+                for p in payouts.list_payouts(database or self.db)}
+
+    # FEATURE 12 — Scenario — Approve records evidence and settles in the same flow (#55 option B)
+    def test_approve_writes_evidence_and_settles(self):
+        before = payouts.get_payout(self.db, 'PO-1042')
+        code, decision = self.decide('PO-1042', 'approve', 'approve-ev')
+        self.assertEqual(code, 201)
+        payout = payouts.get_payout(self.db, 'PO-1042')
+        self.assertEqual(payout['status'], 'PAID')
+        self.assertEqual(payout['review_status'], 'APPROVED')
+        self.assertEqual(payout['execution_status'], 'SETTLED')
+        self.assertEqual(payout['execution_ref'], 'demo:PO-1042')
+        self.assertEqual(payout['execution_updated_at'], NOW.isoformat())
+        self.assertEqual(decision['evidence']['amount_cents'], 485000)
+        self.assertEqual(decision['evidence']['flag_code'], before['flag_code'])
+        self.assertEqual(decision['evidence']['flag_text'], before['flag_text'])
+        self.assertEqual(decision['evidence']['payee_usual_cents'], before['payee_usual_cents'])
+        self.assertEqual(decision['evidence']['bank_details_changed_at'],
+                         before['bank_details_changed_at'])
+        self.assertEqual(decision['evidence']['rules_version'], payouts.RULES_VERSION)
+        self.assertEqual(decision['evidence']['actor'], 'Test Reviewer')
+        self.assertIsNone(decision['evidence']['reason'])
+        [logged] = payouts.list_events(self.db, 'PO-1042')
+        self.assertEqual(logged, decision)
+        [event] = payouts.list_execution_events(self.db, 'PO-1042')
+        self.assertEqual(event['event_id'], 'demo-settle:PO-1042')
+        self.assertEqual(event['execution_status'], 'SETTLED')
+        self.assertEqual(event['source'], 'demo')
+        self.assertEqual(event['execution_ref'], 'demo:PO-1042')
+
+    # FEATURE 13 — Scenario — the same Approve key does not settle twice
+    def test_approve_settle_is_idempotent(self):
+        first = self.decide('PO-1042', 'approve', 'approve-once')
+        again = payouts.decide(self.db, 'PO-1042', 'approve', 'Test Reviewer', 'approve-once',
+                               now=datetime(2026, 10, 29, tzinfo=timezone.utc))
+        self.assertEqual(again, (200, first[1]))
+        self.assertEqual(len(payouts.list_events(self.db, 'PO-1042')), 1)
+        self.assertEqual(len(payouts.list_execution_events(self.db, 'PO-1042')), 1)
+        self.assertEqual(payouts.get_payout(self.db, 'PO-1042')['updated_at'], NOW.isoformat())
+
+    # FEATURE 14 — Scenario — Hold and Return save evidence and do not settle
+    def test_hold_and_return_save_evidence_without_settling(self):
+        self.decide('PO-1043', 'hold', 'hold-ev')
+        held = payouts.get_payout(self.db, 'PO-1043')
+        self.assertEqual((held['status'], held['review_status'], held['execution_status']),
+                         ('HELD', 'HELD', 'NOT_STARTED'))
+        self.assertIsNone(held['execution_ref'])
+        self.assertEqual(payouts.list_execution_events(self.db, 'PO-1043'), [])
+        self.assertEqual(payouts.list_events(self.db, 'PO-1043')[0]['evidence']['flag_code'],
+                         'BANK_CHANGED_7D')
+        self.decide('PO-1044', 'return', 'return-ev', reason='Send back')
+        returned = payouts.get_payout(self.db, 'PO-1044')
+        self.assertEqual((returned['status'], returned['review_status'], returned['execution_status']),
+                         ('RETURNED', 'RETURNED', 'NOT_STARTED'))
+        self.assertEqual(payouts.list_events(self.db, 'PO-1044')[0]['evidence']['reason'], 'Send back')
+
+    # FEATURE 15 — Scenario — Reset demo restores flags and clears evidence and settle rows
+    def test_reset_after_approve_clears_settle_and_evidence(self):
+        self.decide('PO-1042', 'approve', 'reset-ev')
+        payouts.reset(self.db)
+        self.assertEqual(self._seed_flags(), {
+            'PO-1037': ('BANK_CHANGED_7D', 'Payee bank details changed 1 day ago'),
+            'PO-1038': ('AMOUNT_OVER_3X_AVG', 'Amount is 4× this payee’s usual payout ($520 avg)'),
+            'PO-1042': ('AMOUNT_OVER_3X_AVG', 'Amount is 6× this payee’s usual payout ($790 avg)'),
+            'PO-1043': ('BANK_CHANGED_7D', 'Payee bank details changed 2 days ago'),
+            'PO-1044': ('DUPLICATE_24H', 'Same payee and amount as yesterday (possible duplicate)'),
+        })
+        self.assertEqual(payouts.list_events(self.db), [])
+        self.assertEqual(payouts.list_execution_events(self.db), [])
+        self.assertEqual(payouts.get_payout(self.db, 'PO-1042')['status'], 'FLAGGED')
+        self.assertIsNone(payouts.get_payout(self.db, 'PO-1042')['execution_ref'])
+
+    def _seed_flags(self):
+        return {pid: flags for pid, flags in self.flags().items() if flags[0]}
+
+    # FEATURE 16 — Scenario — seed flags, queue order and Sent words match main
+    def test_seed_flags_queue_and_words_match_main(self):
+        self.assertEqual(self._seed_flags(), {
+            'PO-1037': ('BANK_CHANGED_7D', 'Payee bank details changed 1 day ago'),
+            'PO-1038': ('AMOUNT_OVER_3X_AVG', 'Amount is 4× this payee’s usual payout ($520 avg)'),
+            'PO-1042': ('AMOUNT_OVER_3X_AVG', 'Amount is 6× this payee’s usual payout ($790 avg)'),
+            'PO-1043': ('BANK_CHANGED_7D', 'Payee bank details changed 2 days ago'),
+            'PO-1044': ('DUPLICATE_24H', 'Same payee and amount as yesterday (possible duplicate)'),
+        })
+        unflagged = [p['payout_id'] for p in payouts.list_payouts(self.db) if not p['flag_code']]
+        self.assertEqual(len(unflagged), 35)
+        queue = payouts.current_queue(self.db)
+        self.assertEqual([p['payout_id'] for p in queue], MAIN_QUEUE_IDS)
+        sent = next(p for p in queue if p['payout_id'] == 'PO-1040')
+        self.assertEqual(desk.STATUS_WORDS[sent['status']], ('Sent', 's-sent'))
+        self.assertEqual(desk.STATUS_WORDS['FLAGGED'], ('Needs review', 's-review'))
+        self.assertEqual(desk.STATUS_WORDS['HELD'], ('Held', 's-held'))
+        self.assertEqual(desk.STATUS_WORDS['RETURNED'], ('Returned', 's-returned'))
+
+    # FEATURE 17 — Scenario — simulated payouts flag the same as they did on main
+    def test_simulated_payouts_flag_as_on_main(self):
+        now = datetime(2026, 11, 10, 18, tzinfo=timezone.utc)
+        paid_1000 = payout_rules.create(
+            self.db, 'PO-SIM-1000', 'New Sim Payee', 'DEMO-NSIM-001', 100000, 'ACH', now=now)
+        payout_rules.create(
+            self.db, 'PO-SIM-100001', 'New Sim Payee 2', 'DEMO-NSIM-002', 100001, 'ACH', now=now)
+        payout_rules.create(
+            self.db, 'PO-SIM-CEDAR', 'Cedar Cleaning Co.', 'DEMO-CEDR-004', 64000, 'ACH', now=now)
+        payout_rules.create(
+            self.db, 'PO-SIM-CEDAR-BIG', 'Cedar Cleaning Co.', 'DEMO-CEDR-004', 200000, 'ACH', now=now)
+        self.assertEqual(paid_1000['status'], 'PAID')
+        self.assertIsNone(payouts.get_payout(self.db, 'PO-SIM-1000')['flag_code'])
+        self.assertEqual(payouts.get_payout(self.db, 'PO-SIM-1000')['execution_status'], 'SETTLED')
+        over_row = payouts.get_payout(self.db, 'PO-SIM-100001')
+        self.assertEqual((over_row['status'], over_row['flag_code'], over_row['flag_text']),
+                         ('FLAGGED', 'NEW_PAYEE_OVER_1000',
+                          'No paid payout to this payee yet; amount is over $1,000'))
+        cedar = payouts.get_payout(self.db, 'PO-SIM-CEDAR')
+        self.assertEqual((cedar['status'], cedar['flag_code'], cedar['payee_usual_cents']),
+                         ('PAID', None, 64000))
+        big_row = payouts.get_payout(self.db, 'PO-SIM-CEDAR-BIG')
+        self.assertEqual((big_row['status'], big_row['flag_code'], big_row['flag_text']),
+                         ('FLAGGED', 'AMOUNT_OVER_3X_AVG',
+                          'Amount is 3× this payee’s usual payout ($640 avg)'))
+        # A later payout to the auto-paid new payee is no longer new, same as on main.
+        later = payout_rules.create(
+            self.db, 'PO-SIM-1000-LATER', 'New Sim Payee', 'DEMO-NSIM-001', 100001, 'ACH',
+            now=datetime(2026, 11, 10, 19, tzinfo=timezone.utc))
+        self.assertIsNone(payouts.get_payout(self.db, 'PO-SIM-1000-LATER')['flag_code'])
+        self.assertEqual(later['status'], 'PAID')
+
+    # FEATURE 18 — Scenario — Approve still emits one stream event, status FLAGGED to PAID
+    def test_approve_stream_event_unchanged(self):
+        payout_events.sync(self.db)
+        before = {event['id']: event for event in payout_events.events_after(self.db, 0)}
+        self.decide('PO-1042', 'approve', 'stream-ev')
+        added = payout_events.sync(self.db)
+        self.assertEqual(len(added), 1)
+        self.assertEqual(added[0]['type'], 'status-changed')
+        self.assertEqual(added[0]['payout_id'], 'PO-1042')
+        self.assertEqual((added[0]['from_status'], added[0]['to_status']), ('FLAGGED', 'PAID'))
+        after = payout_events.events_after(self.db, 0)
+        self.assertEqual(sum(1 for event in after if event['type'] == 'status-changed'
+                             and event['payout_id'] == 'PO-1042'), 1)
+        self.assertTrue(all(event['id'] in before or event is added[0] or event['id'] == added[0]['id']
+                            for event in after))
+
+    # FEATURE 19 — Scenario — UNKNOWN cannot be submitted or retried automatically
+    def test_unknown_cannot_be_submitted(self):
+        with self.assertRaises(APIError) as caught:
+            payouts.check_execution_transition('UNKNOWN', 'SUBMITTED')
+        self.assertEqual(caught.exception.status, 409)
+        self.assertIn('cannot be submitted or retried automatically', caught.exception.message)
+        payouts.check_execution_transition('UNKNOWN', 'SETTLED')
+        payouts.check_execution_transition('UNKNOWN', 'FAILED')
+
+    # FEATURE 20 — Scenario — create and decide write review and outcome on new rows
+    def test_create_and_decide_write_review_and_outcome(self):
+        now = datetime(2026, 11, 10, 18, tzinfo=timezone.utc)
+        payout_rules.create(
+            self.db, 'PO-WRITE-NEW', 'Write Payee', 'DEMO-WRIT-001', 100001, 'ACH', now=now)
+        flagged = payouts.get_payout(self.db, 'PO-WRITE-NEW')
+        self.assertEqual((flagged['status'], flagged['review_status'], flagged['execution_status']),
+                         ('FLAGGED', 'FLAGGED', 'NOT_STARTED'))
+        self.decide('PO-WRITE-NEW', 'approve', 'write-ev')
+        paid = payouts.get_payout(self.db, 'PO-WRITE-NEW')
+        self.assertEqual((paid['status'], paid['review_status'], paid['execution_status']),
+                         ('PAID', 'APPROVED', 'SETTLED'))
+        payout_rules.create(
+            self.db, 'PO-WRITE-CLEAN', 'Write Payee Clean', 'DEMO-WRIT-002', 100000, 'ACH', now=now)
+        clean = payouts.get_payout(self.db, 'PO-WRITE-CLEAN')
+        self.assertEqual((clean['status'], clean['review_status'], clean['execution_status']),
+                         ('PAID', 'APPROVED', 'SETTLED'))
+        self.assertEqual(clean['execution_ref'], 'demo:PO-WRITE-CLEAN')
+
+
+
 class HostedDecisionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -215,6 +394,25 @@ class HostedDecisionTests(unittest.TestCase):
         self.assertEqual(foreign.status_code, 403)
         for db in Path(self.temp.name).rglob('payments.sqlite3'):
             self.assertEqual(payouts.list_events(db), [])
+
+    # FEATURE 21 — Scenario — the JSON API returns evidence; the Desk does not show it
+    def test_json_returns_evidence_desk_does_not(self):
+        client = self.client()
+        reply = self.post(client, '/payouts/PO-1042/approve', key='desk-ev')
+        self.assertEqual(reply.status_code, 201)
+        self.assertEqual(reply.json['payout']['status'], 'PAID')
+        self.assertEqual(reply.json['payout']['review_status'], 'APPROVED')
+        self.assertEqual(reply.json['payout']['execution_status'], 'SETTLED')
+        self.assertIn('evidence', reply.json['decision'])
+        self.assertEqual(reply.json['decision']['evidence']['rules_version'], payouts.RULES_VERSION)
+        html = client.get('/desk', base_url=SITE).get_data(as_text=True)
+        self.assertIn('Sent', html)
+        self.assertIn('PO-1042', html)
+        self.assertNotIn('rules_version', html)
+        self.assertNotIn('desk-rules-1', html)
+        self.assertNotIn('execution_ref', html)
+        self.assertNotIn('demo:PO-1042', html)
+
 
 
 if __name__ == '__main__':
