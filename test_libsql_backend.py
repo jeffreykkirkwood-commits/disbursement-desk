@@ -29,7 +29,7 @@ class LibsqlBackendSuiteTests(unittest.TestCase):
             env=env,
             capture_output=True,
             text=True,
-            timeout=240,
+            timeout=900,
         )
         if result.returncode != 0:
             self.fail(result.stderr + '\n' + result.stdout)

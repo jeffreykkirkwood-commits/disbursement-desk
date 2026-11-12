@@ -65,6 +65,25 @@ class StorageFactoryTests(unittest.TestCase):
                         db.close()
                     libsql.connect.assert_not_called()
 
+    # FEATURE 02b — Scenario — blank or whitespace-only values count as unset
+    def test_falls_back_when_variables_are_whitespace(self):
+        cases = (
+            {storage.DATABASE_URL: '   ', storage.AUTH_TOKEN: '   '},
+            {storage.DATABASE_URL: '   ', storage.AUTH_TOKEN: 'test-token'},
+            {storage.DATABASE_URL: 'libsql://example.turso.io', storage.AUTH_TOKEN: '\t\n'},
+        )
+        libsql = mock.Mock()
+        for extra in cases:
+            with self.subTest(env=list(extra)):
+                with _env(**extra), mock.patch.dict(sys.modules, {'libsql': libsql}):
+                    self.assertFalse(storage.turso_configured())
+                    db = storage.connect(self.path)
+                    try:
+                        self.assertIsInstance(db, sqlite3.Connection)
+                    finally:
+                        db.close()
+                    libsql.connect.assert_not_called()
+
     # FEATURE 03 — Scenario — both variables select the mocked libSQL client
     def test_uses_libsql_when_both_variables_are_set(self):
         libsql = mock.Mock()

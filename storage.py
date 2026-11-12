@@ -28,9 +28,14 @@ LIBSQL_LOCAL = 'libsql-local'
 _LIBSQL_GATE = threading.RLock()
 
 
+def _env_value(env, name):
+    value = env.get(name)
+    return value.strip() if isinstance(value, str) else ''
+
+
 def turso_configured(env=None):
     env = os.environ if env is None else env
-    return bool(env.get(DATABASE_URL) and env.get(AUTH_TOKEN))
+    return bool(_env_value(env, DATABASE_URL) and _env_value(env, AUTH_TOKEN))
 
 
 def _local_marker(database):
@@ -207,7 +212,7 @@ def connect(database, timeout=5.0, **options):
         return _libsql_connect(database, timeout=timeout)
     if turso_configured():
         _local_marker(database)
-        return _libsql_connect(os.environ[DATABASE_URL],
-                               auth_token=os.environ[AUTH_TOKEN],
+        return _libsql_connect(_env_value(os.environ, DATABASE_URL),
+                               auth_token=_env_value(os.environ, AUTH_TOKEN),
                                timeout=timeout)
     return sqlite3.connect(database, timeout=timeout, **options)
