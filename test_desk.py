@@ -16,8 +16,10 @@ from pathlib import Path
 from unittest import mock
 from hosted_app import create_app
 import desk
+import ofac
 import payout_rules
 import payouts
+import review_reasons
 
 EXCEPTION_IDS = ['PO-1042', 'PO-1043', 'PO-1044', 'PO-1038']
 ALL_IDS = EXCEPTION_IDS + ['PO-1037', 'PO-1036', 'PO-1039', 'PO-1040', 'PO-1041', 'PO-1045']
@@ -178,16 +180,27 @@ class DeskDetailTests(DeskBase):
         for words in ('<button type="button" class="back" aria-label="Back to list">← Back</button>',
                       '<span class="pill s-review">Needs review</span>', '<h2 tabindex="-1">Bluebird Bakery</h2>',
                       '<p class="big">$312.40</p>', '<dt>Payout</dt><dd>PO-1043</dd>',
-                      '<dt>To account</dt><dd>DEMO-BLUE-002</dd>', '<dt>Rail</dt><dd>RTP · USD</dd>',
-                      '<div class="flag"><strong>Why flagged:</strong> Payee bank details changed 2 days ago</div>'):
+                      '<dt>To account</dt><dd>DEMO-BLUE-002</dd>', '<dt>Rail</dt><dd>RTP · USD</dd>'):
             self.assertIn(words, panel)
+        self.assertIn('Why this is in review', panel)
+        self.assertIn('1 reason', panel)
+        self.assertIn('Payee bank details changed 2 days ago.', panel)
+        self.assertIn('Confirm the change with the payee by phone before sending.', panel)
+        self.assertIn('BANK_CHANGED_7D', panel)
+        self.assertIn('From fixed rules. Review before sending.', panel)
+        self.assertNotIn('Why flagged', panel)
+        self.assertNotIn('RULES NOTE', panel)
         self.assertNotIn('This payout is final', panel)
 
     # Scenario — Held shows its flag and no final message; no action buttons in slice 2
     def test_held_detail(self):
         panel = self.panels()['PO-1038']
         self.assertIn('<span class="pill s-held">Held</span>', panel)
-        self.assertIn('Why flagged:</strong> Amount is 4× this payee’s usual payout ($520 avg)', panel)
+        self.assertIn('Why this is in review', panel)
+        self.assertIn('1 reason', panel)
+        self.assertIn('Amount is 4× this payee’s usual payout ($520 avg).', panel)
+        self.assertIn('AMOUNT_OVER_3X_AVG', panel)
+        self.assertNotIn('Why flagged', panel)
         self.assertNotIn('This payout is final', panel)
 
     # Scenario — Sent and Returned payouts are final: message, no buttons
@@ -195,25 +208,33 @@ class DeskDetailTests(DeskBase):
         panels = self.panels()
         returned, sent = panels['PO-1037'], panels['PO-1040']
         self.assertIn('<span class="pill s-returned">Returned</span>', returned)
-        self.assertIn('Why flagged:</strong> Payee bank details changed 1 day ago', returned)
+        self.assertIn('Why this was in review', returned)
+        self.assertIn('Payee bank details changed 1 day ago.', returned)
+        self.assertIn('Confirm the change with the payee by phone before sending.', returned)
+        self.assertIn('BANK_CHANGED_7D', returned)
+        self.assertNotIn('Why flagged', returned)
+        self.assertNotIn('Returned by operator', returned)
         self.assertIn('<span class="pill s-sent">Sent</span>', sent)
         self.assertNotIn('Why flagged', sent)
+        self.assertNotIn('Why this was in review', sent)
+        self.assertIn('No rules triggered. Within normal range for this payee.', sent)
         self.assertIn('<dt>Rail</dt><dd>ACH · USD</dd>', sent)
         for panel in (returned, sent):
             self.assertIn('<p class="done">This payout is final. No actions available.</p>', panel)
             self.assertNotIn('class="btn', panel)
 
-    # Scenario — the Desk shows the stored #37 note text under RULES NOTE / From fixed rules
-    def test_stored_note_is_rendered(self):
+    # Scenario — the review panel replaces the RULES NOTE card; stored note text is not shown
+    def test_stored_note_is_not_rendered_in_the_detail(self):
         self.get()
         with closing(sqlite3.connect(str(self.database()))) as db, db:
             db.execute("UPDATE payouts SET note_text = 'Stored note', note_source = 'rules', note_fallback = 0 "
                        "WHERE payout_id = 'PO-1043'")
         html = self.get().get_data(as_text=True)
         panel = self.panels(html)['PO-1043']
-        self.assertIn('Stored note', panel)
-        self.assertIn('<span class="badge b-rules">RULES NOTE</span>From fixed rules', panel)
-        self.assertNotIn('Rule BANK_CHANGED_7D', panel)
+        self.assertNotIn('Stored note', panel)
+        self.assertNotIn('RULES NOTE', panel)
+        self.assertIn('Why this is in review', panel)
+        self.assertIn('Payee bank details changed 2 days ago.', panel)
         self.assertNotIn('Written by AI', panel)
         self.assertNotIn('AI NOTE', panel)
 
@@ -232,6 +253,86 @@ class DeskDetailTests(DeskBase):
         self.assertIn('&lt;i&gt;X&lt;/i&gt;', panel)
         self.assertIn('&lt;script&gt;y&lt;/script&gt;', panel)
         self.assertNotIn('<script>', panel)
+
+    # Scenario — the review panel lists a reason count, each reason line, and the footer
+    def test_review_panel_lists_each_reason_and_count(self):
+        panels = self.panels()
+        acme = panels['PO-1042']
+        self.assertIn('<span class="review-count">1 reason</span>', acme)
+        self.assertIn('<p class="review-reason">Amount is 6× this payee’s usual payout ($790 avg).</p>', acme)
+        self.assertIn('<code class="review-code">AMOUNT_OVER_3X_AVG</code>', acme)
+        self.assertIn('<p class="review-foot">From fixed rules. Review before sending.</p>', acme)
+        northwind = panels['PO-1044']
+        self.assertIn('<span class="review-count">1 reason</span>', northwind)
+        self.assertIn('Same payee and amount as yesterday (possible duplicate).', northwind)
+        self.assertIn('<code class="review-code">DUPLICATE_24H</code>', northwind)
+
+    # Scenario — a bank-details reason has the phone-check line on its own line
+    def test_review_panel_phone_line_under_bank_reason(self):
+        panel = self.panels()['PO-1043']
+        self.assertIn('<p class="review-reason">Payee bank details changed 2 days ago.</p>', panel)
+        self.assertIn('<p class="review-phone">Confirm the change with the payee by phone before sending.</p>', panel)
+        # The phone line sits under the bank sentence and above the rule code.
+        bank = panel.split('Payee bank details changed 2 days ago.', 1)[1]
+        phone_at = bank.find('Confirm the change with the payee by phone before sending.')
+        code_at = bank.find('BANK_CHANGED_7D')
+        self.assertGreater(phone_at, 0)
+        self.assertGreater(code_at, phone_at)
+
+    # Scenario — a final payout keeps its original reasons under the past-tense heading
+    def test_final_payout_uses_was_in_review_heading(self):
+        panel = self.panels()['PO-1037']
+        self.assertIn('<h3>Why this was in review <span class="review-count">1 reason</span></h3>', panel)
+        self.assertNotIn('Why this is in review', panel)
+        self.assertIn('Payee bank details changed 1 day ago.', panel)
+        self.assertIn('Confirm the change with the payee by phone before sending.', panel)
+        self.assertNotIn('Returned by operator', panel)
+
+    # Scenario — two stored flags show two reasons, in stored order, with the phone line
+    def test_review_panel_shows_combined_reasons_in_stored_order(self):
+        self.get()
+        from datetime import datetime, timezone
+        now = datetime(2026, 11, 12, 16, 0, tzinfo=timezone.utc)
+        payout_rules.create(
+            self.database(), 'PO-2100', 'Cedar Lane Plumbing', 'DEMO-CEDL-012', 185000,
+            'ACH', bank_details_changed_at=now.isoformat(), now=now)
+        panel = self.panels()['PO-2100']
+        self.assertIn('<span class="review-count">2 reasons</span>', panel)
+        self.assertIn('Why this is in review', panel)
+        first, second = [block for block in panel.split('<ul class="review-list">', 1)[1]
+                         .split('</ul>', 1)[0].split('<li>') if block]
+        self.assertIn('No paid payout to this payee yet; amount is over $1,000.', first)
+        self.assertIn('NEW_PAYEE_OVER_1000', first)
+        self.assertNotIn('Confirm the change', first)
+        self.assertIn('Payee bank details changed today.', second)
+        self.assertIn('Confirm the change with the payee by phone before sending.', second)
+        self.assertIn('BANK_CHANGED_7D', second)
+
+    # Scenario — a sanctions match uses the short sentence and label/value rows
+    def test_review_panel_sanctions_rows(self):
+        self.get()
+        payout_rules.create(
+            self.database(), 'PO-4100', ofac.DEMO_PAYEE_NAME, ofac.DEMO_PAYEE_ACCOUNT,
+            ofac.DEMO_AMOUNT_CENTS, 'ACH')
+        panel = self.panels()['PO-4100']
+        self.assertIn('<span class="review-count">1 reason</span>', panel)
+        self.assertIn('<p class="review-reason">Possible sanctions match.</p>', panel)
+        self.assertIn('<dt>Listed name</dt><dd>BANCO NACIONAL DE CUBA</dd>', panel)
+        self.assertIn('<dt>Score</dt><dd>100 (100 is an exact match)</dd>', panel)
+        self.assertIn('<dt>List published</dt><dd>2026-11-09</dd>', panel)
+        self.assertIn('<dt>Snapshot taken</dt><dd>2026-11-12</dd>', panel)
+        self.assertIn('<code class="review-code">POSSIBLE_SANCTIONS_MATCH</code>', panel)
+        self.assertIn('data-act="clear"', panel)
+        self.assertIn('data-act="block"', panel)
+        self.assertNotIn('Why flagged', panel)
+        self.assertNotIn('RULES NOTE', panel)
+        # Facts come from the same match for_payout reports.
+        api = review_reasons.for_payout(self.database(), 'PO-4100')
+        sanctions = next(item for item in api if item['code'] == ofac.FLAG_CODE)
+        self.assertEqual(sanctions['details']['entry_name'], 'BANCO NACIONAL DE CUBA')
+        self.assertEqual(sanctions['details']['score'], 100)
+        self.assertEqual(sanctions['details']['list_published'], '2026-11-09')
+        self.assertEqual(sanctions['details']['snapshot_taken'], '2026-11-12')
 
 
 APPROVE_BUTTON = ('<button type="button" class="btn primary" data-act="approve" data-heading="Approve and send?" '
@@ -291,7 +392,11 @@ class DeskActionTests(DeskBase):
         self.assertIn('PO-1042 · Held by operator', html)
         self.assertIn('Exceptions <b>4</b>', html)
         panel = dict(PANEL.findall(html))['PO-1042']
-        self.assertIn('Why flagged:</strong> Held by operator', panel)
+        self.assertIn('Why this is in review', panel)
+        self.assertIn('Amount is 6× this payee’s usual payout ($790 avg).', panel)
+        self.assertIn('AMOUNT_OVER_3X_AVG', panel)
+        self.assertNotIn('Why flagged', panel)
+        self.assertNotIn('Held by operator', panel)
         self.assertIn(HOLD_BUTTON.format(' disabled'), panel)
         self.assertIn(APPROVE_BUTTON, panel)
         self.assertIn(RETURN_BUTTON, panel)
@@ -304,17 +409,24 @@ class DeskActionTests(DeskBase):
         self.assertIn('Exceptions <b>3</b>', html)
         panel = dict(PANEL.findall(html))['PO-1044']
         self.assertIn('<span class="pill s-returned">Returned</span>', panel)
-        self.assertIn('Why flagged:</strong> Returned by operator', panel)
+        self.assertIn('Why this was in review', panel)
+        self.assertIn('Same payee and amount as yesterday (possible duplicate).', panel)
+        self.assertIn('DUPLICATE_24H', panel)
+        self.assertNotIn('Why flagged', panel)
+        self.assertNotIn('Returned by operator', panel)
         self.assertIn('This payout is final. No actions available.', panel)
         self.assertNotIn('data-act=', panel)
 
-    # Scenario — after Approve: Sent, the why-flagged line is gone, final, no buttons
+    # Scenario — after Approve: Sent, original reasons stay under the past-tense heading
     def test_after_approve(self):
         self.decide('PO-1043', 'PAID')
         html = self.get().get_data(as_text=True)
         self.assertIn('PO-1043 · RTP', html)
         panel = dict(PANEL.findall(html))['PO-1043']
         self.assertIn('<span class="pill s-sent">Sent</span>', panel)
+        self.assertIn('Why this was in review', panel)
+        self.assertIn('Payee bank details changed 2 days ago.', panel)
+        self.assertIn('Confirm the change with the payee by phone before sending.', panel)
         self.assertNotIn('Why flagged', panel)
         self.assertIn('This payout is final. No actions available.', panel)
         self.assertNotIn('data-act=', panel)
@@ -530,64 +642,55 @@ class DeskNoteTests(DeskBase):
     def panels(self, html=None):
         return dict(PANEL.findall(html or self.get().get_data(as_text=True)))
 
-    def visible_note(self, panel):
-        # The first note block in the panel is the default (not hidden).
-        return [block for block in panel.split('<div class="note"')[1:]
-                if not block.startswith(' data-note="fallback" hidden')
-                and not block.startswith(' data-note="ai" hidden')
-                and not block.startswith(' data-note="rules" hidden')][0]
-
-    # Scenario — Harbor Hardware shows its stored amount-flag note as a rules note
-    def test_harbor_shows_stored_rules_note(self):
+    # Scenario — Harbor Hardware shows its amount reason in the review panel, not a RULES NOTE
+    def test_harbor_shows_amount_reason_in_the_review_panel(self):
         panel = self.panels()['PO-1038']
-        note = self.visible_note(panel)
-        self.assertIn('data-note="rules"', note)
-        self.assertIn('<span class="badge b-rules">RULES NOTE</span>From fixed rules', note)
-        self.assertIn('Rule AMOUNT_OVER_3X_AVG: Amount is 4× this payee’s usual payout ($520 avg). Review before sending.', note)
-        self.assertNotIn('AI NOTE', note)
+        self.assertIn('<div class="review">', panel)
+        self.assertIn('Why this is in review', panel)
+        self.assertIn('<span class="review-count">1 reason</span>', panel)
+        self.assertIn('Amount is 4× this payee’s usual payout ($520 avg).', panel)
+        self.assertIn('<code class="review-code">AMOUNT_OVER_3X_AVG</code>', panel)
+        self.assertIn('From fixed rules. Review before sending.', panel)
+        self.assertNotIn('RULES NOTE', panel)
+        self.assertNotIn('Why flagged', panel)
         self.assertNotIn('Written by AI', panel)
-        self.assertNotIn('operator', note.lower())
-        self.assertNotIn('MANUAL_HOLD', note)
-        self.assertIn('data-note="fallback" hidden', panel)
-        self.assertIn('AI unavailable, rules fallback', panel)
+        self.assertNotIn('AI NOTE', panel)
         self.assertNotIn('AI-drafted, review required', panel)
 
-    # Scenario — Cedar Cleaning Co. shows the stored clean-payout rules note
-    def test_cedar_shows_stored_clean_note(self):
+    # Scenario — Cedar Cleaning Co. shows the clean line, with no review panel
+    def test_cedar_shows_the_clean_review_line(self):
         panel = self.panels()['PO-1040']
-        note = self.visible_note(panel)
-        self.assertIn('data-note="rules"', note)
-        self.assertIn('<span class="badge b-rules">RULES NOTE</span>From fixed rules', note)
-        self.assertIn('No rules triggered. Within normal range for this payee.', note)
+        self.assertIn('No rules triggered. Within normal range for this payee.', panel)
+        self.assertNotIn('<div class="review">', panel)
+        self.assertNotIn('RULES NOTE', panel)
         self.assertNotIn('Written by AI', panel)
         self.assertNotIn('AI NOTE', panel)
 
-    # Scenario — Bluebird Bakery shows its stored bank-change note as a rules note
-    def test_bluebird_rules_note(self):
+    # Scenario — Bluebird Bakery shows the bank reason and the phone-check line
+    def test_bluebird_shows_bank_reason_and_phone_line(self):
         panel = self.panels()['PO-1043']
-        note = self.visible_note(panel)
-        self.assertIn('data-note="rules"', note)
-        self.assertIn('<span class="badge b-rules">RULES NOTE</span>From fixed rules', note)
-        self.assertIn('Rule BANK_CHANGED_7D: bank details changed within 7 days. Confirm the change with the payee by phone before sending.', note)
+        self.assertIn('Why this is in review', panel)
+        self.assertIn('<span class="review-count">1 reason</span>', panel)
+        self.assertIn('Payee bank details changed 2 days ago.', panel)
+        self.assertIn('Confirm the change with the payee by phone before sending.', panel)
+        self.assertIn('<code class="review-code">BANK_CHANGED_7D</code>', panel)
+        self.assertNotIn('RULES NOTE', panel)
+        self.assertNotIn('Why flagged', panel)
         self.assertNotIn('AI NOTE', panel)
         self.assertNotIn('Written by AI', panel)
         self.assertNotIn('AI-drafted, review required', panel)
-        self.assertIn('data-note="fallback" hidden', panel)
 
-    # Scenario — every current-queue payout has one default stored rules note
-    def test_every_payout_has_one_default_note(self):
+    # Scenario — every current-queue payout has either the review panel or the clean line
+    def test_every_payout_has_review_panel_or_clean_line(self):
         panels = self.panels()
         self.assertEqual(list(panels), ALL_IDS)
         for pid, panel in panels.items():
-            visible = []
-            hidden = []
-            for raw in panel.split('<div class="note"')[1:]:
-                tag, _, _rest = raw.partition('>')
-                (hidden if ' hidden' in tag else visible).append(tag)
-            self.assertEqual(len(visible), 1, pid)
-            self.assertIn('data-note="rules"', visible[0], pid)
-            self.assertEqual(len(hidden), 1, pid)
-            self.assertIn('data-note="fallback"', hidden[0], pid)
+            self.assertNotIn('RULES NOTE', panel, pid)
+            self.assertNotIn('Why flagged', panel, pid)
+            has_review = '<div class="review">' in panel
+            has_clean = 'No rules triggered. Within normal range for this payee.' in panel
+            self.assertTrue(has_review or has_clean, pid)
+            self.assertFalse(has_review and has_clean, pid)
         html = self.get().get_data(as_text=True)
         self.assertNotIn('AI-drafted, review required', html)
         self.assertNotIn('Written by AI', html)
@@ -600,7 +703,7 @@ class DeskNoteTests(DeskBase):
         for pid, panel in self.panels(html).items():
             self.assertNotIn('Written by AI', panel, pid)
             self.assertNotIn('AI NOTE', panel, pid)
-            self.assertIn('RULES NOTE', panel, pid)
+            self.assertNotIn('RULES NOTE', panel, pid)
 
     # Scenario — off, slow (over 3s) or error shows the approved fallback helper
     # on the stored note, never Written by AI
@@ -636,7 +739,8 @@ class DeskNoteTests(DeskBase):
     def test_ai_does_not_change_the_flag_or_store_notes(self):
         html = self.get().get_data(as_text=True)
         panel = self.panels(html)['PO-1042']
-        self.assertIn('Why flagged:</strong> Amount is 6× this payee’s usual payout ($790 avg)', panel)
+        self.assertIn('Amount is 6× this payee’s usual payout ($790 avg).', panel)
+        self.assertNotIn('Why flagged', panel)
         before = payouts.get_payout(self.database(), 'PO-1042')
         self.assertEqual(before['flag_text'], 'Amount is 6× this payee’s usual payout ($790 avg)')
         self.assertTrue(before['note_text'])
@@ -659,8 +763,9 @@ class DeskNoteTests(DeskBase):
         with closing(sqlite3.connect(str(self.database()))) as db, db:
             db.execute("UPDATE payouts SET note_text = '<script>z</script> Amount' WHERE payout_id = 'PO-1042'")
         panel = self.panels()['PO-1042']
-        self.assertIn('&lt;script&gt;z&lt;/script&gt; Amount', panel)
+        # The stored note card is no longer shown; escaped text must not appear raw.
         self.assertNotIn('<script>z</script>', panel)
+        self.assertNotIn('RULES NOTE', panel)
 
     # Scenario — the page script honors #ai=off and keeps it in the hash, without calling a model
     def test_script_honors_ai_off(self):

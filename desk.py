@@ -6,6 +6,8 @@
 # shows it on screen. It does not call a model or invent note sentences.
 """Disbursement Desk presentation for the approved #40 design. Never writes to the database."""
 from dashboard import money, text
+import payout_notes
+import review_reasons
 
 # FEATURE 01 — Turn status codes into the approved plain words
 # The API keeps its own codes; viewers only ever see these four words (#40). PENDING
@@ -62,6 +64,40 @@ def shown_flag(payout):
     if payout['status'] in ('PAID', 'APPROVED'):
         return None
     return OPERATOR_FLAGS.get(payout['status'], payout['flag_text'])
+
+
+# FEATURE 02c — Reasons for the review panel
+# The Desk reads review_reasons.panel_items() so stored flags stay in stored
+# order, sanctions facts come from the same OFAC match as for_payout, and a
+# bank-details reason includes the required phone-check line. Sent and
+# Returned payouts keep these original reasons, under a past-tense heading,
+# instead of replacing them with "Returned by operator".
+def review_items(payout):
+    """One stored rule reason per item: sentence, code, optional facts and phone line."""
+    return review_reasons.panel_items(payout)
+
+
+def _review_panel(payout, items):
+    count = len(items)
+    noun = 'reason' if count == 1 else 'reasons'
+    heading = ('Why this was in review' if payout['status'] in FINAL_STATUSES
+               else 'Why this is in review')
+    rows = []
+    for item in items:
+        facts = ''
+        if item['facts']:
+            cells = ''.join(f'<dt>{text(label)}</dt><dd>{text(value)}</dd>'
+                            for label, value in item['facts'])
+            facts = f'<dl class="review-facts">{cells}</dl>'
+        phone = ''
+        if item.get('phone'):
+            phone = f'<p class="review-phone">{text(item["phone"])}</p>'
+        rows.append(f'<li><p class="review-reason">{text(item["sentence"])}</p>{phone}{facts}'
+                    f'<code class="review-code">{text(item["code"])}</code></li>')
+    return (f'<div class="review"><h3>{text(heading)} '
+            f'<span class="review-count">{count} {noun}</span></h3>'
+            f'<ul class="review-list">{"".join(rows)}</ul>'
+            f'<p class="review-foot">From fixed rules. Review before sending.</p></div>')
 
 
 # FEATURE 01d — Choose the note badge and helper line (slice 5, Q3 option A)
@@ -148,16 +184,17 @@ def _row(payout):
             f'<span class="pill {css}">{word}</span></button></li>')
 
 
-# FEATURE 02b — Build one payout's detail, its note and its action buttons
-# Payee, amount, payout id, account, rail, status, the flag sentence when one exists,
-# and one note (slice 5) from the stored #37 columns. Sent and Returned payouts say
-# they are final. Needs review and Held payouts get Approve / Hold / Return (slice 3);
-# Hold is disabled when the payout is already Held. The panel carries the payee and
-# amount so the dialog can repeat them.
+# FEATURE 02b — Build one payout's detail, its review reasons and its action buttons
+# Payee, amount, payout id, account, rail, status, then one "Why this is in review"
+# panel that lists every stored rule reason. The yellow "Why flagged" box and the
+# RULES NOTE card are not shown. Sent and Returned payouts keep the original
+# reasons under "Why this was in review" and say they are final. Needs review
+# and Held payouts get Approve / Hold / Return (slice 3); Hold is disabled when
+# the payout is already Held. A possible sanctions match gets Clear / Block.
+# The panel carries the payee and amount so the dialog can repeat them.
 def _detail(payout):
     word, css = STATUS_WORDS[payout['status']]
     pid = text(payout['payout_id'])
-    flag = shown_flag(payout)
     parts = [f'<div class="panel" data-id="{pid}" data-payee="{text(payout["payee_name"])}" '
              f'data-amount="{money(payout["amount"])}" hidden>',
              '<div class="dtop"><button type="button" class="back" aria-label="Back to list">← Back</button>'
@@ -166,9 +203,11 @@ def _detail(payout):
              f'<p class="big">{money(payout["amount"])}</p>',
              f'<dl><dt>Payout</dt><dd>{pid}</dd><dt>To account</dt><dd>{text(payout["payee_account"])}</dd>'
              f'<dt>Rail</dt><dd>{text(payout["rail"])} · {text(payout["currency"])}</dd></dl>']
-    if flag:
-        parts.append(f'<div class="flag"><strong>Why flagged:</strong> {text(flag)}</div>')
-    parts.append(_notes(payout))
+    items = review_items(payout)
+    if items:
+        parts.append(_review_panel(payout, items))
+    else:
+        parts.append(f'<p class="review-clean">{text(payout_notes.CLEAN_NOTE)}</p>')
     if payout['status'] in FINAL_STATUSES:
         parts.append(f'<p class="done">{FINAL_MESSAGE}</p>')
     else:
@@ -249,6 +288,19 @@ h1{font-size:26px;margin:0;letter-spacing:-.5px}
 .big{font-size:36px;font-weight:700;letter-spacing:-1px;margin:10px 0 0;font-variant-numeric:tabular-nums}
 dl{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:14px 0;font-size:15px}dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}
 .flag{background:var(--amber-bg);color:var(--amber);border-radius:8px;padding:10px 12px;font-size:15px;margin:12px 0}
+.review{background:var(--amber-bg);color:var(--amber);border-radius:8px;padding:12px 14px;margin:12px 0}
+.review h3{font-size:15px;font-weight:700;line-height:1.35;margin:0;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.review-count{font-size:13px;font-weight:600;color:var(--muted)}
+.review-list{list-style:none;margin:8px 0 0;padding:0}
+.review-list li + li{border-top:1px solid #ead7a8;margin-top:8px;padding-top:8px}
+.review-reason{margin:0;font-size:15px;overflow-wrap:anywhere}
+.review-facts{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 14px;margin:8px 0 2px;font-size:15px}
+.review-facts dt{color:var(--muted)}
+.review-facts dd{margin:0;overflow-wrap:anywhere;color:var(--ink)}
+.review-code{display:block;margin-top:4px;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--muted);overflow-wrap:anywhere}
+.review-phone{margin:4px 0 0;font-size:15px;overflow-wrap:anywhere}
+.review-foot{margin:10px 0 0;padding-top:8px;border-top:1px solid #ead7a8;font-size:13px;color:var(--muted)}
+.review-clean{font-size:15px;color:var(--muted);margin:12px 0}
 .note{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:12px 0}
 .note[hidden]{display:none}
 .note-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-weight:700;font-size:14px;margin-bottom:4px}
