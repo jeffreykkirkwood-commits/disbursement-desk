@@ -1,5 +1,5 @@
 # Behavior of simulated rail timing: cutoffs, weekend and holiday rollover,
-# per-rail demo limits, and each return path. Pure-function tests do not
+# per-rail limits and labels, and each return path. Pure-function tests do not
 # open a database; one wiring test checks that get_payout exposes rail_timing
 # and that the Desk HTML still does not mention settlement or return codes.
 """Tests for rails.py settlement, cutoff, holiday and return-path behavior."""
@@ -47,7 +47,12 @@ class RailTableTest(unittest.TestCase):
         self.assertTrue(rtp['immediate'] and fednow['immediate'])
         self.assertIsNone(rtp['cutoff_et'])
         self.assertIsNone(fednow['cutoff_et'])
-        self.assertNotEqual(rtp['limit_cents'], fednow['limit_cents'])
+        self.assertEqual(rtp['limit_cents'], 1_000_000_000)
+        self.assertEqual(fednow['limit_cents'], 1_000_000_000)
+        self.assertEqual(rtp['limit_source'], 'network')
+        self.assertEqual(fednow['limit_source'], 'network')
+        self.assertIsNone(rtp['limit_note'])
+        self.assertIn('$100,000', fednow['limit_note'])
         self.assertEqual(rtp['return_path'], fednow['return_path'])
 
 
@@ -224,36 +229,88 @@ class ReturnPathTest(unittest.TestCase):
             rails.return_path('SWIFT')
 
 
-class DemoLimitTest(unittest.TestCase):
+class PaymentLimitTest(unittest.TestCase):
 
-    def test_labelled_demo_limits(self):
+    def test_labelled_limits(self):
         self.assertEqual(rails.payment_limit('ACH'), '1000000.00')
         self.assertEqual(rails.payment_limit('SAME_DAY_ACH'), '1000000.00')
-        self.assertEqual(rails.payment_limit('RTP'), '1000000.00')
-        self.assertEqual(rails.payment_limit('FEDNOW'), '500000.00')
+        self.assertEqual(rails.payment_limit('RTP'), '10000000.00')
+        self.assertEqual(rails.payment_limit('FEDNOW'), '10000000.00')
         self.assertEqual(rails.payment_limit('WIRE'), '5000000.00')
 
-    def test_describe_labels_the_limit_as_a_simulator_figure(self):
-        timing = rails.describe('FEDNOW', et(TUE, 10, 0), '100.00')
-        self.assertEqual(timing['limit_source'], 'simulator')
-        self.assertEqual(timing['payment_limit'], '500000.00')
-        self.assertFalse(timing['over_limit'])
+    def test_limit_source_is_network_or_bank_policy_per_rail(self):
+        submitted = et(TUE, 10, 0)
+        self.assertEqual(rails.describe('ACH', submitted, '100.00')['limit_source'],
+                         'bank_policy')
+        self.assertEqual(rails.describe('WIRE', submitted, '100.00')['limit_source'],
+                         'bank_policy')
+        self.assertEqual(rails.describe('SAME_DAY_ACH', submitted, '100.00')['limit_source'],
+                         'network')
+        self.assertEqual(rails.describe('RTP', submitted, '100.00')['limit_source'],
+                         'network')
+        self.assertEqual(rails.describe('FEDNOW', submitted, '100.00')['limit_source'],
+                         'network')
 
-    def test_over_limit_is_true_only_when_amount_exceeds_the_demo_limit(self):
+    def test_fednow_limit_note_records_the_default_and_rtp_has_none(self):
+        submitted = et(TUE, 10, 0)
+        fednow = rails.describe('FEDNOW', submitted, '100.00')
+        rtp = rails.describe('RTP', submitted, '100.00')
+        self.assertEqual(fednow['payment_limit'], '10000000.00')
+        self.assertIn('$100,000', fednow['limit_note'])
+        self.assertIn('maximum', fednow['limit_note'])
+        self.assertIsNone(rtp['limit_note'])
+        self.assertIsNone(rails.describe('ACH', submitted, '100.00')['limit_note'])
+        # The $100,000 default is a note only; it does not trip over_limit.
+        self.assertFalse(rails.describe('FEDNOW', submitted, '100000.01')['over_limit'])
+
+    def test_over_limit_is_true_only_when_amount_exceeds_the_labelled_limit(self):
         submitted = et(TUE, 10, 0)
         # Equal to the limit is not over. One cent over is.
-        at_fednow = rails.describe('FEDNOW', submitted, '500000.00')
-        over_fednow = rails.describe('FEDNOW', submitted, '500000.01')
-        under_fednow = rails.describe('FEDNOW', submitted, '499999.99')
+        at_fednow = rails.describe('FEDNOW', submitted, '10000000.00')
+        over_fednow = rails.describe('FEDNOW', submitted, '10000000.01')
+        under_fednow = rails.describe('FEDNOW', submitted, '9999999.99')
         self.assertFalse(at_fednow['over_limit'])
         self.assertTrue(over_fednow['over_limit'])
         self.assertFalse(under_fednow['over_limit'])
-        self.assertTrue(rails.describe('FEDNOW', submitted, '600000.00')['over_limit'])
         self.assertTrue(rails.describe('SAME_DAY_ACH', submitted, '1500000.00')['over_limit'])
         self.assertTrue(rails.describe('WIRE', submitted, '9000000.00')['over_limit'])
         self.assertFalse(rails.describe('WIRE', submitted, '5000000.00')['over_limit'])
         self.assertFalse(rails.describe('ACH', submitted, '1000000.00')['over_limit'])
-        self.assertTrue(rails.describe('RTP', submitted, '1000000.01')['over_limit'])
+        self.assertTrue(rails.describe('ACH', submitted, '1000000.01')['over_limit'])
+        self.assertFalse(rails.describe('RTP', submitted, '10000000.00')['over_limit'])
+        self.assertTrue(rails.describe('RTP', submitted, '10000000.01')['over_limit'])
+
+
+class CutoffLabelTest(unittest.TestCase):
+
+    def test_banking_rails_label_cutoffs_as_bank_and_list_fed_times(self):
+        submitted = et(TUE, 10, 0)
+        ach = rails.describe('ACH', submitted, '100.00')
+        same_day = rails.describe('SAME_DAY_ACH', submitted, '100.00')
+        wire = rails.describe('WIRE', submitted, '100.00')
+        self.assertEqual(ach['cutoff_source'], 'bank')
+        self.assertEqual(same_day['cutoff_source'], 'bank')
+        self.assertEqual(wire['cutoff_source'], 'bank')
+        self.assertEqual(ach['fed_deadlines'], [])
+        self.assertIn('Bank cutoff', ach['cutoff_note'])
+        self.assertEqual(same_day['fed_deadlines'], ['10:30', '14:45', '16:45'])
+        self.assertIn('10:30 AM', same_day['cutoff_note'])
+        self.assertIn('2:45 PM', same_day['cutoff_note'])
+        self.assertIn('4:45 PM', same_day['cutoff_note'])
+        self.assertEqual(wire['fed_deadlines'], ['18:45'])
+        self.assertIn('6:45 PM ET', wire['cutoff_note'])
+        # Demo cutoff times themselves are unchanged.
+        self.assertEqual(rails.RAIL_SPECS['ACH']['cutoff_et'], time(17, 0))
+        self.assertEqual(rails.RAIL_SPECS['SAME_DAY_ACH']['cutoff_et'], time(14, 45))
+        self.assertEqual(rails.RAIL_SPECS['WIRE']['cutoff_et'], time(16, 0))
+
+    def test_immediate_rails_have_no_bank_cutoff_or_fed_deadlines(self):
+        submitted = et(TUE, 10, 0)
+        for rail in ('RTP', 'FEDNOW'):
+            timing = rails.describe(rail, submitted, '100.00')
+            self.assertIsNone(timing['cutoff_source'])
+            self.assertEqual(timing['fed_deadlines'], [])
+            self.assertIsNone(timing['cutoff_note'])
 
 
 class PayoutJsonWiringTest(unittest.TestCase):
@@ -269,10 +326,11 @@ class PayoutJsonWiringTest(unittest.TestCase):
         timing = payout['rail_timing']
         self.assertEqual(set(timing),
                          {'expected_settlement', 'return_path', 'payment_limit',
-                          'limit_source', 'over_limit'})
+                          'limit_source', 'limit_note', 'over_limit',
+                          'cutoff_source', 'fed_deadlines', 'cutoff_note'})
         expected = rails.describe(
             payout['rail'], payout['created_at'], payout['amount'])
-        self.assertEqual(timing['limit_source'], 'simulator')
+        self.assertIn(timing['limit_source'], ('network', 'bank_policy'))
         self.assertIn(timing['over_limit'], (True, False))
         self.assertEqual(timing, expected)
 
@@ -292,14 +350,15 @@ class PayoutJsonWiringTest(unittest.TestCase):
                 rails.expected_settlement(rail, payout['created_at']).isoformat())
 
     def test_over_limit_payout_json_flags_the_breach_and_still_creates(self):
-        # Limits are labelled, not enforced: a payout over the demo cap is
+        # Limits are labelled, not enforced: a payout over the labelled cap is
         # still stored, and rail_timing.over_limit is True.
         cases = (
-            ('FEDNOW', 60_000_000, '600000.00', '500000.00'),
-            ('SAME_DAY_ACH', 150_000_000, '1500000.00', '1000000.00'),
-            ('WIRE', 900_000_000, '9000000.00', '5000000.00'),
+            ('FEDNOW', 1_000_000_001, '10000000.01', '10000000.00', 'network'),
+            ('RTP', 1_000_000_001, '10000000.01', '10000000.00', 'network'),
+            ('SAME_DAY_ACH', 150_000_000, '1500000.00', '1000000.00', 'network'),
+            ('WIRE', 900_000_000, '9000000.00', '5000000.00', 'bank_policy'),
         )
-        for index, (rail, cents, amount, limit) in enumerate(cases):
+        for index, (rail, cents, amount, limit, source) in enumerate(cases):
             created = payout_rules.create(
                 self.db, f'PO-52{index:02d}', 'Pat Taylor', 'DEMO-RAIL-LIMIT',
                 cents, rail, now=et(TUE, 10, 0))
@@ -307,7 +366,7 @@ class PayoutJsonWiringTest(unittest.TestCase):
             timing = payout['rail_timing']
             self.assertEqual(payout['amount'], amount)
             self.assertEqual(timing['payment_limit'], limit)
-            self.assertEqual(timing['limit_source'], 'simulator')
+            self.assertEqual(timing['limit_source'], source)
             self.assertTrue(timing['over_limit'])
 
     def test_desk_html_does_not_surface_timing_or_return_codes(self):
@@ -316,7 +375,8 @@ class PayoutJsonWiringTest(unittest.TestCase):
         html = desk.render_desk(queue)
         for needle in ('expected_settlement', 'rail_timing', 'R01', 'R02', 'R03',
                        'request_for_return', 'payment_limit', 'limit_source',
-                       'over_limit'):
+                       'limit_note', 'over_limit', 'cutoff_source',
+                       'fed_deadlines', 'cutoff_note', 'bank_policy'):
             self.assertNotIn(needle, html)
 
 
