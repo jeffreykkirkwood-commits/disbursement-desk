@@ -3,7 +3,7 @@
 """Apply fixtures/execution_events_demo.json to one demo database, in order."""
 import json
 import logging
-import sqlite3
+import storage
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -135,7 +135,7 @@ def replay(database, fixture=None):
     """
     events = load_fixture(fixture)
     payouts.ensure_seeded(database)
-    with sqlite3.connect(str(database), timeout=10) as db:
+    with storage.connect(str(database), timeout=10) as db:
         db.execute('PRAGMA foreign_keys = ON')
         db.execute('BEGIN IMMEDIATE')
         _prepare(db)

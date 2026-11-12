@@ -6,7 +6,7 @@
 import json
 import random
 import re
-import sqlite3
+import storage
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -383,7 +383,7 @@ def _rail_check_stale(db):
 
 def _rebuild_payouts_rail_check(database):
     """Rebuild payouts when the rail CHECK still allows only ACH and RTP."""
-    with sqlite3.connect(str(database), timeout=10) as db:
+    with storage.connect(str(database), timeout=10) as db:
         db.execute('PRAGMA foreign_keys = OFF')
         db.execute('BEGIN IMMEDIATE')
         exists = db.execute(
@@ -401,7 +401,7 @@ def _rebuild_payouts_rail_check(database):
 
 def ensure_seeded(database):
     rebuilt = _rebuild_payouts_rail_check(database)
-    with sqlite3.connect(str(database), timeout=10) as db:
+    with storage.connect(str(database), timeout=10) as db:
         db.execute('PRAGMA foreign_keys = ON')
         db.execute('BEGIN IMMEDIATE')
         for statement in SCHEMA:
@@ -423,7 +423,7 @@ def ensure_seeded(database):
 # (#32 slice 4).
 def reset(database):
     _rebuild_payouts_rail_check(database)
-    with sqlite3.connect(str(database), timeout=10) as db:
+    with storage.connect(str(database), timeout=10) as db:
         db.execute('PRAGMA foreign_keys = ON')
         db.execute('BEGIN IMMEDIATE')
         for statement in SCHEMA:
@@ -496,13 +496,13 @@ def _public(row):
 
 
 def list_payouts(database):
-    with sqlite3.connect(str(database)) as db:
+    with storage.connect(str(database)) as db:
         rows = db.execute(f'SELECT {", ".join(COLUMNS)} FROM payouts ORDER BY payout_id').fetchall()
     return [_public(row) for row in rows]
 
 
 def get_payout(database, payout_id):
-    with sqlite3.connect(str(database)) as db:
+    with storage.connect(str(database)) as db:
         row = db.execute(f'SELECT {", ".join(COLUMNS)} FROM payouts WHERE payout_id = ?',
                          (payout_id,)).fetchone()
     if not row:
@@ -545,7 +545,7 @@ def payout_id_sort_key(payout_id):
 
 def current_queue(database):
     hidden = tuple(hidden_queue_ids())
-    with closing(sqlite3.connect(str(database))) as db:
+    with closing(storage.connect(str(database))) as db:
         rows = db.execute(f'SELECT {", ".join(COLUMNS)} FROM payouts WHERE payout_id NOT IN '
                           f'({", ".join("?" * len(hidden))})', hidden).fetchall()
     queue = [_public(row) for row in rows]
@@ -600,7 +600,7 @@ def _clean(action, actor, reason, key):
 # and Sent word still see PAID. Approve itself does not write PAID.
 def decide(database, payout_id, action, actor, idempotency_key, reason=None, now=None):
     actor, reason = _clean(action, actor, reason, idempotency_key)
-    with sqlite3.connect(str(database), timeout=10) as db:
+    with storage.connect(str(database), timeout=10) as db:
         db.execute('PRAGMA foreign_keys = ON')
         db.execute('BEGIN IMMEDIATE')
         for statement in SCHEMA:
@@ -771,7 +771,7 @@ def list_events(database, payout_id=None):
     args = ()
     if payout_id is not None:
         query, args = query + ' WHERE payout_id = ?', (payout_id,)
-    with sqlite3.connect(str(database)) as db:
+    with storage.connect(str(database)) as db:
         return [_as_event(row) for row in db.execute(query + ' ORDER BY event_id', args)]
 
 
@@ -780,6 +780,6 @@ def list_execution_events(database, payout_id=None):
     args = ()
     if payout_id is not None:
         query, args = query + ' WHERE payout_id = ?', (payout_id,)
-    with sqlite3.connect(str(database)) as db:
+    with storage.connect(str(database)) as db:
         return [dict(zip(EXECUTION_EVENT_COLUMNS, row))
                 for row in db.execute(query + ' ORDER BY at, event_id', args)]
