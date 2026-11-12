@@ -35,10 +35,10 @@ class ReviewReasonsSeedTests(unittest.TestCase):
         items = self.reasons('PO-1042')
         self.assertEqual(CODES(items), [payouts.AMOUNT_OVER_3X_AVG])
         detail = items[0]['details']
-        self.assertEqual(items[0]['label'], 'Amount is above 3× this payee’s usual payout')
+        self.assertEqual(items[0]['label'], 'Amount is more than 3× this payee’s usual payout')
         self.assertEqual(detail['amount_cents'], 485000)
         self.assertEqual(detail['usual_cents'], 79000)
-        self.assertEqual(detail['multiplier'], review_reasons.AMOUNT_HISTORY_MULTIPLIER)
+        self.assertEqual(detail['multiplier'], 3)
         self.assertEqual(detail['ratio'], 6)
         self.assertGreater(detail['amount_cents'],
                            detail['multiplier'] * detail['usual_cents'])

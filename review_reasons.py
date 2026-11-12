@@ -18,16 +18,15 @@ from payments import APIError
 # whenever there is no earlier settled or cleared payout to that payee, including
 # when another rule (for example sanctions) is what held a smaller payout.
 # Amount vs history uses the same multiple the Desk already uses to hold a
-# payout: more than AMOUNT_HISTORY_MULTIPLIER times the payee's usual payout
+# payout: more than payouts.USUAL_MULTIPLIER times the payee's usual payout
 # (the stored average of earlier payouts). When usual is not stored, the usual
 # is the median of earlier settled or cleared amounts for that payee.
 IN_REVIEW = frozenset({payouts.FLAGGED, payouts.HELD})
-AMOUNT_HISTORY_MULTIPLIER = 3
 FIRST_TIME_PAYEE = 'FIRST_TIME_PAYEE'
 LABELS = {
     payouts.POSSIBLE_SANCTIONS_MATCH: 'Possible sanctions match',
     FIRST_TIME_PAYEE: 'First-time payee',
-    payouts.AMOUNT_OVER_3X_AVG: 'Amount is above 3× this payee’s usual payout',
+    payouts.AMOUNT_OVER_3X_AVG: payouts.FLAG_TEXT[payouts.AMOUNT_OVER_3X_AVG],
     payouts.BANK_CHANGED_7D: 'Payee bank details changed recently',
     payouts.DUPLICATE_24H: 'Possible duplicate payout',
 }
@@ -82,11 +81,11 @@ def reasons(payout, earlier):
     if usual is None and settled:
         usual = int(median(other['amount_cents'] for other in settled))
     amount = payout['amount_cents']
-    if usual and amount > AMOUNT_HISTORY_MULTIPLIER * usual:
+    if usual and amount > payouts.USUAL_MULTIPLIER * usual:
         items.append(_item(payouts.AMOUNT_OVER_3X_AVG, {
             'amount_cents': amount,
             'usual_cents': usual,
-            'multiplier': AMOUNT_HISTORY_MULTIPLIER,
+            'multiplier': payouts.USUAL_MULTIPLIER,
             'ratio': round(amount / usual),
         }))
 
