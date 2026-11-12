@@ -137,6 +137,17 @@ FLAG_TEXT_SEP = '. '
 # review_status, execution_status, execution_ref and execution_updated_at are the #54
 # state split (docs/DESK-STATES.md). New tables hold later replay and reconciliation
 # rows; they start empty. Today's status column is not replaced.
+# FEATURE 06b — Name the payout rails
+# The rail column already exists. This expands the allowed values from ACH and RTP
+# to ACH, same-day ACH, RTP, FedNow, and wire. FedNow has its own stored code,
+# FEDNOW, separate from RTP (Jeffrey, #32, 1:30 PM ET, 12 November 2026).
+# Default is ACH. The seed still uses only ACH and RTP. Settlement windows,
+# cutoffs, limits and return paths are a follow-up; this change is the schema only.
+ACH, SAME_DAY_ACH, RTP, FEDNOW, WIRE = 'ACH', 'SAME_DAY_ACH', 'RTP', 'FEDNOW', 'WIRE'
+RAILS = (ACH, SAME_DAY_ACH, RTP, FEDNOW, WIRE)
+DEFAULT_RAIL = ACH
+RAIL_CHECK = "('ACH', 'SAME_DAY_ACH', 'RTP', 'FEDNOW', 'WIRE')"
+
 SCHEMA = (
     '''CREATE TABLE IF NOT EXISTS payouts (
         payout_id TEXT PRIMARY KEY,
@@ -145,7 +156,7 @@ SCHEMA = (
         account_name TEXT NOT NULL,
         amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
         currency TEXT NOT NULL CHECK(currency = 'USD'),
-        rail TEXT NOT NULL CHECK(rail IN ('ACH', 'RTP')),
+        rail TEXT NOT NULL CHECK(rail IN ''' + RAIL_CHECK + '''),
         status TEXT NOT NULL CHECK(status IN ('PENDING', 'FLAGGED', 'APPROVED', 'HELD', 'RETURNED', 'PAID')),
         flag_code TEXT,
         flag_text TEXT,
@@ -365,13 +376,38 @@ def _upgrade(db):
     return changed
 
 
+def _rail_check_stale(db):
+    row = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='payouts'").fetchone()
+    return bool(row and row[0] and 'FEDNOW' not in row[0])
+
+
+def _rebuild_payouts_rail_check(database):
+    """Rebuild payouts when the rail CHECK does not yet allow FEDNOW."""
+    with storage.connect(str(database), timeout=10) as db:
+        db.execute('PRAGMA foreign_keys = OFF')
+        db.execute('BEGIN IMMEDIATE')
+        exists = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='payouts'").fetchone()
+        if not exists or not _rail_check_stale(db):
+            return False
+        db.execute(SCHEMA[0].replace('IF NOT EXISTS payouts', 'payouts_new', 1))
+        cols = [row[1] for row in db.execute('PRAGMA table_info(payouts)')]
+        db.execute(
+            f'INSERT INTO payouts_new ({", ".join(cols)}) SELECT {", ".join(cols)} FROM payouts')
+        db.execute('DROP TABLE payouts')
+        db.execute('ALTER TABLE payouts_new RENAME TO payouts')
+        return True
+
+
 def ensure_seeded(database):
+    rebuilt = _rebuild_payouts_rail_check(database)
     with storage.connect(str(database), timeout=10) as db:
         db.execute('PRAGMA foreign_keys = ON')
         db.execute('BEGIN IMMEDIATE')
         for statement in SCHEMA:
             db.execute(statement)
-        upgraded = _upgrade(db)
+        upgraded = _upgrade(db) or rebuilt
         if upgraded and not db.execute('SELECT COUNT(*) FROM payout_events').fetchone()[0]:
             _clear_payout_data(db)
         if db.execute('SELECT COUNT(*) FROM payouts').fetchone()[0]:
@@ -387,6 +423,7 @@ def ensure_seeded(database):
 # never anyone else's. The Desk footer calls this through POST /payouts/reset
 # (#32 slice 4).
 def reset(database):
+    _rebuild_payouts_rail_check(database)
     with storage.connect(str(database), timeout=10) as db:
         db.execute('PRAGMA foreign_keys = ON')
         db.execute('BEGIN IMMEDIATE')

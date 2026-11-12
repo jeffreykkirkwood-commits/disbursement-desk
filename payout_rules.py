@@ -118,8 +118,10 @@ def create(database, payout_id, payee_name, payee_account, amount_cents, rail,
         raise APIError(422, 'Payee account must be a DEMO- id.')
     if not isinstance(amount_cents, int) or isinstance(amount_cents, bool) or amount_cents <= 0:
         raise APIError(422, 'Amount must be a positive number of cents.')
-    if rail not in ('ACH', 'RTP'):
-        raise APIError(422, 'Rail must be ACH or RTP.')
+    if rail is None or (isinstance(rail, str) and not rail.strip()):
+        rail = payouts.DEFAULT_RAIL
+    elif rail not in payouts.RAILS:
+        raise APIError(422, 'Rail must be ACH, SAME_DAY_ACH, RTP, FEDNOW, or WIRE.')
     if bank_details_changed_at is not None:
         if not isinstance(bank_details_changed_at, str):
             raise APIError(422, 'Bank-details change time must be text if given.')
