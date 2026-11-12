@@ -37,6 +37,17 @@ ACTIONS = {
                'It is cancelled and no money moves. This cannot be undone.', 'btn danger fill'),
 }
 PANEL_BUTTON_CLASS = {'approve': 'btn primary', 'hold': 'btn', 'return': 'btn danger'}
+# Clear / Block replace Approve / Hold / Return when the payout is a possible
+# OFAC match (#111). Clear sends it; Block cancels it, the same as Return.
+SANCTIONS_ACTIONS = {
+    'clear': ('Clear', 'Clear this possible sanctions match?',
+              'The reviewer treats this as not a match. The payout is sent to the payee.',
+              'btn primary'),
+    'block': ('Block', 'Block this payout?',
+              'It is cancelled and no money moves. This cannot be undone.', 'btn danger fill'),
+}
+SANCTIONS_BUTTON_CLASS = {'clear': 'btn primary', 'block': 'btn danger'}
+SANCTIONS_FLAG = 'POSSIBLE_SANCTIONS_MATCH'
 OPERATOR_FLAGS = {'HELD': 'Held by operator', 'RETURNED': 'Returned by operator'}
 
 
@@ -161,10 +172,15 @@ def _detail(payout):
     if payout['status'] in FINAL_STATUSES:
         parts.append(f'<p class="done">{FINAL_MESSAGE}</p>')
     else:
+        codes = (payout.get('flag_code') or '').split(',')
+        if SANCTIONS_FLAG in codes:
+            actions, classes = SANCTIONS_ACTIONS, SANCTIONS_BUTTON_CLASS
+        else:
+            actions, classes = ACTIONS, PANEL_BUTTON_CLASS
         buttons = []
-        for action, (label, heading, body, ok_class) in ACTIONS.items():
+        for action, (label, heading, body, ok_class) in actions.items():
             disabled = ' disabled' if action == 'hold' and payout['status'] == 'HELD' else ''
-            buttons.append(f'<button type="button" class="{PANEL_BUTTON_CLASS[action]}" data-act="{action}" '
+            buttons.append(f'<button type="button" class="{classes[action]}" data-act="{action}" '
                            f'data-heading="{text(heading)}" data-body="{text(body)}" data-ok="{label}" '
                            f'data-ok-class="{ok_class}"{disabled}>{label}</button>')
         parts.append('<div class="actions">' + ''.join(buttons) + '</div>')
