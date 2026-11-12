@@ -55,6 +55,29 @@ class AbaCheckDigitTests(unittest.TestCase):
         self.assertFalse(aba.check_digit_valid('111111111'))
         self.assertEqual(aba.validate(' 110000000 '), VALID)
 
+    # FEATURE 05 — Scenario — Unicode digits are refused, not accepted or crashed
+    # str.isdigit() is true for these, but they are not ASCII 0-9. Superscript
+    # twos used to crash int() (500 on simulate); Arabic-Indic 110000000 used
+    # to be accepted.
+    def test_non_ascii_digits_are_refused(self):
+        for bad in ('²²²²²²²²²', '١١٠٠٠٠٠٠٠'):
+            with self.subTest(value=bad):
+                self.assertTrue(bad.isdigit())
+                self.assertFalse(bad.isascii())
+                self.assertFalse(aba.check_digit_valid(bad))
+                with self.assertRaises(APIError) as failed:
+                    aba.validate(bad)
+                self.assertEqual(failed.exception.status, 422)
+                self.assertEqual(failed.exception.message, aba.LENGTH_MESSAGE)
+
+    # FEATURE 06 — Scenario — all-zero is refused even though the checksum passes
+    def test_all_zero_is_refused(self):
+        self.assertTrue(aba.check_digit_valid('000000000'))
+        with self.assertRaises(APIError) as failed:
+            aba.validate('000000000')
+        self.assertEqual(failed.exception.status, 422)
+        self.assertEqual(failed.exception.message, aba.ZERO_MESSAGE)
+
 
 if __name__ == '__main__':
     unittest.main()
