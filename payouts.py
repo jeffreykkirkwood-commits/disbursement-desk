@@ -10,6 +10,7 @@ import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import ofac
 import payout_notes
 from payments import APIError
 
@@ -100,7 +101,9 @@ def check_transition(current, target):
 # the payee's usual payout, bank details changed within 7 days, and the same payee and
 # amount within 24 hours. A fourth rule (issue #86, option C on #79, tightened in #89)
 # flags a payout over $1,000 to a payee who does not yet have a PAID payout; $1,000
-# exactly is not over. When more than one rule trips, every reason is stored, not just
+# exactly is not over. A fifth rule (#111) screens the payee name against a dated
+# local OFAC SDN snapshot and flags a possible sanctions match. When more than one
+# rule trips, every reason is stored, not just
 # the first. The seed works out each payout's flag from its own data (payee_usual_cents,
 # bank_details_changed_at and earlier payouts) with explain_flag() below, and stores the
 # rule code and sentence. The live automation path (issue #44, payout_rules.py) uses the
@@ -109,11 +112,13 @@ AMOUNT_OVER_3X_AVG = 'AMOUNT_OVER_3X_AVG'
 BANK_CHANGED_7D = 'BANK_CHANGED_7D'
 DUPLICATE_24H = 'DUPLICATE_24H'
 NEW_PAYEE_OVER_1000 = 'NEW_PAYEE_OVER_1000'
+POSSIBLE_SANCTIONS_MATCH = ofac.FLAG_CODE
 FLAG_TEXT = {  # generic wording per rule; explain_flag() writes the exact sentence per payout
     AMOUNT_OVER_3X_AVG: 'Amount is more than 3× this payee’s usual payout',
     BANK_CHANGED_7D: 'Payee bank details changed within the last 7 days',
     DUPLICATE_24H: 'Same payee and amount within 24 hours (possible duplicate)',
     NEW_PAYEE_OVER_1000: 'No paid payout to this payee yet; amount is over $1,000',
+    POSSIBLE_SANCTIONS_MATCH: 'Possible sanctions match',
 }
 USUAL_MULTIPLIER = 3
 BANK_CHANGE_WINDOW = timedelta(days=7)
@@ -279,6 +284,9 @@ def explain_flag(payout, earlier):
             day = 'yesterday' if (when.date() - then.date()).days == 1 else 'earlier today'
             flags.append((DUPLICATE_24H, f'Same payee and amount as {day} (possible duplicate)'))
             break
+    match = ofac.screen(payout.get('payee_name'))
+    if match:
+        flags.append((POSSIBLE_SANCTIONS_MATCH, ofac.flag_sentence(match)))
     if not flags:
         return None, None
     return (FLAG_CODE_SEP.join(code for code, _ in flags),
@@ -514,8 +522,11 @@ def current_queue(database):
 # payout showing PENDING or APPROVED (approved design, issue #35 comment). Only payouts
 # waiting for an operator (FLAGGED = "Needs review", or HELD) can be decided; HELD can
 # still be approved or returned later.
-APPROVE, HOLD, RETURN = 'approve', 'hold', 'return'
-DECISIONS = {APPROVE: (APPROVED, PAID), HOLD: (HELD,), RETURN: (RETURNED,)}
+APPROVE, HOLD, RETURN, CLEAR, BLOCK = 'approve', 'hold', 'return', 'clear', 'block'
+DECISIONS = {
+    APPROVE: (APPROVED, PAID), HOLD: (HELD,), RETURN: (RETURNED,),
+    CLEAR: (APPROVED, PAID), BLOCK: (RETURNED,),
+}
 DECIDABLE = frozenset({FLAGGED, HELD})
 EVENT_COLUMNS = ('event_id', 'payout_id', 'action', 'from_status', 'to_status', 'actor', 'reason',
                  'idempotency_key', 'at', 'evidence')
@@ -528,7 +539,7 @@ EXECUTION_EVENT_COLUMNS = ('event_id', 'payout_id', 'execution_status', 'executi
 # The idempotency key works like the payment routes' Idempotency-Key header.
 def _clean(action, actor, reason, key):
     if action not in DECISIONS:
-        raise APIError(422, 'Decision must be approve, hold or return.')
+        raise APIError(422, 'Decision must be approve, hold, return, clear or block.')
     if not isinstance(key, str) or not key.strip() or len(key) > 200:
         raise APIError(422, 'Provide an Idempotency-Key header (1–200 characters).')
     if not isinstance(actor, str) or not actor.strip() or len(actor.strip()) > 80:
@@ -575,18 +586,36 @@ def decide(database, payout_id, action, actor, idempotency_key, reason=None, now
         current = payout['status']
         if current not in DECIDABLE:
             raise APIError(409, f'A {current} payout cannot be decided; only FLAGGED or HELD payouts can '
-                                f'be approved, held or returned.')
+                                f'be approved, held, returned, cleared or blocked.')
+        at = (now or datetime.now(timezone.utc)).isoformat()
+        # Screen again before sending. A reviewer who is clearing or approving an
+        # already-flagged possible match is allowed to send; any other path that
+        # still matches is held for review instead of settling.
+        clearing = (action in (APPROVE, CLEAR)
+                    and POSSIBLE_SANCTIONS_MATCH in split_flag_codes(payout['flag_code']))
+        if action in (APPROVE, CLEAR) and not clearing:
+            match = ofac.screen(payout['payee_name'])
+            if match:
+                _apply_sanctions_hold(db, payout, match, at)
+                cursor = db.execute(
+                    'INSERT INTO payout_events (payout_id, action, from_status, to_status, actor, reason, '
+                    'idempotency_key, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                    (payout_id, 'screen', current, FLAGGED, actor, ofac.flag_sentence(match),
+                     idempotency_key, at))
+                return 201, dict(event_id=cursor.lastrowid, payout_id=payout_id, action='screen',
+                                 from_status=current, to_status=FLAGGED, actor=actor,
+                                 reason=ofac.flag_sentence(match), idempotency_key=idempotency_key,
+                                 at=at, evidence=None)
         step = current
         for target in DECISIONS[action]:
             check_transition(step, target)
             step = target
-        at = (now or datetime.now(timezone.utc)).isoformat()
-        if action == APPROVE:
+        if action in (APPROVE, CLEAR):
             # Record the review only; the settle step writes PAID and SETTLED.
             db.execute(
                 'UPDATE payouts SET review_status = ?, updated_at = ? WHERE payout_id = ?',
                 (APPROVED, at, payout_id))
-            _settle(db, payout_id, at)
+            _settle(db, payout_id, at, allow_sanctions_clear=True)
         else:
             review, outcome = review_and_outcome(step)
             db.execute(
@@ -628,7 +657,27 @@ def _as_event(row):
     return event
 
 
-def _settle(db, payout_id, at):
+def _apply_sanctions_hold(db, payout, match, at):
+    """Store a possible-match flag and leave the payout at FLAGGED for review."""
+    sentence = ofac.flag_sentence(match)
+    codes = split_flag_codes(payout.get('flag_code'))
+    texts = [part for part in (payout.get('flag_text') or '').split(FLAG_TEXT_SEP) if part]
+    if POSSIBLE_SANCTIONS_MATCH not in codes:
+        codes.append(POSSIBLE_SANCTIONS_MATCH)
+        texts.append(sentence)
+    payout['flag_code'] = FLAG_CODE_SEP.join(codes)
+    payout['flag_text'] = FLAG_TEXT_SEP.join(texts)
+    payout_notes.apply(payout)
+    db.execute(
+        'UPDATE payouts SET status = ?, review_status = ?, execution_status = ?, '
+        'flag_code = ?, flag_text = ?, note_text = ?, note_source = ?, note_fallback = ?, '
+        'updated_at = ? WHERE payout_id = ?',
+        (FLAGGED, FLAGGED, NOT_STARTED, payout['flag_code'], payout['flag_text'],
+         payout['note_text'], payout['note_source'], int(payout['note_fallback']),
+         at, payout['payout_id']))
+
+
+def _settle(db, payout_id, at, allow_sanctions_clear=False):
     """Option B demo settle: check NOT_STARTED → SUBMITTED → SETTLED, then store SETTLED.
 
     Writes status PAID, execution_status SETTLED, execution_ref, execution_updated_at,
@@ -643,6 +692,13 @@ def _settle(db, payout_id, at):
     ref = payout['execution_ref'] or f'demo:{payout_id}'
     event_id = f'demo-settle:{payout_id}'
     already = payout['execution_status'] == SETTLED and payout['status'] == PAID
+    if already:
+        pass
+    elif not allow_sanctions_clear:
+        match = ofac.screen(payout['payee_name'])
+        if match:
+            _apply_sanctions_hold(db, payout, match, at)
+            return
     if not already:
         if payout['review_status'] != APPROVED:
             raise APIError(409, 'Only an Approved payout can be settled.')
