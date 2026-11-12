@@ -364,7 +364,8 @@ def create_app(directory=None, public_origin=None, payments=None):
         result = payout_rules.create(
             database, payout_id, body.get('payee_name'), body.get('payee_account'),
             body.get('amount_cents'), body.get('rail', 'ACH'),
-            bank_details_changed_at=body.get('bank_details_changed_at'))
+            bank_details_changed_at=body.get('bank_details_changed_at'),
+            routing_number=body.get('routing_number'))
         event('payout_simulated', payout_id=payout_id, status=result['status'])
         payout_events.sync(database)
         return jsonify(payout=payouts.get_payout(database, payout_id),
