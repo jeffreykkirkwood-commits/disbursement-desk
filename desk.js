@@ -107,6 +107,27 @@
     document.getElementById('cancel').disabled = busy;
   }
 
+  // After a deploy or restart the demo folder on the server is gone, and a POST
+  // cannot start a new one. Reload once so the next GET mints a fresh demo.
+  // A second miss in this tab shows the existing error line instead of looping.
+  function recoverSession() {
+    try {
+      if (sessionStorage.getItem('desk-session-reloaded')) return false;
+      sessionStorage.setItem('desk-session-reloaded', '1');
+    } catch (err) {
+      if (window.__deskSessionReloaded) return false;
+      window.__deskSessionReloaded = true;
+    }
+    writeHash();
+    location.reload();
+    return true;
+  }
+
+  async function sessionCode(r) {
+    try { return JSON.parse(await r.text()).code; }
+    catch (err) { return ''; }
+  }
+
   async function confirmAction() {
     if (!pending) return;
     setBusy(true);
@@ -118,12 +139,16 @@
                   'X-Demo-ID': demo ? demo.content : ''},
         body: JSON.stringify({reviewer: 'Desk operator'}),
       });
-      if (!reply.ok) throw new Error('not saved');
+      if (!reply.ok) {
+        if (await sessionCode(reply) === 'DEMO_SESSION_CHANGED' && recoverSession()) return;
+        throw new Error('not saved');
+      }
     } catch (error) {
       setBusy(false);
       document.getElementById('c-error').hidden = false;
       return;
     }
+    try { sessionStorage.removeItem('desk-session-reloaded'); } catch (err) {}
     writeHash(); // keeps the filter and payout, drops any #confirm=
     location.reload();
   }
@@ -146,12 +171,16 @@
         method: 'POST',
         headers: {'X-Demo-ID': demo ? demo.content : ''},
       });
-      if (!reply.ok) throw new Error('not reset');
+      if (!reply.ok) {
+        if (await sessionCode(reply) === 'DEMO_SESSION_CHANGED' && recoverSession()) return;
+        throw new Error('not reset');
+      }
     } catch (error) {
       resetting = false;
       if (resetError) resetError.hidden = false;
       return;
     }
+    try { sessionStorage.removeItem('desk-session-reloaded'); } catch (err) {}
     location.replace(location.pathname + location.search);
   }
 

@@ -8,6 +8,7 @@
 """Exercise /desk through the hosted app with temporary fictional demos."""
 import json
 import re
+import shutil
 import sqlite3
 import tempfile
 import unittest
@@ -445,6 +446,38 @@ class DeskActionTests(DeskBase):
         self.assertIn("'Idempotency-Key': pending.key", script)
         self.assertIn("JSON.stringify({reviewer: 'Desk operator'})", script)
         self.assertNotIn('reason', script)
+
+    # Scenario — a Desk POST after the demo folder is gone (instance replace) is session missing
+    def test_desk_post_after_demo_folder_gone_is_session_missing(self):
+        page = self.get()
+        demo = page.headers['X-Demo-ID']
+        folder = self.database().parent
+        demos = self.app.extensions['demos']
+        cached = demos.loaded.pop(folder.name, None)
+        if cached:
+            for handler in cached[1].handlers[:]:
+                handler.close()
+                cached[1].removeHandler(handler)
+        shutil.rmtree(folder)
+        reply = self.client.post('/payouts/PO-1043/approve', json={'reviewer': 'Desk operator'},
+                                 base_url='https://demo.example',
+                                 headers={'Idempotency-Key': 'k-restart',
+                                          'Origin': 'https://demo.example',
+                                          'X-Demo-ID': demo})
+        self.assertEqual(reply.status_code, 409)
+        self.assertEqual(reply.json['code'], 'DEMO_SESSION_CHANGED')
+        self.assertEqual(reply.json['error'],
+                         'Demo session missing. Reload the dashboard before submitting.')
+
+    # Scenario — the page script reloads once on DEMO_SESSION_CHANGED, then shows the same error
+    def test_script_reloads_once_on_demo_session_changed(self):
+        script = self.get('/desk.js').get_data(as_text=True)
+        self.assertIn("=== 'DEMO_SESSION_CHANGED'", script)
+        self.assertIn("sessionStorage.getItem('desk-session-reloaded')", script)
+        self.assertIn("sessionStorage.setItem('desk-session-reloaded', '1')", script)
+        self.assertIn('recoverSession()', script)
+        self.assertGreaterEqual(script.count('recoverSession()'), 2)
+        self.assertIn('location.reload()', script)
 
     # Scenario — end to end through the #35 route, once PR #51 is merged (skipped before that)
     def test_decisions_through_api(self):
