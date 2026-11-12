@@ -1,7 +1,8 @@
 # START HERE — Structured reasons a payout is held for review (#32).
 # One read-only function returns every reason, as a list of {code, label, details}
-# items, for the later "Why this is in review" panel. This module does not change
-# Desk HTML. Routing-number failures are not a stored reason: the ABA check (#112)
+# items. The Desk panel reads panel_items() (stored flag order and sentences, with
+# sanctions facts from the same OFAC match for_payout uses). Routing-number
+# failures are not a stored reason: the ABA check (#112)
 # rejects a bad number at creation (422) and never writes it on a payout, so it
 # is left out rather than invented here.
 """Return every reason a payout is held for review, as structured items."""
@@ -128,3 +129,65 @@ def for_payout(database, payout_id):
                        f'SELECT {", ".join(payouts.COLUMNS)} FROM payouts WHERE payout_id != ?',
                        (payout_id,))]
     return reasons(payout, earlier)
+
+
+# FEATURE 04 — Desk panel items from stored flags
+# The Desk lists one item per stored flag code, in stored order, using that
+# rule's flag sentence (with a period). for_payout is not used directly: it
+# is empty for Sent and Returned payouts, and its FIRST_TIME_PAYEE code is
+# not a stored flag. Sanctions facts still come from the same OFAC match.
+# BANK_CHANGED_7D also carries the required phone-check line. Final payouts
+# keep these original rule items.
+BANK_PHONE_LINE = 'Confirm the change with the payee by phone before sending.'
+
+
+def panel_items(payout):
+    """One stored rule reason per item: sentence, code, optional facts and phone line."""
+    codes = payouts.split_flag_codes(payout.get('flag_code'))
+    texts = [part for part in (payout.get('flag_text') or '').split(payouts.FLAG_TEXT_SEP) if part]
+    items = []
+    for index, code in enumerate(codes):
+        sentence = texts[index] if index < len(texts) else ''
+        facts = None
+        phone = None
+        if code == payouts.POSSIBLE_SANCTIONS_MATCH:
+            facts = _sanctions_fact_rows(payout, sentence)
+            sentence = 'Possible sanctions match.'
+        elif sentence and not sentence.endswith('.'):
+            sentence += '.'
+        if code == payouts.BANK_CHANGED_7D:
+            phone = BANK_PHONE_LINE
+        items.append({'code': code, 'sentence': sentence, 'facts': facts, 'phone': phone})
+    return items
+
+
+def _sanctions_fact_rows(payout, sentence=''):
+    match = ofac.screen(payout.get('payee_name'))
+    if match:
+        score = match['score']
+        score_value = (f'{score} (100 is an exact match)' if score == 100 else str(score))
+        return (
+            ('Listed name', match['entry_name']),
+            ('Score', score_value),
+            ('List published', match['list_published']),
+            ('Snapshot taken', match['snapshot_taken']),
+        )
+    prefix = 'Possible sanctions match: '
+    mid_score = ', score '
+    mid_published = ', OFAC SDN list published '
+    mid_taken = ', snapshot taken '
+    if not (sentence.startswith(prefix) and mid_score in sentence
+            and mid_published in sentence and mid_taken in sentence):
+        return None
+    rest = sentence[len(prefix):]
+    name, rest = rest.split(mid_score, 1)
+    score, rest = rest.split(mid_published, 1)
+    published, taken = rest.split(mid_taken, 1)
+    score = score.strip()
+    score_value = f'{score} ({score} is an exact match)' if score == '100' else score
+    return (
+        ('Listed name', name.strip()),
+        ('Score', score_value),
+        ('List published', published.strip()),
+        ('Snapshot taken', taken.strip()),
+    )
