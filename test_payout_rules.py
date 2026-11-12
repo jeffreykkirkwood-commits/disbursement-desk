@@ -8,6 +8,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import aba
 import payout_notes
 import payout_rules
 import payouts
@@ -34,11 +35,12 @@ class AutomationTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def create(self, payout_id, payee, account, cents, rail='ACH', changed=None, when=NOW):
+    def create(self, payout_id, payee, account, cents, rail='ACH', changed=None, when=NOW,
+               routing_number=None):
         return payout_rules.create(
             self.db, payout_id, payee, account, cents, rail,
             bank_details_changed_at=None if changed is None else iso(changed),
-            now=when)
+            now=when, routing_number=routing_number)
 
     # FEATURE 01 — Scenario — a clean payout is paid automatically and logged
     def test_clean_payout_is_paid_and_logged(self):
@@ -334,6 +336,30 @@ class AutomationTests(unittest.TestCase):
         payout = payouts.get_payout(self.db, 'PO-TEST-BANK-OK')
         self.assertEqual(payout['bank_details_changed_at'], iso(NOW))
         self.assertEqual(payout['flag_code'], 'BANK_CHANGED_7D')
+
+
+    # FEATURE 16 — Scenario — a valid ABA routing number is accepted; a bad check digit is refused (#112)
+    def test_valid_routing_number_is_accepted(self):
+        result = self.create('PO-TEST-ABA-OK', 'Cedar Cleaning Co.', 'DEMO-CEDR-004', 64000,
+                             routing_number=aba.WELL_KNOWN_TEST)
+        self.assertEqual(result['status'], 'PAID')
+        self.assertEqual(payouts.get_payout(self.db, 'PO-TEST-ABA-OK')['status'], 'PAID')
+
+    def test_invalid_routing_check_digit_is_refused(self):
+        before = payouts.list_payouts(self.db)
+        with self.assertRaises(APIError) as failed:
+            self.create('PO-TEST-ABA-BAD', 'Cedar Cleaning Co.', 'DEMO-CEDR-004', 64000,
+                        routing_number='110000001')
+        self.assertEqual(failed.exception.status, 422)
+        self.assertEqual(failed.exception.message, aba.CHECK_MESSAGE)
+        self.assertEqual(payouts.list_payouts(self.db), before)
+        with self.assertRaises(APIError) as short:
+            self.create('PO-TEST-ABA-SHORT', 'Cedar Cleaning Co.', 'DEMO-CEDR-004', 64000,
+                        routing_number='11000000')
+        self.assertEqual(short.exception.status, 422)
+        self.assertEqual(short.exception.message, aba.LENGTH_MESSAGE)
+        self.assertEqual(payouts.list_payouts(self.db), before)
+
 
 if __name__ == '__main__':
     unittest.main()

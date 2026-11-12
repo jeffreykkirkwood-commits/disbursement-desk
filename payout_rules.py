@@ -8,6 +8,7 @@
 import sqlite3
 from datetime import datetime, timezone
 
+import aba
 import payout_notes
 import payouts
 from payments import APIError
@@ -104,10 +105,11 @@ def route(database, payout_id=None, now=None):
 # FEATURE 05 — Create one new synthetic payout and route it
 # Inserts the row as PENDING (not checked yet), fills the usual amount from that
 # payee's earlier payouts when they exist, then runs route_one(). Callers pass
-# invented DEMO- accounts and amounts only. No HTTP route and no screen control
-# is added here.
+# invented DEMO- accounts and amounts only. An optional ABA routing number is
+# checked (#112) when one is entered; a number that fails the check digit is
+# refused and nothing is saved. No HTTP route and no screen control is added here.
 def create(database, payout_id, payee_name, payee_account, amount_cents, rail,
-           bank_details_changed_at=None, now=None):
+           bank_details_changed_at=None, now=None, routing_number=None):
     if not isinstance(payout_id, str) or not payout_id.strip() or len(payout_id) > 40:
         raise APIError(422, 'Provide a payout id (1–40 characters).')
     if not isinstance(payee_name, str) or not payee_name.strip() or len(payee_name.strip()) > 80:
@@ -128,6 +130,7 @@ def create(database, payout_id, payee_name, payee_account, amount_cents, rail,
         if parsed is None or parsed.tzinfo is None:
             raise APIError(
                 422, 'Bank-details change time must be an ISO 8601 datetime with a timezone offset.')
+    aba.validate(routing_number)
     payout_id, payee_name = payout_id.strip(), payee_name.strip()
     payee_account = payee_account.strip()
     at = (now or datetime.now(timezone.utc)).isoformat()
