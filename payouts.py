@@ -139,13 +139,14 @@ FLAG_TEXT_SEP = '. '
 # rows; they start empty. Today's status column is not replaced.
 # FEATURE 06b — Name the payout rails
 # The rail column already exists. This expands the allowed values from ACH and RTP
-# to ACH, same-day ACH, RTP/FedNow (still stored as RTP, the label the seed and
-# Desk already use), and wire. Default is ACH. Settlement windows, cutoffs and
-# return paths are a follow-up; this change is the schema only.
-ACH, SAME_DAY_ACH, RTP, WIRE = 'ACH', 'SAME_DAY_ACH', 'RTP', 'WIRE'
-RAILS = (ACH, SAME_DAY_ACH, RTP, WIRE)
+# to ACH, same-day ACH, RTP, FedNow, and wire. FedNow has its own stored code,
+# FEDNOW, separate from RTP (Jeffrey, #32, 1:30 PM ET, 12 November 2026).
+# Default is ACH. The seed still uses only ACH and RTP. Settlement windows,
+# cutoffs, limits and return paths are a follow-up; this change is the schema only.
+ACH, SAME_DAY_ACH, RTP, FEDNOW, WIRE = 'ACH', 'SAME_DAY_ACH', 'RTP', 'FEDNOW', 'WIRE'
+RAILS = (ACH, SAME_DAY_ACH, RTP, FEDNOW, WIRE)
 DEFAULT_RAIL = ACH
-RAIL_CHECK = "('ACH', 'SAME_DAY_ACH', 'RTP', 'WIRE')"
+RAIL_CHECK = "('ACH', 'SAME_DAY_ACH', 'RTP', 'FEDNOW', 'WIRE')"
 
 SCHEMA = (
     '''CREATE TABLE IF NOT EXISTS payouts (
@@ -378,11 +379,11 @@ def _upgrade(db):
 def _rail_check_stale(db):
     row = db.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='payouts'").fetchone()
-    return bool(row and row[0] and 'SAME_DAY_ACH' not in row[0])
+    return bool(row and row[0] and 'FEDNOW' not in row[0])
 
 
 def _rebuild_payouts_rail_check(database):
-    """Rebuild payouts when the rail CHECK still allows only ACH and RTP."""
+    """Rebuild payouts when the rail CHECK does not yet allow FEDNOW."""
     with storage.connect(str(database), timeout=10) as db:
         db.execute('PRAGMA foreign_keys = OFF')
         db.execute('BEGIN IMMEDIATE')

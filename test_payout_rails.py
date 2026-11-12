@@ -1,4 +1,4 @@
-# Automated checks for the payout-rail schema: ACH, SAME_DAY_ACH, RTP, and WIRE
+# Automated checks for the payout-rail schema: ACH, SAME_DAY_ACH, RTP, FEDNOW, and WIRE
 # are stored; ACH is the default; an older demo with only ACH and RTP is rebuilt
 # without dropping operator work. Settlement timing and return paths are not in
 # this pull request.
@@ -69,7 +69,9 @@ class PayoutRailSchemaTests(unittest.TestCase):
     def test_fresh_schema_accepts_each_rail_and_defaults_to_ach(self):
         payouts.ensure_seeded(self.db)
         self.assertIn('SAME_DAY_ACH', rail_sql(self.db))
+        self.assertIn('FEDNOW', rail_sql(self.db))
         self.assertIn('WIRE', rail_sql(self.db))
+        self.assertIn('FEDNOW', rail_sql(self.db))
         for index, rail in enumerate(payouts.RAILS):
             payout = self.create(f'PO-41{index:02d}', rail=rail)
             stored = payouts.get_payout(self.db, payout['payout_id'])
@@ -86,9 +88,9 @@ class PayoutRailSchemaTests(unittest.TestCase):
         payouts.ensure_seeded(self.db)
         before = {p['payout_id'] for p in payouts.list_payouts(self.db)}
         with self.assertRaises(APIError) as raised:
-            self.create('PO-4200', rail='FEDNOW')
+            self.create('PO-4200', rail='SWIFT')
         self.assertEqual(raised.exception.status, 422)
-        self.assertIn('SAME_DAY_ACH', raised.exception.message)
+        self.assertIn('FEDNOW', raised.exception.message)
         self.assertNotIn('PO-4200', {p['payout_id'] for p in payouts.list_payouts(self.db)})
         self.assertEqual({p['payout_id'] for p in payouts.list_payouts(self.db)}, before)
 
@@ -108,12 +110,15 @@ class PayoutRailSchemaTests(unittest.TestCase):
         self.assertEqual(payouts.ensure_seeded(self.db), 0)
         self.assertEqual(payouts.ensure_seeded(self.db), 0)
         self.assertIn('SAME_DAY_ACH', rail_sql(self.db))
+        self.assertIn('FEDNOW', rail_sql(self.db))
         self.assertEqual({p['payout_id'] for p in payouts.list_payouts(self.db)}, before)
         events = payouts.list_events(self.db)
         self.assertTrue(any(event['payout_id'] == 'PO-1042' and event['action'] == 'hold'
                             for event in events))
-        payout = self.create('PO-4300', rail=payouts.WIRE)
-        self.assertEqual(payouts.get_payout(self.db, payout['payout_id'])['rail'], payouts.WIRE)
+        wire = self.create('PO-4300', rail=payouts.WIRE)
+        self.assertEqual(payouts.get_payout(self.db, wire['payout_id'])['rail'], payouts.WIRE)
+        fednow = self.create('PO-4303', rail=payouts.FEDNOW)
+        self.assertEqual(payouts.get_payout(self.db, fednow['payout_id'])['rail'], payouts.FEDNOW)
         with sqlite3.connect(self.db) as db:
             self.assertEqual(db.execute('PRAGMA foreign_key_check').fetchall(), [])
 
@@ -121,10 +126,10 @@ class PayoutRailSchemaTests(unittest.TestCase):
     def test_pre54_demo_still_upgrades(self):
         make_pre54_demo(self.db, keep_rows=True)
         self.assertEqual(payouts.ensure_seeded(self.db), 0)
-        self.assertIn('SAME_DAY_ACH', rail_sql(self.db))
-        payout = self.create('PO-4301', rail=payouts.SAME_DAY_ACH)
+        self.assertIn('FEDNOW', rail_sql(self.db))
+        payout = self.create('PO-4301', rail=payouts.FEDNOW)
         stored = payouts.get_payout(self.db, payout['payout_id'])
-        self.assertEqual(stored['rail'], payouts.SAME_DAY_ACH)
+        self.assertEqual(stored['rail'], payouts.FEDNOW)
         self.assertIsNotNone(stored['review_status'])
 
     # FEATURE 06 — Scenario — Reset demo applies the new CHECK and restores the seed

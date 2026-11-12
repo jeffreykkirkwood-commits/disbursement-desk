@@ -121,7 +121,7 @@ def create(database, payout_id, payee_name, payee_account, amount_cents, rail,
     if rail is None or (isinstance(rail, str) and not rail.strip()):
         rail = payouts.DEFAULT_RAIL
     elif rail not in payouts.RAILS:
-        raise APIError(422, 'Rail must be ACH, SAME_DAY_ACH, RTP, or WIRE.')
+        raise APIError(422, 'Rail must be ACH, SAME_DAY_ACH, RTP, FEDNOW, or WIRE.')
     if bank_details_changed_at is not None:
         if not isinstance(bank_details_changed_at, str):
             raise APIError(422, 'Bank-details change time must be text if given.')
