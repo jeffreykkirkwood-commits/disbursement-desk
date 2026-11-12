@@ -1,115 +1,137 @@
 # START HERE — Structured reasons a payout is held for review (#32).
-# One read-only function returns every reason, as a list of {code, label, details}
-# items, for the later "Why this is in review" panel. This module does not change
-# Desk HTML. Routing-number failures are not a stored reason: the ABA check (#112)
+# stored_reasons() lists every stored flag, in stored order, with the Desk's
+# codes and the exact per-payout sentences in flag_text, and attaches details
+# to each. for_payout() / reasons() return that list only when the payout is
+# still in review (FLAGGED or HELD). This module does not change Desk HTML.
+# Routing-number failures are not a stored reason: the ABA check (#112)
 # rejects a bad number at creation (422) and never writes it on a payout, so it
-# is left out rather than invented here.
+# is left out rather than invented here. FIRST_TIME_PAYEE is not a stored flag
+# and is not returned. Details are taken from stored payout fields and the
+# stored #114 flag sentence; ofac.screen() is not run again at read time.
 """Return every reason a payout is held for review, as structured items."""
 import sqlite3
 from datetime import datetime, timedelta
-from statistics import median
 
-import ofac
 import payouts
 from payments import APIError
 
-# FEATURE 01 — Name the reason codes, short labels and the amount rule
-# FIRST_TIME_PAYEE is broader than the NEW_PAYEE_OVER_1000 hold rule: it applies
-# whenever there is no earlier settled or cleared payout to that payee, including
-# when another rule (for example sanctions) is what held a smaller payout.
-# Amount vs history uses the same multiple the Desk already uses to hold a
-# payout: more than payouts.USUAL_MULTIPLIER times the payee's usual payout
-# (the stored average of earlier payouts). When usual is not stored, the usual
-# is the median of earlier settled or cleared amounts for that payee.
+# FEATURE 01 — In-review statuses and the stored-flag list
+# The reason list is the payout's stored flag_code values, in stored order.
+# Labels are the matching flag_text sentences. Details are attached to those
+# stored reasons only: they never add a reason the Desk did not hold.
 IN_REVIEW = frozenset({payouts.FLAGGED, payouts.HELD})
-FIRST_TIME_PAYEE = 'FIRST_TIME_PAYEE'
-LABELS = {
-    payouts.POSSIBLE_SANCTIONS_MATCH: 'Possible sanctions match',
-    FIRST_TIME_PAYEE: 'First-time payee',
-    payouts.AMOUNT_OVER_3X_AVG: payouts.FLAG_TEXT[payouts.AMOUNT_OVER_3X_AVG],
-    payouts.BANK_CHANGED_7D: 'Payee bank details changed recently',
-    payouts.DUPLICATE_24H: 'Possible duplicate payout',
-}
 
 
-def _item(code, details):
-    return {'code': code, 'label': LABELS[code], 'details': details}
+def stored_reasons(payout, earlier=()):
+    """One item per stored flag, in stored order, with Desk wording and details."""
+    codes = payouts.split_flag_codes(payout.get('flag_code'))
+    texts = [part for part in (payout.get('flag_text') or '').split(payouts.FLAG_TEXT_SEP)
+             if part]
+    items = []
+    for index, code in enumerate(codes):
+        sentence = texts[index] if index < len(texts) else ''
+        label = sentence or payouts.FLAG_TEXT.get(code, code)
+        items.append({
+            'code': code,
+            'label': label,
+            'details': _details_for(code, payout, label, earlier),
+        })
+    return items
 
 
-def _settled_or_cleared(payout):
-    return (payout.get('execution_status') == payouts.SETTLED
-            or payout.get('review_status') == payouts.APPROVED)
+def _details_for(code, payout, sentence, earlier):
+    if code == payouts.POSSIBLE_SANCTIONS_MATCH:
+        return _sanctions_details_from_flag_text(sentence)
+    if code == payouts.AMOUNT_OVER_3X_AVG:
+        return _amount_details(payout)
+    if code == payouts.BANK_CHANGED_7D:
+        return _bank_details(payout)
+    if code == payouts.DUPLICATE_24H:
+        return _duplicate_details(payout, earlier)
+    return {}
 
 
-def _earlier_for_payee(payout, earlier):
-    return [other for other in earlier
-            if other['payout_id'] != payout['payout_id']
-            and other['payee_name'] == payout['payee_name']
-            and other['created_at'] < payout['created_at']]
+def _sanctions_details_from_flag_text(sentence):
+    prefix = 'Possible sanctions match: '
+    mid_score = ', score '
+    mid_published = ', OFAC SDN list published '
+    mid_taken = ', snapshot taken '
+    if not (sentence.startswith(prefix) and mid_score in sentence
+            and mid_published in sentence and mid_taken in sentence):
+        return {'flag_text': sentence}
+    rest = sentence[len(prefix):]
+    who, rest = rest.split(mid_score, 1)
+    score, rest = rest.split(mid_published, 1)
+    published, taken = rest.split(mid_taken, 1)
+    who = who.strip()
+    listed_as = ' (listed as '
+    if listed_as in who and who.endswith(')'):
+        matched_name, entry = who.split(listed_as, 1)
+        entry_name = entry[:-1]
+    else:
+        matched_name = entry_name = who
+    try:
+        score_value = int(score.strip())
+    except ValueError:
+        score_value = score.strip()
+    return {
+        'entry_name': entry_name,
+        'matched_name': matched_name,
+        'score': score_value,
+        'list_published': published.strip(),
+        'snapshot_taken': taken.strip(),
+    }
 
 
-# FEATURE 02 — Build the list of reasons from one payout and earlier rows
-# Empty when the payout is not in review (not FLAGGED or HELD). Order is
-# sanctions, first-time payee, amount vs history, recent bank-details change,
-# then possible duplicate. ABA routing is never included (see the module
-# comment). Read-only.
-def reasons(payout, earlier):
+def _amount_details(payout):
+    amount = payout['amount_cents']
+    details = {'amount_cents': amount}
+    usual = payout.get('payee_usual_cents')
+    if usual:
+        details['usual_cents'] = usual
+        details['multiplier'] = payouts.USUAL_MULTIPLIER
+        details['ratio'] = round(amount / usual)
+    return details
+
+
+def _bank_details(payout):
+    details = {}
+    changed = payout.get('bank_details_changed_at')
+    if not changed or not payout.get('created_at'):
+        return details
+    when = datetime.fromisoformat(payout['created_at'])
+    changed_at = datetime.fromisoformat(changed)
+    details['changed_at'] = changed
+    details['days_ago'] = (when.date() - changed_at.date()).days
+    return details
+
+
+def _duplicate_details(payout, earlier):
+    amount = payout['amount_cents']
+    details = {'amount_cents': amount}
+    if not payout.get('created_at'):
+        return details
+    when = datetime.fromisoformat(payout['created_at'])
+    for other in earlier:
+        if (other['payout_id'] == payout['payout_id']
+                or other['payee_name'] != payout['payee_name']
+                or other['amount_cents'] != amount
+                or not other.get('created_at')):
+            continue
+        then = datetime.fromisoformat(other['created_at'])
+        if timedelta(0) < when - then <= payouts.DUPLICATE_WINDOW:
+            details['other_payout_id'] = other['payout_id']
+            break
+    return details
+
+
+# FEATURE 02 — API list: stored flags, only while the payout is in review
+# Empty when the payout is not in review (not FLAGGED or HELD). ABA routing
+# is never included (see the module comment). Read-only.
+def reasons(payout, earlier=()):
     if payout['status'] not in IN_REVIEW:
         return []
-    prior = _earlier_for_payee(payout, earlier)
-    settled = [other for other in prior if _settled_or_cleared(other)]
-    items = []
-
-    match = ofac.screen(payout.get('payee_name'))
-    flagged = payouts.split_flag_codes(payout.get('flag_code'))
-    if match or payouts.POSSIBLE_SANCTIONS_MATCH in flagged:
-        details = {
-            'uid': match['uid'],
-            'entry_name': match['entry_name'],
-            'entry_type': match['entry_type'],
-            'matched_name': match['matched_name'],
-            'score': match['score'],
-            'list_published': match['list_published'],
-            'snapshot_taken': match['snapshot_taken'],
-        } if match else {'flag_text': payout.get('flag_text')}
-        items.append(_item(payouts.POSSIBLE_SANCTIONS_MATCH, details))
-
-    if not settled:
-        items.append(_item(FIRST_TIME_PAYEE, {'earlier_settled_or_cleared': 0}))
-
-    usual = payout.get('payee_usual_cents')
-    if usual is None and settled:
-        usual = int(median(other['amount_cents'] for other in settled))
-    amount = payout['amount_cents']
-    if usual and amount > payouts.USUAL_MULTIPLIER * usual:
-        items.append(_item(payouts.AMOUNT_OVER_3X_AVG, {
-            'amount_cents': amount,
-            'usual_cents': usual,
-            'multiplier': payouts.USUAL_MULTIPLIER,
-            'ratio': round(amount / usual),
-        }))
-
-    changed = payout.get('bank_details_changed_at')
-    if changed:
-        when = datetime.fromisoformat(payout['created_at'])
-        changed_at = datetime.fromisoformat(changed)
-        if timedelta(0) <= when - changed_at <= payouts.BANK_CHANGE_WINDOW:
-            items.append(_item(payouts.BANK_CHANGED_7D, {
-                'changed_at': changed,
-                'days_ago': (when.date() - changed_at.date()).days,
-            }))
-
-    when = datetime.fromisoformat(payout['created_at'])
-    for other in prior:
-        then = datetime.fromisoformat(other['created_at'])
-        if (other['amount_cents'] == amount
-                and timedelta(0) < when - then <= payouts.DUPLICATE_WINDOW):
-            items.append(_item(payouts.DUPLICATE_24H, {
-                'other_payout_id': other['payout_id'],
-                'amount_cents': amount,
-            }))
-            break
-    return items
+    return stored_reasons(payout, earlier)
 
 
 # FEATURE 03 — Look up one payout in a demo database
