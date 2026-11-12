@@ -496,7 +496,8 @@ def _public(row):
         payout['note_fallback'] = bool(payout['note_fallback'])
     # Computed from the rail and created_at; not stored. Desk HTML ignores
     # unknown keys, so this does not change the page.
-    payout['rail_timing'] = rails.describe(payout['rail'], payout['created_at'])
+    payout['rail_timing'] = rails.describe(
+        payout['rail'], payout['created_at'], payout['amount'])
     return payout
 
 

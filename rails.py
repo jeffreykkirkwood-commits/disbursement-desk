@@ -10,14 +10,40 @@ from zoneinfo import ZoneInfo
 
 ET = ZoneInfo('America/New_York')
 
-# FEATURE 01 — A fixed synthetic holiday calendar
-# These dates are a demo list, not the Federal Reserve or ACH holiday calendar.
-# Tests use them to prove weekend-and-holiday rollover without tracking the
-# real observed-holiday schedule year to year.
-SYNTHETIC_HOLIDAYS = frozenset({
-    date(2026, 3, 4),
-    date(2026, 6, 24),
-    date(2026, 11, 11),
+# FEATURE 01 — Federal Reserve holiday calendar for 2026 and 2027
+# Hard-coded observed dates from the Board's K.8 schedule
+# (https://www.federalreserve.gov/aboutthefed/k8.htm, last update 8 July 2026).
+# Fed rule: a Saturday holiday is not moved to Friday — Reserve Banks stay
+# open that Friday (the Board of Governors may close; this list follows the
+# Banks, which is what ACH settlement uses). A Sunday holiday is observed
+# the following Monday. Saturday and Sunday calendar dates are included for
+# completeness; weekdays already skip weekends.
+FED_HOLIDAYS = frozenset({
+    # 2026
+    date(2026, 1, 1),    # New Year's Day
+    date(2026, 1, 19),   # Birthday of Martin Luther King, Jr.
+    date(2026, 2, 16),   # Washington's Birthday
+    date(2026, 5, 25),   # Memorial Day
+    date(2026, 6, 19),   # Juneteenth National Independence Day
+    date(2026, 7, 4),    # Independence Day (Saturday; Banks open Friday 3 July)
+    date(2026, 9, 7),    # Labor Day
+    date(2026, 10, 12),  # Columbus Day
+    date(2026, 11, 11),  # Veterans Day
+    date(2026, 11, 26),  # Thanksgiving Day
+    date(2026, 12, 25),  # Christmas Day
+    # 2027
+    date(2027, 1, 1),    # New Year's Day
+    date(2027, 1, 18),   # Birthday of Martin Luther King, Jr.
+    date(2027, 2, 15),   # Washington's Birthday
+    date(2027, 5, 31),   # Memorial Day
+    date(2027, 6, 19),   # Juneteenth (Saturday; Banks open Friday 18 June)
+    date(2027, 7, 4),    # Independence Day (Sunday)
+    date(2027, 7, 5),    # Independence Day observed (Monday)
+    date(2027, 9, 6),    # Labor Day
+    date(2027, 10, 11),  # Columbus Day
+    date(2027, 11, 11),  # Veterans Day
+    date(2027, 11, 25),  # Thanksgiving Day
+    date(2027, 12, 25),  # Christmas Day (Saturday; Banks open Friday 24 December)
 })
 
 
@@ -47,8 +73,11 @@ RETURN_RECALL = {'kind': 'recall', 'codes': ()}
 #
 # RTP and FedNow are both treated as 24/7 with no cutoff in this simulator,
 # but they are separate rows with different demo limits so each can show its
-# own timing and caps (Jeffrey, #32, comment 6832389969). Official network
-# caps are not recorded here.
+# own timing and caps (Jeffrey, #32, comment 6832389969). These demo figures are not live network caps. Real RTP and FedNow
+# per-payment caps are $10 million as of late 2025; FedNow's earlier
+# cap was $500,000. The simulator keeps its own lower demo values
+# (and a separate FedNow row) and labels them with limit_source
+# 'simulator' so API readers do not take them as current caps.
 #
 # ACH's 17:00 ET cutoff, wire's 16:00 ET cutoff, ACH and RTP's $1,000,000
 # demo limits, FedNow's $500,000 demo limit and wire's $5,000,000 demo
@@ -119,8 +148,8 @@ def _spec(rail):
 
 
 def is_business_day(day):
-    """True when day is a weekday that is not on the synthetic holiday list."""
-    return day.weekday() < 5 and day not in SYNTHETIC_HOLIDAYS
+    """True when day is a weekday that is not a Federal Reserve Bank holiday."""
+    return day.weekday() < 5 and day not in FED_HOLIDAYS
 
 
 def next_business_day(day):
@@ -142,7 +171,7 @@ def effective_submission_date(rail, submitted_at):
     """The business day the submission counts as, after applying the rail's cutoff.
 
     Immediate rails (RTP, FedNow) have no cutoff and are not used here.
-    A submission on a weekend or synthetic holiday, or at a time strictly
+    A submission on a weekend or Federal Reserve holiday, or at a time strictly
     after the demo cutoff on a business day, rolls to the next business day.
     A submission exactly at the cutoff is on time.
     """
@@ -161,7 +190,7 @@ def expected_settlement(rail, submitted_at):
     """Timezone-aware settlement datetime in America/New_York.
 
     Immediate rails (RTP, FedNow) settle at the submission instant, any day
-    including weekends and synthetic holidays. Other rails settle on the
+    including weekends and Federal Reserve holidays. Other rails settle on the
     effective submission date plus the rail's business-day window, marked at
     the rail's demo cutoff (or 17:00 ET) on that date.
     """
@@ -187,10 +216,18 @@ def payment_limit(rail):
     return format(Decimal(cents) / 100, '.2f')
 
 
-def describe(rail, submitted_at):
-    """The public rail_timing object: settlement, return path and demo limit."""
+def describe(rail, submitted_at, amount):
+    """The public rail_timing object: settlement, return path and demo limit.
+
+    payment_limit is a simulator figure (limit_source is always 'simulator').
+    over_limit is True only when amount is strictly greater than that figure.
+    Limits are labelled, not enforced.
+    """
+    limit = payment_limit(rail)
     return {
         'expected_settlement': expected_settlement(rail, submitted_at).isoformat(),
         'return_path': return_path(rail),
-        'payment_limit': payment_limit(rail),
+        'payment_limit': limit,
+        'limit_source': 'simulator',
+        'over_limit': Decimal(amount) > Decimal(limit),
     }
