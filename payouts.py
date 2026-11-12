@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import ofac
 import payout_notes
+import rails
 from payments import APIError
 
 # FEATURE 01 — Name every payout status
@@ -493,6 +494,10 @@ def _public(row):
     payout['amount'] = format(Decimal(payout.pop('amount_cents')) / 100, '.2f')
     if payout['note_fallback'] is not None:
         payout['note_fallback'] = bool(payout['note_fallback'])
+    # Computed from the rail and created_at; not stored. Desk HTML ignores
+    # unknown keys, so this does not change the page.
+    payout['rail_timing'] = rails.describe(
+        payout['rail'], payout['created_at'], payout['amount'])
     return payout
 
 
