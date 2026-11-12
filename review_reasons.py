@@ -25,8 +25,7 @@ IN_REVIEW = frozenset({payouts.FLAGGED, payouts.HELD})
 def stored_reasons(payout, earlier=()):
     """One item per stored flag, in stored order, with Desk wording and details."""
     codes = payouts.split_flag_codes(payout.get('flag_code'))
-    texts = [part for part in (payout.get('flag_text') or '').split(payouts.FLAG_TEXT_SEP)
-             if part]
+    texts = _flag_sentences(payout.get('flag_text') or '', codes)
     items = []
     for index, code in enumerate(codes):
         sentence = texts[index] if index < len(texts) else ''
@@ -37,6 +36,30 @@ def stored_reasons(payout, earlier=()):
             'details': _details_for(code, payout, label, earlier),
         })
     return items
+
+
+def _flag_sentences(flag_text, codes):
+    """Split flag_text into one sentence per stored code, in stored order.
+
+    Sentences are joined with FLAG_TEXT_SEP ('. '). A sanctions listed name
+    can contain that same separator (for example 'MSP KALA NAFT CO. TEHRAN'),
+    so a plain split can yield more pieces than codes. Extra pieces are
+    joined back into the sanctions sentence (or the last sentence if there
+    is no sanctions flag). The stored flag_text is not rewritten.
+    """
+    parts = [part for part in flag_text.split(payouts.FLAG_TEXT_SEP) if part]
+    if not codes or len(parts) <= len(codes):
+        return parts
+    extra = len(parts) - len(codes)
+    try:
+        index = codes.index(payouts.POSSIBLE_SANCTIONS_MATCH)
+    except ValueError:
+        index = len(codes) - 1
+    return (
+        parts[:index]
+        + [payouts.FLAG_TEXT_SEP.join(parts[index:index + extra + 1])]
+        + parts[index + extra + 1:]
+    )
 
 
 def _details_for(code, payout, sentence, earlier):
