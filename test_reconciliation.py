@@ -220,6 +220,8 @@ class ReconciliationTests(unittest.TestCase):
                     continue
                 if payout['payout_id'] in execution_replay.REPLAY_PAYOUT_IDS:
                     continue
+                if (payout.get('execution_ref') or '').startswith('demo:'):
+                    continue
                 self.fail(f'{payout["payout_id"]} should have been reconciled')
         self.assertFalse(any(item['our_status'] == payouts.NOT_STARTED
                              and item['result'] == 'missing_from_settlement'
@@ -279,6 +281,15 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual(added, [])
         self.assertEqual(json.dumps(payout_events.events_after(self.db, 0), sort_keys=True),
                          before_stream)
+
+    # FEATURE 09c — Scenario — a demo-sourced settle stays out of scope, so counts stay 2/4
+    def test_demo_sourced_settles_are_out_of_scope(self):
+        payouts.ensure_seeded(self.db)
+        payouts.decide(self.db, 'PO-1042', 'approve', 'Prior Reviewer', 'prior-approve', now=NOW)
+        self.assertEqual(payouts.get_payout(self.db, 'PO-1042')['execution_ref'], 'demo:PO-1042')
+        report = reconciliation.reconcile(self.db, now=NOW)
+        self._assert_six_cases(report, self.db)
+        self.assertNotIn('PO-1042', {item['payout_id'] for item in report['items']})
 
     # FEATURE 09b — Scenario — the same counts hold after a reset, and after a #56 replay
     def test_reset_and_replay_leave_the_same_six_cases(self):

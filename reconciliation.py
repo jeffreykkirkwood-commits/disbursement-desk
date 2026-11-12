@@ -57,7 +57,11 @@ RECON_TARGETS = {
 RECON_PAYOUT_IDS = frozenset(RECON_TARGETS)
 
 # Compare payouts that settlement should know about: sent or in flight, not
-# NOT_STARTED (nothing was sent) and not backfilled SETTLED rows with no ref.
+# NOT_STARTED (nothing was sent), not backfilled SETTLED rows with no ref,
+# not hidden replay targets, and not demo-sourced settles (execution_ref
+# starting with 'demo:', from option B Approve). Those demo settles are
+# not in the hand-written settlement file, so leaving them out keeps the
+# six intended cases on both a seeded demo and a used one.
 COMPARABLE = frozenset({payouts.SUBMITTED, payouts.UNKNOWN, payouts.SETTLED, payouts.FAILED})
 
 MATCHED = 'matched'
@@ -138,6 +142,12 @@ def _in_scope(payout):
     payout_id = payout['payout_id']
     if payout_id in _hidden_other_ids():
         return False
+    # Option B demo settles use a demo: ref and are not in the settlement
+    # file. Exclude them the same way hidden PO-REPLAY-* targets are, so a
+    # used demo (including the #61 scenario's Approved PO-1042) still shows
+    # the six intended cases instead of an extra missing_from_settlement.
+    if (payout.get('execution_ref') or '').startswith('demo:'):
+        return False
     status = payout['execution_status']
     if status not in COMPARABLE:
         return False
@@ -216,8 +226,9 @@ def reconcile(database, fixture=None, now=None):
     moves to SETTLED or FAILED only when settlement confirms it (same amount,
     payout is Approved). The move is logged in execution_events. review_status
     and status are never rewritten, so the Desk queue, stream and Sent word
-    stay as they are. NOT_STARTED payouts and SETTLED rows with no
-    execution_ref are left out of the comparison.
+    stay as they are. NOT_STARTED payouts, SETTLED rows with no
+    execution_ref, hidden replay targets, and demo-sourced settles (refs
+    starting with 'demo:') are left out of the comparison.
     """
     path = Path(fixture or FIXTURE)
     settlement = load_settlement(path)
