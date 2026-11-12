@@ -5,7 +5,7 @@
 # or returns a flagged payout. Running it twice changes nothing. Nothing on any
 # screen changes.
 """In-process payout automation. Reuses the #37 rules and notes and the #51 event log."""
-import sqlite3
+import storage
 from datetime import datetime, timezone
 
 import aba
@@ -93,7 +93,7 @@ def route_pending(db, now=None):
 # Opens one locked transaction, then routes either one payout or every PENDING
 # payout. Works only on the file it is given.
 def route(database, payout_id=None, now=None):
-    with sqlite3.connect(str(database), timeout=10) as db:
+    with storage.connect(str(database), timeout=10) as db:
         db.execute('BEGIN IMMEDIATE')
         for statement in payouts.SCHEMA:
             db.execute(statement)
@@ -134,7 +134,7 @@ def create(database, payout_id, payee_name, payee_account, amount_cents, rail,
     payout_id, payee_name = payout_id.strip(), payee_name.strip()
     payee_account = payee_account.strip()
     at = (now or datetime.now(timezone.utc)).isoformat()
-    with sqlite3.connect(str(database), timeout=10) as db:
+    with storage.connect(str(database), timeout=10) as db:
         db.execute('BEGIN IMMEDIATE')
         for statement in payouts.SCHEMA:
             db.execute(statement)
