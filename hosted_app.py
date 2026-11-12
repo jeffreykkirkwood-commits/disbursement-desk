@@ -5,6 +5,7 @@ import atexit
 import logging
 import os
 import sqlite3
+import storage
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -356,7 +357,7 @@ def create_app(directory=None, public_origin=None, payments=None):
     # DEMO- payouts in that visitor's database and returns JSON. No page, link
     # or button is added. Reset demo still restores the starting set.
     def _next_demo_payout_id(database):
-        with sqlite3.connect(str(database)) as db:
+        with storage.connect(str(database)) as db:
             ids = [row[0] for row in db.execute('SELECT payout_id FROM payouts')]
         numbers = [int(payout_id[3:]) for payout_id in ids
                    if payout_id.startswith('PO-') and payout_id[3:].isdigit()]
