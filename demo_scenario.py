@@ -2,7 +2,7 @@
 # Synthetic data only. There are no network calls and no real money, bank or provider.
 """Load the seed, apply scripted decisions, replay once, reconcile once, and return a stable snapshot."""
 import json
-import sqlite3
+import storage
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,7 +53,7 @@ def _public_execution(event):
 
 
 def _recon_rows(database, table, columns):
-    with sqlite3.connect(str(database)) as db:
+    with storage.connect(str(database)) as db:
         db.execute('PRAGMA foreign_keys = ON')
         exists = db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
