@@ -9,10 +9,10 @@
 # and is not returned. Details are taken from stored payout fields and the
 # stored #114 flag sentence; ofac.screen() is not run again at read time.
 """Return every reason a payout is held for review, as structured items."""
-import sqlite3
 from datetime import datetime, timedelta
 
 import payouts
+import storage
 from payments import APIError
 
 # FEATURE 01 — In-review statuses and the stored-flag list
@@ -136,9 +136,12 @@ def reasons(payout, earlier=()):
 
 # FEATURE 03 — Look up one payout in a demo database
 # Raises the same 404 the other payout reads use when the id is unknown.
-# Uses this visitor's database only. Nothing is written.
+# Uses this visitor's database only, through storage.connect (the same
+# factory as the rest of the app, so a later Turso host keeps working).
+# The earlier-payout query uses fetchall() so it stays safe on the libsql
+# adapter, whose cursor is not iterable. Nothing is written.
 def for_payout(database, payout_id):
-    with sqlite3.connect(str(database)) as db:
+    with storage.connect(str(database)) as db:
         row = db.execute(
             f'SELECT {", ".join(payouts.COLUMNS)} FROM payouts WHERE payout_id = ?',
             (payout_id,)).fetchone()
@@ -148,5 +151,5 @@ def for_payout(database, payout_id):
         earlier = [dict(zip(payouts.COLUMNS, other))
                    for other in db.execute(
                        f'SELECT {", ".join(payouts.COLUMNS)} FROM payouts WHERE payout_id != ?',
-                       (payout_id,))]
+                       (payout_id,)).fetchall()]
     return reasons(payout, earlier)
