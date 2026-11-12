@@ -6,7 +6,7 @@ import csv
 import io
 import json
 import logging
-import sqlite3
+import storage
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -105,7 +105,7 @@ def load_settlement(path=None):
 
 
 def _open(database):
-    db = sqlite3.connect(str(database), timeout=10)
+    db = storage.connect(str(database), timeout=10)
     db.execute('PRAGMA foreign_keys = ON')
     for statement in payouts.SCHEMA:
         db.execute(statement)
@@ -278,7 +278,7 @@ def reconcile(database, fixture=None, now=None):
 
 
 def list_runs(database):
-    with sqlite3.connect(str(database)) as db:
+    with storage.connect(str(database)) as db:
         return [dict(zip(RUN_COLUMNS, row))
                 for row in db.execute(
                     f'SELECT {", ".join(RUN_COLUMNS)} FROM reconciliation_runs ORDER BY run_id')]
@@ -289,7 +289,7 @@ def list_items(database, run_id=None):
     args = ()
     if run_id is not None:
         query, args = query + ' WHERE run_id = ?', (run_id,)
-    with sqlite3.connect(str(database)) as db:
+    with storage.connect(str(database)) as db:
         return [dict(zip(ITEM_COLUMNS, row))
                 for row in db.execute(query + ' ORDER BY run_id, payout_id', args)]
 

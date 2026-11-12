@@ -6,7 +6,7 @@
 # file does not import that unmerged code.
 """Per-visitor payout created and status-changed events, served as SSE."""
 import json
-import sqlite3
+import storage
 import threading
 import time
 from contextlib import closing
@@ -96,7 +96,7 @@ def sync(database):
         path = _path(database)
         state = _load(path)
         seen = state['statuses']
-        with closing(sqlite3.connect(str(database))) as db:
+        with closing(storage.connect(str(database))) as db:
             raw = db.execute(
                 f'SELECT {", ".join(payouts.COLUMNS)} FROM payouts').fetchall()
         rows = sorted((payouts._public(row) for row in raw),
