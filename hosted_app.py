@@ -312,6 +312,17 @@ def create_app(directory=None, public_origin=None, payments=None):
         payout_events.sync(database)
         return jsonify(payout=payouts.get_payout(database, payout_id), decision=decision), status
 
+    # FEATURE 29 — List every reason a payout is in review (#32)
+    # Behind the scenes JSON for the later "Why this is in review" panel.
+    # Read-only. No Desk HTML or screen change. 200 returns the payout id and a
+    # list of {code, label, details} items (empty when the payout is not in
+    # review). 404 if the payout does not exist.
+    @app.get('/payouts/<payout_id>/review-reasons')
+    def payout_review_reasons(payout_id):
+        import review_reasons
+        items = review_reasons.for_payout(g.payments.database, payout_id)
+        return jsonify(payout_id=payout_id, reasons=items)
+
     # FEATURE 22 — Reset this visitor's Desk demo to the starting set (#32 slice 4)
     # Calls payouts.reset() on this visitor's own database only. That restores the
     # synthetic seed and clears this demo's action log; it never touches anyone else.
