@@ -114,6 +114,14 @@
       "source": "replay"
     },
     {
+      "at": "2026-11-11T19:03:00+00:00",
+      "event_id": "recon:PO-RECON-UNKNOWN",
+      "execution_ref": "stl-unknown-1",
+      "execution_status": "SETTLED",
+      "payout_id": "PO-RECON-UNKNOWN",
+      "source": "reconciliation"
+    },
+    {
       "at": "2026-11-11T21:00:00+00:00",
       "event_id": "demo-settle:PO-1042",
       "execution_ref": "demo:PO-1042",
@@ -216,8 +224,58 @@
     "PO-1042",
     "PO-1045"
   ],
-  "reconciliation_items": [],
-  "reconciliation_runs": [],
+  "reconciliation_items": [
+    {
+      "our_status": "SETTLED",
+      "payout_id": "PO-RECON-AMOUNT",
+      "reason": "Our amount is $270.00; settlement says $999.99.",
+      "result": "amount_mismatch",
+      "settlement_status": "SETTLED"
+    },
+    {
+      "our_status": "SETTLED",
+      "payout_id": "PO-RECON-MATCH",
+      "reason": "Our payment outcome and amount match the settlement file.",
+      "result": "matched",
+      "settlement_status": "SETTLED"
+    },
+    {
+      "our_status": "SETTLED",
+      "payout_id": "PO-RECON-MISSING",
+      "reason": "This payout is missing from the settlement file.",
+      "result": "missing_from_settlement",
+      "settlement_status": null
+    },
+    {
+      "our_status": "SETTLED",
+      "payout_id": "PO-RECON-STATUS",
+      "reason": "Our payment outcome is SETTLED; settlement says FAILED.",
+      "result": "status_mismatch",
+      "settlement_status": "FAILED"
+    },
+    {
+      "our_status": null,
+      "payout_id": "PO-RECON-UNEXPECTED",
+      "reason": "Settlement has a line for a payout we do not have.",
+      "result": "unexpected_settlement",
+      "settlement_status": "SETTLED"
+    },
+    {
+      "our_status": "SETTLED",
+      "payout_id": "PO-RECON-UNKNOWN",
+      "reason": "Settlement confirmed SETTLED for $280.00.",
+      "result": "resolved",
+      "settlement_status": "SETTLED"
+    }
+  ],
+  "reconciliation_runs": [
+    {
+      "fixture_name": "settlement_demo.csv",
+      "matched_count": 2,
+      "mismatched_count": 4,
+      "unknown_count": 0
+    }
+  ],
   "replay": {
     "applied": 6,
     "noop": 0,

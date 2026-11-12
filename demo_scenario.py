@@ -1,7 +1,6 @@
-# One fixed end-to-end demo scenario: seed, scripted decisions, and one replay (#61).
+# One fixed end-to-end demo scenario: seed, scripted decisions, one replay, and one reconciliation (#61).
 # Synthetic data only. There are no network calls and no real money, bank or provider.
-# Reconciliation (#57, PR #107) is not on main yet and is not part of this run.
-"""Load the seed, apply scripted decisions, replay once, and return a stable snapshot."""
+"""Load the seed, apply scripted decisions, replay once, reconcile once, and return a stable snapshot."""
 import json
 import sqlite3
 import sys
@@ -11,6 +10,7 @@ from pathlib import Path
 import execution_replay
 import payout_events
 import payouts
+import reconciliation
 
 
 ACTOR = 'Scenario Reviewer'
@@ -39,8 +39,17 @@ def _public_payout(payout):
 
 
 def _public_execution(event):
-    return {key: event[key] for key in (
+    row = {key: event[key] for key in (
         'event_id', 'payout_id', 'execution_status', 'execution_ref', 'at', 'source')}
+    # Reconciliation logs recon:{run_id}:{payout_id}. run_id is an
+    # autoincrement that survives DELETE, so two resets would otherwise
+    # differ. The snapshot already omits autoincrement ids.
+    event_id = row['event_id'] or ''
+    if event.get('source') == payouts.RECONCILIATION and event_id.startswith('recon:'):
+        parts = event_id.split(':')
+        if len(parts) >= 3 and parts[1].isdigit():
+            row['event_id'] = ':'.join(['recon', *parts[2:]])
+    return row
 
 
 def _recon_rows(database, table, columns):
@@ -87,10 +96,10 @@ def load_expected(path=None):
 
 
 def run(database, now=None, reset=True):
-    """Restore the starting set if asked, then apply the scripted decisions and one replay.
+    """Restore the starting set if asked, then apply the scripted decisions, one replay, and one reconciliation.
 
-    Reconciliation is omitted until #57 is on main. review_status / status changes are
-    only the scripted Approve, Hold and Return; the Desk words and layout are unchanged.
+    review_status / status changes are only the scripted Approve, Hold and Return;
+    reconciliation does not rewrite them, so the Desk words and layout stay as they are.
     """
     if reset:
         payouts.reset(database)
@@ -103,6 +112,8 @@ def run(database, now=None, reset=True):
     for payout_id, action, key, reason in DECISIONS:
         payouts.decide(database, payout_id, action, ACTOR, key, reason=reason, now=when)
     replay_report = execution_replay.replay(database)
+    # Same path as POST /reconciliation: prepare the hidden targets, then compare.
+    reconciliation.reconcile(database, now=when)
     return snapshot(database, replay_report)
 
 
