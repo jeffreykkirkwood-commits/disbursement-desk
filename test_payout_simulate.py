@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 import tempfile
 
+import aba
 from hosted_app import create_app
 import payouts
 
@@ -167,6 +168,32 @@ class SimulatePayoutTests(unittest.TestCase):
         self.assertEqual(ok.json['payout']['bank_details_changed_at'],
                          '2026-11-10T18:00:00+00:00')
         self.assertEqual(ok.json['payout']['flag_code'], 'NEW_PAYEE_OVER_1000,BANK_CHANGED_7D')
+
+
+
+    # FEATURE 09 — Scenario — a valid routing number is accepted; a bad check digit is 422 (#112)
+    def test_valid_routing_number_is_accepted(self):
+        self.open_desk()
+        reply = self.simulate(dict(NEW_PAYEE, payout_id='PO-3010', amount_cents=50000,
+                                   routing_number=aba.WELL_KNOWN_TEST))
+        self.assertEqual(reply.status_code, 201)
+        self.assertEqual(reply.json['payout']['payout_id'], 'PO-3010')
+        self.assertEqual(reply.json['status'], 'PAID')
+
+    def test_invalid_routing_check_digit_is_refused(self):
+        self.open_desk()
+        db = self.database()
+        before = payouts.list_payouts(db)
+        reply = self.simulate(dict(NEW_PAYEE, payout_id='PO-3011',
+                                   routing_number='110000001'))
+        self.assertEqual(reply.status_code, 422)
+        self.assertEqual(reply.json['error'], aba.CHECK_MESSAGE)
+        self.assertEqual(payouts.list_payouts(db), before)
+        short = self.simulate(dict(NEW_PAYEE, payout_id='PO-3012',
+                                   routing_number='11000000'))
+        self.assertEqual(short.status_code, 422)
+        self.assertEqual(short.json['error'], aba.LENGTH_MESSAGE)
+        self.assertEqual(payouts.list_payouts(db), before)
 
 
 if __name__ == '__main__':
