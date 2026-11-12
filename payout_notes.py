@@ -16,6 +16,7 @@ AMOUNT_OVER_3X_AVG = 'AMOUNT_OVER_3X_AVG'
 BANK_CHANGED_7D = 'BANK_CHANGED_7D'
 DUPLICATE_24H = 'DUPLICATE_24H'
 NEW_PAYEE_OVER_1000 = 'NEW_PAYEE_OVER_1000'
+POSSIBLE_SANCTIONS_MATCH = 'POSSIBLE_SANCTIONS_MATCH'
 SOURCE_RULES = 'rules'
 CLEAN_NOTE = 'No rules triggered. Within normal range for this payee.'
 BANK_CHANGED_NOTE = (
@@ -40,6 +41,8 @@ def _note_for(code, flag):
         return f'Rule {DUPLICATE_24H}: {flag}. {REVIEW_BEFORE_SENDING}'
     if code == NEW_PAYEE_OVER_1000:
         return f'Rule {NEW_PAYEE_OVER_1000}: {flag}. {REVIEW_BEFORE_SENDING}'
+    if code == POSSIBLE_SANCTIONS_MATCH:
+        return f'Rule {POSSIBLE_SANCTIONS_MATCH}: {flag}. {REVIEW_BEFORE_SENDING}'
     return None
 
 

@@ -159,7 +159,8 @@ class SeedTests(unittest.TestCase):
     def test_each_rule_has_a_payout(self):
         rows = payouts.seed_rows()
         self.assertEqual(set(payouts.FLAG_TEXT), {
-            'AMOUNT_OVER_3X_AVG', 'BANK_CHANGED_7D', 'DUPLICATE_24H', 'NEW_PAYEE_OVER_1000'})
+            'AMOUNT_OVER_3X_AVG', 'BANK_CHANGED_7D', 'DUPLICATE_24H', 'NEW_PAYEE_OVER_1000',
+            'POSSIBLE_SANCTIONS_MATCH'})
         for code in ('AMOUNT_OVER_3X_AVG', 'BANK_CHANGED_7D', 'DUPLICATE_24H'):
             with self.subTest(rule=code):
                 self.assertTrue(any(r['flag_code'] == code and r['status'] == 'FLAGGED' for r in rows))
@@ -308,7 +309,7 @@ class HostedSeedTests(unittest.TestCase):
         self.assertEqual(len(payouts.list_payouts(databases[1])), SEED_COUNT)
 
     # FEATURE 12 — Scenario — payouts show only on the Desk, its POST routes, and the stream.
-    # The payout APIs are the decision route (#35), Reset demo (#32 slice 4), the
+    # The payout APIs are the decision route (#35, clear/block in #111), Reset demo (#32 slice 4), the
     # live update stream (#43), the behind-the-scenes simulate route (#91), and
     # the behind-the-scenes execution replay route (#56). The Payments Lab
     # dashboard still lists no payouts, and no Desk control points at simulate
@@ -319,11 +320,11 @@ class HostedSeedTests(unittest.TestCase):
         self.assertNotIn('PO-10', page)
         rules = [rule for rule in self.app.url_map.iter_rules() if re.search('payout', str(rule))]
         self.assertEqual({str(r) for r in rules},
-                         {'/payouts/<payout_id>/<any(approve, hold, return):action>',
+                         {'/payouts/<payout_id>/<any(approve, hold, return, clear, block):action>',
                           '/payouts/reset', '/payouts/simulate', '/payouts/stream',
                           '/payouts/execution-replay'})
         posts = {str(r) for r in rules if (r.methods - {'OPTIONS'}) == {'POST'}}
-        self.assertEqual(posts, {'/payouts/<payout_id>/<any(approve, hold, return):action>',
+        self.assertEqual(posts, {'/payouts/<payout_id>/<any(approve, hold, return, clear, block):action>',
                                  '/payouts/reset', '/payouts/simulate',
                                  '/payouts/execution-replay'})
         stream = next(r for r in rules if str(r) == '/payouts/stream')
