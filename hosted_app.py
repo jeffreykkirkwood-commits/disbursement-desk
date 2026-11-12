@@ -290,12 +290,12 @@ def create_app(directory=None, public_origin=None, payments=None):
               replay_applied=report['replay']['applied'])
         return jsonify(report)
 
-    # FEATURE 21 — Approve, hold or return one payout (Desk back end, issue #35)
+    # FEATURE 21 — Approve, hold, return, clear or block one payout (Desk back end, issues #35 and #111)
     # JSON body: reviewer (required) and reason (optional; Hold and Return are
     # confirm-only). Needs an Idempotency-Key header. Works only on this visitor's own
     # demo database. 201 = decision recorded; 200 = same key seen before, nothing changed;
     # 409 = move not allowed from the current status. No screen calls this yet.
-    @app.post('/payouts/<payout_id>/<any(approve, hold, return):action>')
+    @app.post('/payouts/<payout_id>/<any(approve, hold, return, clear, block):action>')
     def decide_payout(payout_id, action):
         if request.mimetype != 'application/json':
             raise APIError(415, 'Use Content-Type: application/json.')
