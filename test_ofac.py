@@ -15,6 +15,7 @@ import payout_notes
 import payout_rules
 import payouts
 from hosted_app import create_app
+from payments import APIError
 
 NOW = datetime(2026, 11, 12, 15, 0, tzinfo=timezone.utc)
 DEMO = {
@@ -48,10 +49,14 @@ class OfacScreeningTests(unittest.TestCase):
         self.assertIsNotNone(exact)
         self.assertEqual(exact['entry_name'].upper(), 'BANCO NACIONAL DE CUBA')
         self.assertEqual(exact['score'], 100)
-        self.assertEqual(exact['snapshot_date'], '2026-11-09')
+        self.assertEqual(exact['list_published'], '2026-11-09')
+        self.assertEqual(exact['snapshot_taken'], '2026-11-12')
+        self.assertNotIn('snapshot_date', exact)
         self.assertIn('BANCO NACIONAL DE CUBA', ofac.flag_sentence(exact).upper())
         self.assertIn('score 100', ofac.flag_sentence(exact))
-        self.assertIn('2026-11-09', ofac.flag_sentence(exact))
+        self.assertIn('OFAC SDN list published 2026-11-09', ofac.flag_sentence(exact))
+        self.assertIn('snapshot taken 2026-11-12', ofac.flag_sentence(exact))
+        self.assertNotIn('snapshot dated', ofac.flag_sentence(exact))
 
         alias = ofac.screen('National Bank of Cuba')
         self.assertIsNotNone(alias)
@@ -74,7 +79,24 @@ class OfacScreeningTests(unittest.TestCase):
         self.assertIsNotNone(ofac.screen('BNC'))
         self.assertIsNone(ofac.screen('BND'))
 
-    # FEATURE 03 — Scenario — none of the starting seed payees is a possible match
+    # FEATURE 03 — Scenario — "Last, First" and reversed word order also match
+    def test_last_first_name_order_matches(self):
+        listed = ofac.screen('Abdelmalek DROUKDEL')
+        self.assertIsNotNone(listed)
+        self.assertEqual(listed['score'], 100)
+        self.assertEqual(listed['entry_name'], 'Abdelmalek DROUKDEL')
+
+        comma = ofac.screen('DROUKDEL, Abdelmalek')
+        self.assertIsNotNone(comma)
+        self.assertEqual(comma['score'], 100)
+        self.assertEqual(comma['entry_name'], 'Abdelmalek DROUKDEL')
+
+        reversed_order = ofac.screen('DROUKDEL Abdelmalek')
+        self.assertIsNotNone(reversed_order)
+        self.assertEqual(reversed_order['score'], 100)
+        self.assertEqual(reversed_order['entry_name'], 'Abdelmalek DROUKDEL')
+
+    # FEATURE 04 — Scenario — none of the starting seed payees is a possible match
     def test_seed_payees_are_not_matches(self):
         names = {row['payee_name'] for row in payouts.seed_rows()}
         names.add('Oak Street Books')
@@ -113,7 +135,8 @@ class OfacPayoutFlowTests(unittest.TestCase):
         self.assertIn('Possible sanctions match', payout['flag_text'])
         self.assertIn('BANCO NACIONAL DE CUBA', payout['flag_text'])
         self.assertIn('score 100', payout['flag_text'])
-        self.assertIn('OFAC SDN snapshot dated 2026-11-09', payout['flag_text'])
+        self.assertIn('OFAC SDN list published 2026-11-09', payout['flag_text'])
+        self.assertIn('snapshot taken 2026-11-12', payout['flag_text'])
         self.assertIn(f'Rule {ofac.FLAG_CODE}:', payout['note_text'])
         self.assertEqual(payout['note_source'], 'rules')
         self.assertFalse(payout['note_fallback'])
@@ -188,6 +211,34 @@ class OfacPayoutFlowTests(unittest.TestCase):
         self.assertIn('Possible sanctions match', payout['flag_text'])
         self.assertNotEqual(payout['status'], 'PAID')
 
+    # FEATURE 08 — Scenario — Approve cannot send a possible sanctions match
+    def test_approve_on_possible_match_returns_409(self):
+        self.create('PO-4100', ofac.DEMO_PAYEE_NAME, ofac.DEMO_PAYEE_ACCOUNT, ofac.DEMO_AMOUNT_CENTS)
+        before = payouts.get_payout(self.db, 'PO-4100')
+        events_before = payouts.list_events(self.db, 'PO-4100')
+        with self.assertRaises(APIError) as caught:
+            self.decide('PO-4100', 'approve')
+        self.assertEqual(caught.exception.status, 409)
+        self.assertIn('use Clear or Block', caught.exception.message)
+        after = payouts.get_payout(self.db, 'PO-4100')
+        self.assertEqual(after, before)
+        self.assertEqual(after['status'], 'FLAGGED')
+        self.assertEqual(after['execution_status'], 'NOT_STARTED')
+        self.assertEqual(payouts.list_events(self.db, 'PO-4100'), events_before)
+
+    # FEATURE 09 — Scenario — Clear and Block require a possible sanctions match flag
+    def test_clear_and_block_without_sanctions_flag_return_409(self):
+        for payout_id, action in (('PO-1042', 'clear'), ('PO-1043', 'block')):
+            with self.subTest(payout_id=payout_id, action=action):
+                before = payouts.get_payout(self.db, payout_id)
+                self.assertNotIn(ofac.FLAG_CODE, payouts.split_flag_codes(before['flag_code']))
+                with self.assertRaises(APIError) as caught:
+                    self.decide(payout_id, action)
+                self.assertEqual(caught.exception.status, 409)
+                self.assertIn('possible sanctions match', caught.exception.message)
+                self.assertEqual(payouts.get_payout(self.db, payout_id), before)
+                self.assertEqual(payouts.list_events(self.db, payout_id), [])
+
 
 class OfacDeskTests(unittest.TestCase):
     def setUp(self):
@@ -230,7 +281,8 @@ class OfacDeskTests(unittest.TestCase):
         self.assertIn('Possible sanctions match', html)
         self.assertIn('BANCO NACIONAL DE CUBA', html)
         self.assertIn('score 100', html)
-        self.assertIn('OFAC SDN snapshot dated 2026-11-09', html)
+        self.assertIn('OFAC SDN list published 2026-11-09', html)
+        self.assertIn('snapshot taken 2026-11-12', html)
         self.assertIn('data-act="clear"', html)
         self.assertIn('>Clear</button>', html)
         self.assertIn('data-act="block"', html)

@@ -35,13 +35,19 @@ def load_snapshot():
     return json.loads(SNAPSHOT_PATH.read_text())
 
 
-def snapshot_date():
+def list_published():
     return load_snapshot()['list_publish_date']
+
+
+def snapshot_taken():
+    return load_snapshot()['snapshot_date']
 
 
 # FEATURE 03 — Normalize a name for comparison
 # Uppercase ASCII, keep letters and digits, drop punctuation, and collapse
-# spaces. "Last, First" is also compared as "First Last".
+# spaces. "Last, First" is flipped before punctuation is stripped, then also
+# compared as "First Last". Reversed word order is compared too, so
+# "DROUKDEL Abdelmalek" matches "Abdelmalek DROUKDEL".
 def normalize(name):
     text = unicodedata.normalize('NFKD', name or '')
     text = text.encode('ascii', 'ignore').decode('ascii').upper()
@@ -50,14 +56,19 @@ def normalize(name):
 
 
 def _variants(name):
-    text = normalize(name)
-    if not text:
-        return set()
-    variants = {text}
-    if ',' in (name or '') or ',' in text:
-        last, _, first = text.partition(',')
-        flipped = ' '.join((first.strip(), last.strip()))
-        if flipped.strip():
+    raw = name or ''
+    variants = set()
+    text = normalize(raw)
+    if text:
+        variants.add(text)
+        parts = text.split()
+        if len(parts) >= 2:
+            variants.add(' '.join(reversed(parts)))
+    # Flip "Last, First" before punctuation is stripped, so the comma is still visible.
+    if ',' in raw:
+        last, _, first = raw.partition(',')
+        flipped = f'{first.strip()} {last.strip()}'.strip()
+        if flipped:
             variants.add(normalize(flipped))
     return variants
 
@@ -95,7 +106,8 @@ def screen(name):
                     'entry_type': entry['type'],
                     'matched_name': candidate,
                     'score': score,
-                    'snapshot_date': snapshot_date(),
+                    'list_published': list_published(),
+                    'snapshot_taken': snapshot_taken(),
                 }
             if score == 1.0:
                 return _public(best)
@@ -111,13 +123,14 @@ def _public(match):
 # FEATURE 05 — Build the Desk flag sentence
 # One sentence, no internal ". " so it can sit next to another rule's sentence.
 # Names the matched list entry (and the listed primary name when an alias hit),
-# the score, and the snapshot date.
+# the score, the list publish date, and the date the snapshot was taken.
 def flag_sentence(match):
     score = match['score']
-    date = match['snapshot_date']
+    published = match['list_published']
+    taken = match['snapshot_taken']
     if match['matched_name'] != match['entry_name']:
         who = f"{match['matched_name']} (listed as {match['entry_name']})"
     else:
         who = match['entry_name']
     return (f'Possible sanctions match: {who}, score {score}, '
-            f'OFAC SDN snapshot dated {date}')
+            f'OFAC SDN list published {published}, snapshot taken {taken}')

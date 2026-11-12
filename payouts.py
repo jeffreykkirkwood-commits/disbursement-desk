@@ -588,12 +588,16 @@ def decide(database, payout_id, action, actor, idempotency_key, reason=None, now
             raise APIError(409, f'A {current} payout cannot be decided; only FLAGGED or HELD payouts can '
                                 f'be approved, held, returned, cleared or blocked.')
         at = (now or datetime.now(timezone.utc)).isoformat()
-        # Screen again before sending. A reviewer who is clearing or approving an
-        # already-flagged possible match is allowed to send; any other path that
-        # still matches is held for review instead of settling.
-        clearing = (action in (APPROVE, CLEAR)
-                    and POSSIBLE_SANCTIONS_MATCH in split_flag_codes(payout['flag_code']))
-        if action in (APPROVE, CLEAR) and not clearing:
+        flagged_sanctions = POSSIBLE_SANCTIONS_MATCH in split_flag_codes(payout['flag_code'])
+        if action == APPROVE and flagged_sanctions:
+            raise APIError(409, 'A payout with a possible sanctions match cannot be approved; use Clear or Block.')
+        if action in (CLEAR, BLOCK) and not flagged_sanctions:
+            raise APIError(409, 'Clear and Block apply only to a payout with a possible sanctions match.')
+        # Screen again before sending. A reviewer who is clearing an already-flagged
+        # possible match is allowed to send; any other path that still matches is
+        # held for review instead of settling. Approve on an already-flagged
+        # possible match is refused above, so only Clear can send it.
+        if action in (APPROVE, CLEAR) and not flagged_sanctions:
             match = ofac.screen(payout['payee_name'])
             if match:
                 _apply_sanctions_hold(db, payout, match, at)
@@ -615,7 +619,7 @@ def decide(database, payout_id, action, actor, idempotency_key, reason=None, now
             db.execute(
                 'UPDATE payouts SET review_status = ?, updated_at = ? WHERE payout_id = ?',
                 (APPROVED, at, payout_id))
-            _settle(db, payout_id, at, allow_sanctions_clear=True)
+            _settle(db, payout_id, at, allow_sanctions_clear=(action == CLEAR))
         else:
             review, outcome = review_and_outcome(step)
             db.execute(
