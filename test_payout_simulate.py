@@ -195,6 +195,20 @@ class SimulatePayoutTests(unittest.TestCase):
         self.assertEqual(short.json['error'], aba.LENGTH_MESSAGE)
         self.assertEqual(payouts.list_payouts(db), before)
 
+    def test_non_ascii_routing_digits_are_refused(self):
+        self.open_desk()
+        db = self.database()
+        before = payouts.list_payouts(db)
+        cases = (('PO-3013', '²²²²²²²²²'), ('PO-3014', '١١٠٠٠٠٠٠٠'))
+        for payout_id, number in cases:
+            with self.subTest(routing_number=number):
+                reply = self.simulate(dict(NEW_PAYEE, payout_id=payout_id,
+                                           routing_number=number))
+                self.assertEqual(reply.status_code, 422)
+                self.assertNotEqual(reply.status_code, 500)
+                self.assertEqual(reply.json['error'], aba.LENGTH_MESSAGE)
+                self.assertEqual(payouts.list_payouts(db), before)
+
 
 if __name__ == '__main__':
     unittest.main()
