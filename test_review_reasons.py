@@ -166,6 +166,32 @@ class ReviewReasonsCreateTests(unittest.TestCase):
                          payouts.FLAG_TEXT[payouts.NEW_PAYEE_OVER_1000])
         self.assertEqual(items[1]['details']['score'], 100)
 
+    def test_labels_stay_whole_when_a_listed_name_contains_the_separator(self):
+        name = 'MSP KALA NAFT CO. TEHRAN'
+        self.create('PO-5151', name, 'DEMO-KALA-010', ofac.DEMO_AMOUNT_CENTS)
+        self.create('PO-5153', name, 'DEMO-KALA-010', PO_4101_CENTS)
+        cases = (
+            ('PO-5151', [payouts.POSSIBLE_SANCTIONS_MATCH]),
+            ('PO-5153', [payouts.NEW_PAYEE_OVER_1000, payouts.POSSIBLE_SANCTIONS_MATCH]),
+        )
+        for payout_id, codes in cases:
+            with self.subTest(payout_id=payout_id):
+                items = self.reasons(payout_id)
+                payout = payouts.get_payout(self.db, payout_id)
+                self.assertEqual(CODES(items), codes)
+                self.assertEqual(
+                    payouts.FLAG_TEXT_SEP.join(item['label'] for item in items),
+                    payout['flag_text'])
+                sanctions = next(item for item in items
+                                 if item['code'] == payouts.POSSIBLE_SANCTIONS_MATCH)
+                self.assertIn(name, sanctions['label'])
+                details = sanctions['details']
+                self.assertEqual(details['entry_name'], name)
+                self.assertEqual(details['score'], 100)
+                self.assertEqual(details['list_published'], '2026-11-09')
+                self.assertEqual(details['snapshot_taken'], '2026-11-12')
+                self.assertNotIn('flag_text', details)
+
     # FEATURE 07 — Scenario — a new payee over $1,000 uses the Desk's stored code
     def test_new_payee_over_1000(self):
         self.create('PO-5100', 'Oak Street Books', 'DEMO-OAKS-010', 100001)
