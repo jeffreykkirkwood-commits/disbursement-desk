@@ -2,7 +2,9 @@
 # stored_reasons() lists every stored flag, in stored order, with the Desk's
 # codes and the exact per-payout sentences in flag_text, and attaches details
 # to each. for_payout() / reasons() return that list only when the payout is
-# still in review (FLAGGED or HELD). This module does not change Desk HTML.
+# still in review (FLAGGED or HELD). The Desk panel reads panel_items(), which
+# is the same stored list (including on final payouts) plus the phone line and
+# sanctions fact rows.
 # Routing-number failures are not a stored reason: the ABA check (#112)
 # rejects a bad number at creation (422) and never writes it on a payout, so it
 # is left out rather than invented here. FIRST_TIME_PAYEE is not a stored flag
@@ -107,7 +109,9 @@ def _sanctions_details_from_flag_text(sentence):
 
 
 def _amount_details(payout):
-    amount = payout['amount_cents']
+    amount = payout.get('amount_cents')
+    if amount is None:
+        return {}
     details = {'amount_cents': amount}
     usual = payout.get('payee_usual_cents')
     if usual:
@@ -130,7 +134,9 @@ def _bank_details(payout):
 
 
 def _duplicate_details(payout, earlier):
-    amount = payout['amount_cents']
+    amount = payout.get('amount_cents')
+    if amount is None:
+        return {}
     details = {'amount_cents': amount}
     if not payout.get('created_at'):
         return details
@@ -176,3 +182,44 @@ def for_payout(database, payout_id):
                        f'SELECT {", ".join(payouts.COLUMNS)} FROM payouts WHERE payout_id != ?',
                        (payout_id,)).fetchall()]
     return reasons(payout, earlier)
+
+# FEATURE 04 — Desk panel items from the same stored list
+# panel_items() is stored_reasons() plus the panel's presentation: a period
+# on each sentence, the BANK_CHANGED_7D phone-check line, and sanctions fact
+# rows from the stored #114 details. for_payout is not used directly because
+# it is empty for Sent and Returned payouts; final payouts still show these
+# original rule items.
+BANK_PHONE_LINE = 'Confirm the change with the payee by phone before sending.'
+
+
+def panel_items(payout, earlier=()):
+    """One stored rule reason per item: sentence, code, optional facts and phone line."""
+    items = []
+    for item in stored_reasons(payout, earlier):
+        code = item['code']
+        sentence = item['label']
+        facts = None
+        phone = None
+        if code == payouts.POSSIBLE_SANCTIONS_MATCH:
+            facts = _sanctions_fact_rows(item['details'])
+            sentence = 'Possible sanctions match.'
+        elif sentence and not sentence.endswith('.'):
+            sentence += '.'
+        if code == payouts.BANK_CHANGED_7D:
+            phone = BANK_PHONE_LINE
+        items.append({'code': code, 'sentence': sentence, 'facts': facts, 'phone': phone})
+    return items
+
+
+def _sanctions_fact_rows(details):
+    if 'entry_name' not in details:
+        return None
+    score = details['score']
+    exact = score == 100 or str(score) == '100'
+    score_value = f'{score} (100 is an exact match)' if exact else str(score)
+    return (
+        ('Listed name', details['entry_name']),
+        ('Score', score_value),
+        ('List published', details['list_published']),
+        ('Snapshot taken', details['snapshot_taken']),
+    )
