@@ -3,7 +3,7 @@
 # stored and no network is called. Desk HTML is unchanged: callers that already
 # serialize a payout (get_payout, list_payouts, current_queue) attach a
 # rail_timing object computed here.
-"""Simulated settlement windows, ET cutoffs, demo limits and return paths per payout rail."""
+"""Simulated settlement windows, ET cutoffs, labelled limits and return paths per payout rail."""
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -61,33 +61,44 @@ RETURN_REQUEST_FOR_RETURN = {'kind': 'request_for_return', 'codes': ()}
 RETURN_RECALL = {'kind': 'recall', 'codes': ()}
 
 
-# FEATURE 03 — Simulated rail table
-# Every cutoff, settlement window and per-payment limit below is a labelled
-# DEMO value for this simulator. They are not live network rules.
+# FEATURE 03 — Rail table
+# Limits and cutoff labels follow Jeffrey's #32 decision
+# (https://github.com/jeffreykkirkwood-commits/payments-api-simulator/issues/32#issuecomment-6834824232).
+# limit_source is 'network' for a published network cap, or 'bank_policy'
+# for a bank-set figure that is not a network cap. Demo cutoff times are
+# unchanged; ACH, SAME_DAY_ACH and WIRE cutoffs are labelled as bank
+# cutoffs set ahead of the Fed deadlines, and the Fed times are listed
+# in fed_deadlines when they were specified.
 #
-# SAME_DAY_ACH's demo limit of $1,000,000 matches Nacha's published Same Day
-# ACH per-payment cap through 16 September 2027 (Nacha has announced a
-# $10 million cap from 17 September 2027). The 14:45 ET cutoff is a single
-# demo window inspired by a common Same Day ACH window, not a claim that
-# it is the network's only or official cutoff.
+# SAME_DAY_ACH's $1,000,000 limit is Nacha's published Same Day ACH
+# per-payment cap through 16 September 2027 (Nacha has announced a
+# $10 million cap from 17 September 2027). The 14:45 ET bank cutoff is
+# unchanged; it sits at the Fed's second Same Day ACH window and ahead
+# of the final 16:45 ET Fed window. Fed windows: 10:30, 14:45, 16:45 ET.
 #
-# RTP and FedNow are both treated as 24/7 with no cutoff in this simulator,
-# but they are separate rows with different demo limits so each can show its
-# own timing and caps (Jeffrey, #32, comment 6832389969). These demo figures are not live network caps. Real RTP and FedNow
-# per-payment caps are $10 million as of late 2025; FedNow's earlier
-# cap was $500,000. The simulator keeps its own lower demo values
-# (and a separate FedNow row) and labels them with limit_source
-# 'simulator' so API readers do not take them as current caps.
+# RTP and FedNow stay separate 24/7 rows with no cutoff (Jeffrey, #32,
+# comment 6832389969). Both use the $10,000,000 network maximum.
+# FedNow's default per-payment limit is $100,000; participants may raise
+# it up to that network maximum. That default is a limit_note, not the
+# payment_limit used for over_limit. FedNow's earlier network caps
+# ($500,000, then $1,000,000) are not used here.
 #
-# ACH's 17:00 ET cutoff, wire's 16:00 ET cutoff, ACH and RTP's $1,000,000
-# demo limits, FedNow's $500,000 demo limit and wire's $5,000,000 demo
-# limit are simulator figures only.
+# Next-day ACH's $1,000,000 and wire's $5,000,000 limits are bank policy,
+# not network caps. ACH's 17:00 ET and wire's 16:00 ET cutoffs are bank
+# cutoffs set ahead of Fed deadlines. The Fedwire Funds Service customer
+# cutoff is 18:45 ET. No next-day ACH Fed deadline is listed, because
+# none was specified in the decision.
 RAIL_SPECS = {
     'ACH': {
         'cutoff_et': time(17, 0),
         'business_days': 1,
         'immediate': False,
         'limit_cents': 100_000_000,
+        'limit_source': 'bank_policy',
+        'limit_note': None,
+        'cutoff_source': 'bank',
+        'fed_deadlines': (),
+        'cutoff_note': 'Bank cutoff set ahead of Fed ACH deadlines.',
         'return_path': RETURN_ACH,
     },
     'SAME_DAY_ACH': {
@@ -95,20 +106,41 @@ RAIL_SPECS = {
         'business_days': 0,
         'immediate': False,
         'limit_cents': 100_000_000,
+        'limit_source': 'network',
+        'limit_note': None,
+        'cutoff_source': 'bank',
+        'fed_deadlines': (time(10, 30), time(14, 45), time(16, 45)),
+        'cutoff_note': (
+            'Bank cutoff set ahead of the final Fed Same Day ACH window. '
+            'Fed windows are 10:30 AM, 2:45 PM, and 4:45 PM ET.'
+        ),
         'return_path': RETURN_ACH,
     },
     'RTP': {
         'cutoff_et': None,
         'business_days': 0,
         'immediate': True,
-        'limit_cents': 100_000_000,
+        'limit_cents': 1_000_000_000,
+        'limit_source': 'network',
+        'limit_note': None,
+        'cutoff_source': None,
+        'fed_deadlines': (),
+        'cutoff_note': None,
         'return_path': RETURN_REQUEST_FOR_RETURN,
     },
     'FEDNOW': {
         'cutoff_et': None,
         'business_days': 0,
         'immediate': True,
-        'limit_cents': 50_000_000,
+        'limit_cents': 1_000_000_000,
+        'limit_source': 'network',
+        'limit_note': (
+            'Network maximum. The FedNow default per-payment limit is '
+            '$100,000; participants may raise it up to this maximum.'
+        ),
+        'cutoff_source': None,
+        'fed_deadlines': (),
+        'cutoff_note': None,
         'return_path': RETURN_REQUEST_FOR_RETURN,
     },
     'WIRE': {
@@ -116,6 +148,14 @@ RAIL_SPECS = {
         'business_days': 0,
         'immediate': False,
         'limit_cents': 500_000_000,
+        'limit_source': 'bank_policy',
+        'limit_note': None,
+        'cutoff_source': 'bank',
+        'fed_deadlines': (time(18, 45),),
+        'cutoff_note': (
+            'Bank cutoff set ahead of the Fedwire Funds Service customer '
+            'cutoff (6:45 PM ET).'
+        ),
         'return_path': RETURN_RECALL,
     },
 }
@@ -211,23 +251,30 @@ def return_path(rail):
 
 
 def payment_limit(rail):
-    """Demo per-payment limit as a dollar string, the same shape as payout amount."""
+    """Per-payment limit as a dollar string, the same shape as payout amount."""
     cents = _spec(rail)['limit_cents']
     return format(Decimal(cents) / 100, '.2f')
 
 
 def describe(rail, submitted_at, amount):
-    """The public rail_timing object: settlement, return path and demo limit.
+    """The public rail_timing object: settlement, return path and payment limit.
 
-    payment_limit is a simulator figure (limit_source is always 'simulator').
-    over_limit is True only when amount is strictly greater than that figure.
-    Limits are labelled, not enforced.
+    payment_limit is the rail's labelled cap. limit_source is 'network' or
+    'bank_policy'. over_limit is True only when amount is strictly greater
+    than that figure. Limits are labelled, not enforced. FedNow's limit_note
+    records the $100,000 default; over_limit still uses the $10,000,000
+    network maximum.
     """
+    spec = _spec(rail)
     limit = payment_limit(rail)
     return {
         'expected_settlement': expected_settlement(rail, submitted_at).isoformat(),
         'return_path': return_path(rail),
         'payment_limit': limit,
-        'limit_source': 'simulator',
+        'limit_source': spec['limit_source'],
+        'limit_note': spec['limit_note'],
         'over_limit': Decimal(amount) > Decimal(limit),
+        'cutoff_source': spec['cutoff_source'],
+        'fed_deadlines': [deadline.strftime('%H:%M') for deadline in spec['fed_deadlines']],
+        'cutoff_note': spec['cutoff_note'],
     }
