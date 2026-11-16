@@ -5,7 +5,7 @@
 # reads each payout's stored #37 note (note_text, note_source, note_fallback) and
 # shows it on screen. It does not call a model or invent note sentences.
 """Disbursement Desk presentation for the approved #40 design. Never writes to the database."""
-from dashboard import money, text
+from desk_common import money, text
 import payout_notes
 import review_reasons
 
