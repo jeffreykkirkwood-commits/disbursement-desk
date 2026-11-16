@@ -12,6 +12,7 @@ from uuid import uuid4
 from flask import Flask, Response, g, jsonify, redirect, request, stream_with_context
 from werkzeug.exceptions import HTTPException
 from payments import APIError, Payments
+import desk_common
 import execution_replay
 import payouts
 import payout_rules
@@ -155,9 +156,11 @@ def create_app(directory=None, public_origin=None, payments=None):
             request_context.reset(token)
 
     # FEATURE 06 — Explain payment input problems
-    # Turn an expected rule violation from payments.py into a JSON error with its status
-    # code (for example 422 = "your input is invalid").
+    # Turn an expected rule violation from payments.py, or from the Desk's own modules
+    # (desk_common.py), into a JSON error with its status code (for example 422 = "your
+    # input is invalid").
     @app.errorhandler(APIError)
+    @app.errorhandler(desk_common.APIError)
     def expected_error(error):
         return jsonify(error=error.message), error.status
 
