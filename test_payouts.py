@@ -10,6 +10,7 @@ import unittest
 from datetime import datetime, timedelta
 from itertools import product
 from pathlib import Path
+from unittest.mock import patch
 import payouts
 from hosted_app import create_app
 from desk_common import APIError
@@ -115,6 +116,7 @@ class TransitionTests(unittest.TestCase):
 
 class SeedTests(unittest.TestCase):
     def setUp(self):
+        payouts._build_seed_rows.cache_clear()
         self.temp = tempfile.TemporaryDirectory()
         self.db = Path(self.temp.name) / 'payments.sqlite3'
 
@@ -136,6 +138,34 @@ class SeedTests(unittest.TestCase):
         self.assertEqual(payouts.seed_rows(), payouts.seed_rows())
         fingerprint = hashlib.sha256(json.dumps(payouts.seed_rows(), sort_keys=True).encode()).hexdigest()
         self.assertEqual(fingerprint, PINNED_FINGERPRINT)
+
+    # FEATURE 04b — Scenario — starting payouts are built once and handed out as copies
+    # Two calls match row for row, but changing one returned list does not change the
+    # next call. The sanctions-name check runs only while the starting set is first
+    # built, not again on later seed_rows() or Reset calls (#9).
+    def test_seed_rows_cached_and_copied(self):
+        original = payouts.ofac.screen
+        calls = []
+
+        def counting(name):
+            calls.append(name)
+            return original(name)
+
+        with patch('payouts.ofac.screen', side_effect=counting):
+            payouts._build_seed_rows.cache_clear()
+            first = payouts.seed_rows()
+            built = len(calls)
+            self.assertGreater(built, 0)
+            second = payouts.seed_rows()
+            self.assertEqual(len(calls), built)
+            self.assertEqual(first, second)
+            self.assertIsNot(first, second)
+            first[0]['payee_name'] = 'mutated'
+            self.assertNotEqual(first[0]['payee_name'], second[0]['payee_name'])
+            self.assertEqual(payouts.seed_rows(), second)
+            self.assertEqual(payouts.reset(self.db), SEED_COUNT)
+            self.assertEqual(payouts.reset(self.db), SEED_COUNT)
+            self.assertEqual(len(calls), built)
 
     # FEATURE 05 — Scenario — reopening keeps changes; reset restores the start
     def test_reopen_and_reset(self):
