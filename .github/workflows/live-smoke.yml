@@ -1,0 +1,43 @@
+# Live smoke check (#24): runs live_smoke.py against the Render demo and records PASS or
+# FAIL in the run summary. Manual only (Run workflow button), so it uses no Actions
+# minutes unless someone starts it; there is no schedule. Each run opens two fresh
+# visitor demos with fictional DEMO accounts and synthetic payouts. No secrets, no
+# Render API, no deploy. Inputs reach the script through env vars, never ${{ }} in run:.
+name: Live smoke check
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Demo URL to check
+        default: https://payments-api-simulator.onrender.com
+        required: true
+      expect_commit:
+        description: Optional commit SHA that /health must report (blank = any)
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Run the live smoke check
+        env:
+          SMOKE_BASE_URL: ${{ inputs.base_url }}
+          SMOKE_EXPECT_COMMIT: ${{ inputs.expect_commit }}
+        run: python live_smoke.py

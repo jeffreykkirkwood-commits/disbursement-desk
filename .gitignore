@@ -1,0 +1,16 @@
+__pycache__/
+*.sqlite3
+*.sqlite3-*
+.DS_Store
+
+logs/
+
+# Private Dwolla credentials and editor backup copies.
+dwolla-credentials.local.json*
+
+# Browser demo databases, logs, and CLI cookie jars are local-only.
+demos/
+*.cookies
+
+# Optional local environment for the hosted server.
+.venv/

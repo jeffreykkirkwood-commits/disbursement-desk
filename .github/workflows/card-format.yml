@@ -1,0 +1,35 @@
+# Card format check: fails a pull request whose title does not start with one of the six
+# category tags, e.g. [Bug fix] (junkjaws-app #148), or when any required card-format section
+# in the PR body is missing or blank (HTML comments and whitespace do not count).
+# Skips Dependabot PRs. Title and body are passed via env vars
+# (never interpolated into run:) to avoid script injection. 'edited' re-runs it after a title fix.
+name: Card format
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# Cancel an outdated run when a PR gets a newer push or edit (#226). Pushes to main are never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check-card-format:
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check PR title category and body card format
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python3 .github/scripts/check_card_format.py
