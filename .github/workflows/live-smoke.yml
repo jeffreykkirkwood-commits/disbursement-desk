@@ -1,9 +1,13 @@
-# Live smoke check (#24): runs live_smoke.py against the Render demo and records PASS or
-# FAIL in the run summary. The Desk has no Render service yet (Jeffrey creates it after
-# payments-api-simulator #122 step 4), so there is no default URL, and the run skips with a
-# notice until live_smoke.py has moved here. Manual only (Run workflow button), so it uses no Actions
-# minutes unless someone starts it; there is no schedule. Each run opens two fresh
-# visitor demos with fictional DEMO accounts and synthetic payouts. No secrets, no
+# Live smoke check (Lab #24, payments-api-simulator #123): runs live_smoke.py against the
+# Desk's Render service and records PASS or FAIL in the run summary. It also checks that
+# /health reports the commit this run was started on (or the expect_commit input), so a
+# deploy that went live on an old build fails loudly instead of passing.
+# The URL comes from the base_url input or, when that is blank, the repository variable
+# DESK_BASE_URL. There is no default URL. While neither is set (the Desk has no Render
+# service yet), the run skips with a notice and passes.
+# Manual only (Run workflow button, from main), so it uses no Actions minutes unless
+# someone starts it; there is no schedule. Each run opens two fresh visitor demos with
+# fictional DEMO payouts and synthetic smoke payees, then resets them. No secrets, no
 # Render API, no deploy. Inputs reach the script through env vars, never ${{ }} in run:.
 name: Live smoke check
 
@@ -11,10 +15,10 @@ on:
   workflow_dispatch:
     inputs:
       base_url:
-        description: Desk URL to check (no Render service yet; type it once it exists)
-        required: true
+        description: Desk URL to check (blank = repo variable DESK_BASE_URL)
+        required: false
       expect_commit:
-        description: Optional commit SHA that /health must report (blank = any)
+        description: Commit SHA that /health must report (blank = the commit this run is on)
         required: false
 
 permissions:
@@ -28,20 +32,25 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      SMOKE_BASE_URL: ${{ inputs.base_url || vars.DESK_BASE_URL }}
+      SMOKE_EXPECT_COMMIT: ${{ inputs.expect_commit || github.sha }}
     steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Skip until the Desk is deployed
+      - name: Skip until the Desk has a URL
         id: ready
         run: |
-          if [ -f live_smoke.py ]; then
+          if [ -n "$SMOKE_BASE_URL" ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice title=Live smoke skipped::live_smoke.py has not moved to this repo yet, and the Desk has no Render service yet (#122)."
+            echo "::notice title=Live smoke skipped::No Desk URL yet. Type one in base_url or set the repository variable DESK_BASE_URL once the Render service exists (payments-api-simulator #122)."
+            echo "Live smoke skipped: no Desk URL yet (base_url input and DESK_BASE_URL are both blank)." >> "$GITHUB_STEP_SUMMARY"
             echo "ready=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - uses: actions/checkout@v7
+        if: steps.ready.outputs.ready == 'true'
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v7
         if: steps.ready.outputs.ready == 'true'
@@ -50,7 +59,4 @@ jobs:
 
       - name: Run the live smoke check
         if: steps.ready.outputs.ready == 'true'
-        env:
-          SMOKE_BASE_URL: ${{ inputs.base_url }}
-          SMOKE_EXPECT_COMMIT: ${{ inputs.expect_commit }}
-        run: python live_smoke.py
+        run: python live_smoke.py --base-url "$SMOKE_BASE_URL" --expect-commit "$SMOKE_EXPECT_COMMIT"
