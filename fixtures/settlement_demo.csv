@@ -1,0 +1,9 @@
+# Hand-written settlement file for issue #57.
+# Written separately from fixtures/execution_events_demo.json and not generated
+# from any replay event file, so the check is against a second source.
+payout_id,execution_status,amount_cents,settlement_ref,at
+PO-RECON-MATCH,SETTLED,25000,stl-match-1,2026-11-11T19:00:00+00:00
+PO-RECON-STATUS,FAILED,26000,stl-status-1,2026-11-11T19:01:00+00:00
+PO-RECON-AMOUNT,SETTLED,99999,stl-amount-1,2026-11-11T19:02:00+00:00
+PO-RECON-UNKNOWN,SETTLED,28000,stl-unknown-1,2026-11-11T19:03:00+00:00
+PO-RECON-UNEXPECTED,SETTLED,29000,stl-unexpected-1,2026-11-11T19:04:00+00:00
