@@ -1,0 +1,359 @@
+{
+  "decisions": [
+    {
+      "action": "approve",
+      "actor": "Scenario Reviewer",
+      "at": "2026-11-11T21:00:00+00:00",
+      "evidence": {
+        "actor": "Scenario Reviewer",
+        "amount_cents": 485000,
+        "at": "2026-11-11T21:00:00+00:00",
+        "bank_details_changed_at": null,
+        "flag_code": "AMOUNT_OVER_3X_AVG",
+        "flag_text": "Amount is 6\u00d7 this payee\u2019s usual payout ($790 avg)",
+        "payee_usual_cents": 79000,
+        "reason": null,
+        "rules_version": "desk-rules-1"
+      },
+      "from_status": "FLAGGED",
+      "idempotency_key": "scenario-approve",
+      "payout_id": "PO-1042",
+      "reason": null,
+      "to_status": "PAID"
+    },
+    {
+      "action": "hold",
+      "actor": "Scenario Reviewer",
+      "at": "2026-11-11T21:00:00+00:00",
+      "evidence": {
+        "actor": "Scenario Reviewer",
+        "amount_cents": 31240,
+        "at": "2026-11-11T21:00:00+00:00",
+        "bank_details_changed_at": "2026-10-26T15:00:00+00:00",
+        "flag_code": "BANK_CHANGED_7D",
+        "flag_text": "Payee bank details changed 2 days ago",
+        "payee_usual_cents": 30000,
+        "reason": null,
+        "rules_version": "desk-rules-1"
+      },
+      "from_status": "FLAGGED",
+      "idempotency_key": "scenario-hold",
+      "payout_id": "PO-1043",
+      "reason": null,
+      "to_status": "HELD"
+    },
+    {
+      "action": "return",
+      "actor": "Scenario Reviewer",
+      "at": "2026-11-11T21:00:00+00:00",
+      "evidence": {
+        "actor": "Scenario Reviewer",
+        "amount_cents": 120000,
+        "at": "2026-11-11T21:00:00+00:00",
+        "bank_details_changed_at": null,
+        "flag_code": "DUPLICATE_24H",
+        "flag_text": "Same payee and amount as yesterday (possible duplicate)",
+        "payee_usual_cents": 120000,
+        "reason": null,
+        "rules_version": "desk-rules-1"
+      },
+      "from_status": "FLAGGED",
+      "idempotency_key": "scenario-return",
+      "payout_id": "PO-1044",
+      "reason": null,
+      "to_status": "RETURNED"
+    }
+  ],
+  "execution_events": [
+    {
+      "at": "2026-11-11T18:00:00+00:00",
+      "event_id": "evt-replay-settle-submitted",
+      "execution_ref": "replay:settle:submitted",
+      "execution_status": "SUBMITTED",
+      "payout_id": "PO-REPLAY-SETTLE",
+      "source": "replay"
+    },
+    {
+      "at": "2026-11-11T18:01:00+00:00",
+      "event_id": "evt-replay-settle-settled",
+      "execution_ref": "replay:settle:settled",
+      "execution_status": "SETTLED",
+      "payout_id": "PO-REPLAY-SETTLE",
+      "source": "replay"
+    },
+    {
+      "at": "2026-11-11T18:02:00+00:00",
+      "event_id": "evt-replay-fail-submitted",
+      "execution_ref": "replay:fail:submitted",
+      "execution_status": "SUBMITTED",
+      "payout_id": "PO-REPLAY-FAIL",
+      "source": "replay"
+    },
+    {
+      "at": "2026-11-11T18:03:00+00:00",
+      "event_id": "evt-replay-fail-failed",
+      "execution_ref": "replay:fail:failed",
+      "execution_status": "FAILED",
+      "payout_id": "PO-REPLAY-FAIL",
+      "source": "replay"
+    },
+    {
+      "at": "2026-11-11T18:04:00+00:00",
+      "event_id": "evt-replay-unknown-submitted",
+      "execution_ref": "replay:unknown:submitted",
+      "execution_status": "SUBMITTED",
+      "payout_id": "PO-REPLAY-UNKNOWN",
+      "source": "replay"
+    },
+    {
+      "at": "2026-11-11T18:05:00+00:00",
+      "event_id": "evt-replay-unknown-unknown",
+      "execution_ref": "replay:unknown:unknown",
+      "execution_status": "UNKNOWN",
+      "payout_id": "PO-REPLAY-UNKNOWN",
+      "source": "replay"
+    },
+    {
+      "at": "2026-11-11T19:03:00+00:00",
+      "event_id": "recon:PO-RECON-UNKNOWN",
+      "execution_ref": "stl-unknown-1",
+      "execution_status": "SETTLED",
+      "payout_id": "PO-RECON-UNKNOWN",
+      "source": "reconciliation"
+    },
+    {
+      "at": "2026-11-11T21:00:00+00:00",
+      "event_id": "demo-settle:PO-1042",
+      "execution_ref": "demo:PO-1042",
+      "execution_status": "SETTLED",
+      "payout_id": "PO-1042",
+      "source": "demo"
+    }
+  ],
+  "payouts": [
+    {
+      "execution_ref": "demo:PO-1042",
+      "execution_status": "SETTLED",
+      "execution_updated_at": "2026-11-11T21:00:00+00:00",
+      "flag_code": "AMOUNT_OVER_3X_AVG",
+      "flag_text": "Amount is 6\u00d7 this payee\u2019s usual payout ($790 avg)",
+      "payout_id": "PO-1042",
+      "review_status": "APPROVED",
+      "status": "PAID"
+    },
+    {
+      "execution_ref": null,
+      "execution_status": "NOT_STARTED",
+      "execution_updated_at": null,
+      "flag_code": "BANK_CHANGED_7D",
+      "flag_text": "Payee bank details changed 2 days ago",
+      "payout_id": "PO-1043",
+      "review_status": "HELD",
+      "status": "HELD"
+    },
+    {
+      "execution_ref": null,
+      "execution_status": "NOT_STARTED",
+      "execution_updated_at": null,
+      "flag_code": "DUPLICATE_24H",
+      "flag_text": "Same payee and amount as yesterday (possible duplicate)",
+      "payout_id": "PO-1044",
+      "review_status": "RETURNED",
+      "status": "RETURNED"
+    },
+    {
+      "execution_ref": "replay:fail:failed",
+      "execution_status": "FAILED",
+      "execution_updated_at": "2026-11-11T18:03:00+00:00",
+      "flag_code": null,
+      "flag_text": null,
+      "payout_id": "PO-REPLAY-FAIL",
+      "review_status": "APPROVED",
+      "status": "APPROVED"
+    },
+    {
+      "execution_ref": null,
+      "execution_status": "NOT_STARTED",
+      "execution_updated_at": null,
+      "flag_code": null,
+      "flag_text": null,
+      "payout_id": "PO-REPLAY-ORDER",
+      "review_status": "APPROVED",
+      "status": "APPROVED"
+    },
+    {
+      "execution_ref": "replay:settle:settled",
+      "execution_status": "SETTLED",
+      "execution_updated_at": "2026-11-11T18:01:00+00:00",
+      "flag_code": null,
+      "flag_text": null,
+      "payout_id": "PO-REPLAY-SETTLE",
+      "review_status": "APPROVED",
+      "status": "APPROVED"
+    },
+    {
+      "execution_ref": null,
+      "execution_status": "NOT_STARTED",
+      "execution_updated_at": null,
+      "flag_code": "NEW_PAYEE_OVER_1000",
+      "flag_text": "No paid payout to this payee yet; amount is over $1,000",
+      "payout_id": "PO-REPLAY-UNAPPROVED",
+      "review_status": "FLAGGED",
+      "status": "FLAGGED"
+    },
+    {
+      "execution_ref": "replay:unknown:unknown",
+      "execution_status": "UNKNOWN",
+      "execution_updated_at": "2026-11-11T18:05:00+00:00",
+      "flag_code": null,
+      "flag_text": null,
+      "payout_id": "PO-REPLAY-UNKNOWN",
+      "review_status": "APPROVED",
+      "status": "APPROVED"
+    }
+  ],
+  "queue_ids": [
+    "PO-1038",
+    "PO-1043",
+    "PO-1037",
+    "PO-1044",
+    "PO-1036",
+    "PO-1039",
+    "PO-1040",
+    "PO-1041",
+    "PO-1042",
+    "PO-1045"
+  ],
+  "reconciliation_items": [
+    {
+      "our_status": "SETTLED",
+      "payout_id": "PO-RECON-AMOUNT",
+      "reason": "Our amount is $270.00; settlement says $999.99.",
+      "result": "amount_mismatch",
+      "settlement_status": "SETTLED"
+    },
+    {
+      "our_status": "SETTLED",
+      "payout_id": "PO-RECON-MATCH",
+      "reason": "Our payment outcome and amount match the settlement file.",
+      "result": "matched",
+      "settlement_status": "SETTLED"
+    },
+    {
+      "our_status": "SETTLED",
+      "payout_id": "PO-RECON-MISSING",
+      "reason": "This payout is missing from the settlement file.",
+      "result": "missing_from_settlement",
+      "settlement_status": null
+    },
+    {
+      "our_status": "SETTLED",
+      "payout_id": "PO-RECON-STATUS",
+      "reason": "Our payment outcome is SETTLED; settlement says FAILED.",
+      "result": "status_mismatch",
+      "settlement_status": "FAILED"
+    },
+    {
+      "our_status": null,
+      "payout_id": "PO-RECON-UNEXPECTED",
+      "reason": "Settlement has a line for a payout we do not have.",
+      "result": "unexpected_settlement",
+      "settlement_status": "SETTLED"
+    },
+    {
+      "our_status": "SETTLED",
+      "payout_id": "PO-RECON-UNKNOWN",
+      "reason": "Settlement confirmed SETTLED for $280.00.",
+      "result": "resolved",
+      "settlement_status": "SETTLED"
+    }
+  ],
+  "reconciliation_runs": [
+    {
+      "fixture_name": "settlement_demo.csv",
+      "matched_count": 2,
+      "mismatched_count": 4,
+      "unknown_count": 0
+    }
+  ],
+  "replay": {
+    "applied": 6,
+    "noop": 0,
+    "refused": 3,
+    "results": [
+      {
+        "at": "2026-11-11T18:00:00+00:00",
+        "event_id": "evt-replay-settle-submitted",
+        "execution_ref": "replay:settle:submitted",
+        "execution_status": "SUBMITTED",
+        "outcome": "applied",
+        "payout_id": "PO-REPLAY-SETTLE"
+      },
+      {
+        "event_id": "evt-replay-settle-submitted",
+        "outcome": "skipped",
+        "payout_id": "PO-REPLAY-SETTLE",
+        "reason": "This event was already applied."
+      },
+      {
+        "at": "2026-11-11T18:01:00+00:00",
+        "event_id": "evt-replay-settle-settled",
+        "execution_ref": "replay:settle:settled",
+        "execution_status": "SETTLED",
+        "outcome": "applied",
+        "payout_id": "PO-REPLAY-SETTLE"
+      },
+      {
+        "at": "2026-11-11T18:02:00+00:00",
+        "event_id": "evt-replay-fail-submitted",
+        "execution_ref": "replay:fail:submitted",
+        "execution_status": "SUBMITTED",
+        "outcome": "applied",
+        "payout_id": "PO-REPLAY-FAIL"
+      },
+      {
+        "at": "2026-11-11T18:03:00+00:00",
+        "event_id": "evt-replay-fail-failed",
+        "execution_ref": "replay:fail:failed",
+        "execution_status": "FAILED",
+        "outcome": "applied",
+        "payout_id": "PO-REPLAY-FAIL"
+      },
+      {
+        "at": "2026-11-11T18:04:00+00:00",
+        "event_id": "evt-replay-unknown-submitted",
+        "execution_ref": "replay:unknown:submitted",
+        "execution_status": "SUBMITTED",
+        "outcome": "applied",
+        "payout_id": "PO-REPLAY-UNKNOWN"
+      },
+      {
+        "at": "2026-11-11T18:05:00+00:00",
+        "event_id": "evt-replay-unknown-unknown",
+        "execution_ref": "replay:unknown:unknown",
+        "execution_status": "UNKNOWN",
+        "outcome": "applied",
+        "payout_id": "PO-REPLAY-UNKNOWN"
+      },
+      {
+        "event_id": "evt-replay-unknown-retry",
+        "outcome": "refused",
+        "payout_id": "PO-REPLAY-UNKNOWN",
+        "reason": "An UNKNOWN payment outcome cannot be submitted or retried automatically."
+      },
+      {
+        "event_id": "evt-replay-unapproved-submitted",
+        "outcome": "refused",
+        "payout_id": "PO-REPLAY-UNAPPROVED",
+        "reason": "A payment-outcome event on a payout that is not Approved is refused."
+      },
+      {
+        "event_id": "evt-replay-order-settled",
+        "outcome": "refused",
+        "payout_id": "PO-REPLAY-ORDER",
+        "reason": "A NOT_STARTED payment outcome cannot move to SETTLED."
+      }
+    ],
+    "skipped": 1
+  }
+}

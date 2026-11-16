@@ -3,11 +3,13 @@
 # checked against the Lab's dashboard.money and dashboard.text in
 # payments-api-simulator PR #131 before the move.
 import ast
+import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
 
 import desk_common
+from hosted_app import create_app
 
 ROOT = Path(__file__).resolve().parent
 LAB_MODULES = {'payments', 'dashboard'}
@@ -56,6 +58,25 @@ class DeskHelpersTests(unittest.TestCase):
     def test_error_keeps_status_and_message(self):
         error = desk_common.APIError(409, 'Payout already decided.')
         self.assertEqual((error.status, error.message), (409, 'Payout already decided.'))
+
+
+class DeskErrorHttpTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.app = create_app(self.temp.name, 'https://demo.example')
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        self.app.extensions['close']()
+        self.temp.cleanup()
+
+    # FEATURE 03 — Scenario — a Desk error still becomes the same JSON reply
+    def test_desk_error_is_json_with_its_status(self):
+        self.client.get('/desk', base_url='https://demo.example')
+        reply = self.client.get('/payouts/PO-9999/review-reasons',
+                                base_url='https://demo.example')
+        self.assertEqual(reply.status_code, 404)
+        self.assertEqual(reply.json, {'error': 'Payout not found.'})
 
 
 if __name__ == '__main__':
