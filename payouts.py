@@ -3,6 +3,8 @@
 # approve / hold / return decisions, and the hook that runs automation after a seed.
 # The /desk page (desk.py) reads the current queue from here.
 """Payout table, transitions, synthetic seed data (#34), operator decisions (#35), stored rules notes (#37), automation hook (#44), review/outcome columns (#54) and decision evidence plus demo settle (#55 option B)."""
+import copy
+import functools
 import json
 import random
 import re
@@ -311,7 +313,14 @@ def explain_flag(payout, earlier):
 # +/- pairs around the usual amount (within 10%), so their average is exactly the usual.
 # Each current payout's usual amount is the average of that payee's earlier payouts, and
 # its flag comes from explain_flag(). Each row then gets a stored rules note.
+# The starting set, including explain_flag() / ofac.screen(), is built once per process;
+# each Reset or new demo gets a copy, so callers cannot change the cached rows (#9).
 def seed_rows():
+    return copy.deepcopy(_build_seed_rows())
+
+
+@functools.lru_cache(maxsize=1)
+def _build_seed_rows():
     rng = random.Random(SEED_RANDOM)
     rows, number = [], 1001
     for index, (payee, account, usual) in enumerate(HISTORY_PAYEES):
