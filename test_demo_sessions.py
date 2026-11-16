@@ -1,36 +1,39 @@
 # Automated checks that each browser (cookie) gets its own separate demo, using a real local server.
+# The app shell (#122 step 2) has no payout routes yet, so the server gets the same probe
+# routes as test_hosted_app.py. They exist only inside the tests.
 """HTTP-level isolation tests using separate browser cookies and temporary data."""
 import hashlib
 import http.client
 import json
+import os
 import tempfile
 import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from unittest import mock
 from werkzeug.serving import make_server
 from pathlib import Path
 
-from payments import Payments
-from hosted_app import create_app
-from demo_sessions import DemoStore
+from demo_sessions import DemoCapacityError, DemoStore
+from hosted_app import DeskDemo
+from test_hosted_app import probe_app
+
+LOCAL_ORIGIN = 'http://127.0.0.1:8001'
 
 
 class BrowserDemoTests(unittest.TestCase):
     # FEATURE 01 — Test support — setUp
-    # Create isolated temporary storage and test clients so scenarios cannot touch real
-    # accounts or production data.
+    # Create isolated temporary storage so scenarios cannot touch real data.
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.folder = Path(self.temp.name)
         self.start()
-        self.body = dict(debtor_account='DEMO-CHECKING-001', creditor_account='DEMO-MERCHANT-002',
-                         amount='25.00', currency='USD', rail='ACH')
 
     # FEATURE 02 — Test support — start
     # Start the test server on a local ephemeral port with the fixture directory.
     def start(self):
-        self.application = create_app(self.folder / 'demos')
-        self.store = self.application.extensions['demos']
+        self.application = probe_app(self.folder / 'demos', LOCAL_ORIGIN)
         self.server = make_server('127.0.0.1', 0, self.application, threaded=True)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -47,20 +50,19 @@ class BrowserDemoTests(unittest.TestCase):
     # Close test resources and remove only the temporary fixture created by this test.
     def tearDown(self):
         self.stop()
-        self.application.extensions['close']()
         self.temp.cleanup()
 
     # FEATURE 05 — Test support — call
     # Send a synthetic browser request to the local test server, preserving the supplied
     # cookie.
-    def call(self, path='/accounts', cookie=None, method='GET', data=None, headers=None):
-        values = {'Content-Type': 'application/json', 'Idempotency-Key': 'same-retry-key'}
+    def call(self, path='/probe', cookie=None, method='GET', headers=None):
+        values = {'Content-Type': 'application/json'}
         if cookie:
             values['Cookie'] = cookie
         values.update(headers or {})
         connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=5)
         try:
-            connection.request(method, path, body=json.dumps(data) if data else None, headers=values)
+            connection.request(method, path, body='{}' if method == 'POST' else None, headers=values)
             response = connection.getresponse()
             body = response.read().decode()
             return response.status, dict(response.getheaders()), body
@@ -72,53 +74,35 @@ class BrowserDemoTests(unittest.TestCase):
     def browser(self):
         status, headers, body = self.call()
         self.assertEqual(status, 200)
-        self.assertEqual([a['balance'] for a in json.loads(body)], ['100.00', '100.00'])
         self.assertIn('HttpOnly', headers['Set-Cookie'])
         self.assertIn('SameSite=Strict', headers['Set-Cookie'])
         self.assertIn('Max-Age=', headers['Set-Cookie'])
+        self.assertEqual(json.loads(body)['demo_id'], headers['X-Demo-ID'])
         return headers['Set-Cookie'].split(';')[0], headers['X-Demo-ID']
 
-    # FEATURE 07 — Scenario — browsers isolate balances payments lookup processing and logs
-    # Give two browser cookies separate demos. Transfers, identifiers, retry keys and
-    # logs must not cross between their workspaces.
-    def test_browsers_isolate_balances_payments_lookup_processing_and_logs(self):
+    # FEATURE 07 — Scenario — browsers get separate demos and logs
+    # Two browser cookies get separate demo folders, each with its own log.
+    def test_browsers_get_separate_demos_and_logs(self):
         a, aid = self.browser()
         b, bid = self.browser()
         self.assertNotEqual(aid, bid)
-        status, headers, text = self.call('/payments', a, 'POST', self.body)
-        self.assertEqual(status, 201)
-        payment = json.loads(text)
-        pid = payment['payment_id']
-        self.assertEqual([v['balance'] for v in json.loads(self.call(cookie=a)[2])], ['75.00', '125.00'])
-        self.assertEqual([v['balance'] for v in json.loads(self.call(cookie=b)[2])], ['100.00', '100.00'])
-        self.assertEqual(json.loads(self.call('/payments', b)[2]), [])
-        self.assertEqual(self.call('/payments/' + pid, b)[0], 404)
-        self.assertEqual(self.call('/payments/' + pid + '/process', b, 'POST')[0], 404)
-        self.assertNotIn(pid, self.call('/dashboard', b)[2])
-        self.assertIn(pid, self.call('/dashboard', a)[2])
-        self.assertIn('content="' + aid + '"', self.call('/dashboard', a)[2])
-        # B's attempted lookup is normalized in logs, never recording A's payment ID.
-        self.assertNotIn(pid, self.call('/logs?viewer=1', b)[2])
-        self.assertIn(pid, self.call('/logs', a)[2])
-        self.assertNotIn(headers['X-Request-ID'], self.call('/logs?viewer=1', b)[2])
-        # The same idempotency key is independent across demos.
-        other = self.call('/payments', b, 'POST', self.body)
-        self.assertEqual(other[0], 201)
-        self.assertNotEqual(json.loads(other[2])['payment_id'], pid)
-        self.assertEqual(self.call('/payments', a, 'POST', self.body)[0], 200)
+        self.assertEqual(self.call(cookie=a)[1]['X-Demo-ID'], aid)
+        self.assertEqual(self.call(cookie=b)[1]['X-Demo-ID'], bid)
+        for demo_id in (aid, bid):
+            self.assertTrue((self.folder / 'demos' / demo_id / 'payments.sqlite3').is_file())
+            self.assertTrue((self.folder / 'demos' / demo_id / 'logs' / 'api.log').is_file())
 
     # FEATURE 08 — Scenario — restart restores demo and does not touch legacy database
-    # Restart the server with the original cookie. Its saved balance must return while
-    # an unrelated older database remains untouched.
+    # Restart the server with the original cookie. The same demo must return while an
+    # unrelated older database remains untouched.
     def test_restart_restores_demo_and_does_not_touch_legacy_database(self):
         legacy = self.folder / 'payments.sqlite3'
         legacy.write_bytes(b'legacy data must stay untouched')
         a, aid = self.browser()
-        self.call('/payments', a, 'POST', self.body)
         self.stop()
         self.start()
         self.assertEqual(self.call(cookie=a)[1]['X-Demo-ID'], aid)
-        self.assertEqual([v['balance'] for v in json.loads(self.call(cookie=a)[2])], ['75.00', '125.00'])
+        self.assertEqual(self.call(cookie=a, method='POST', headers={'X-Demo-ID': aid})[0], 201)
         self.assertEqual(legacy.read_bytes(), b'legacy data must stay untouched')
 
     # FEATURE 09 — Scenario — missing forged and stale sessions cannot submit
@@ -126,12 +110,12 @@ class BrowserDemoTests(unittest.TestCase):
     # reject the request instead of creating or selecting the wrong demo.
     def test_missing_forged_and_stale_sessions_cannot_submit(self):
         for cookie in (None, 'payments_demo=' + 'a' * 64, 'payments_demo=../../payments.sqlite3'):
-            self.assertEqual(self.call('/payments', cookie, 'POST', self.body)[0], 409)
+            status, _, body = self.call(cookie=cookie, method='POST')
+            self.assertEqual((status, json.loads(body)['code']), (409, 'DEMO_SESSION_CHANGED'))
         self.assertEqual(list((self.folder / 'demos').rglob('payments.sqlite3')), [])
         a, aid = self.browser()
         b, bid = self.browser()
-        self.assertEqual(self.call('/payments', b, 'POST', self.body, {'X-Demo-ID': aid})[0], 409)
-        self.assertEqual(json.loads(self.call('/payments', b)[2]), [])
+        self.assertEqual(self.call(cookie=b, method='POST', headers={'X-Demo-ID': aid})[0], 409)
         # Knowing the public demo ID is insufficient to forge its bearer cookie.
         forged = self.call(cookie='payments_demo=' + aid)
         self.assertNotEqual(forged[1]['X-Demo-ID'], aid)
@@ -141,36 +125,81 @@ class BrowserDemoTests(unittest.TestCase):
     # allowed origin may proceed.
     def test_cross_site_post_rejected_and_same_origin_allowed(self):
         a, aid = self.browser()
-        self.assertEqual(self.call('/payments', a, 'POST', self.body, {'Origin': 'https://example.com'})[0], 403)
-        self.assertEqual(self.call('/payments', a, 'POST', self.body, {'Sec-Fetch-Site': 'cross-site'})[0], 403)
-        origin = 'http://127.0.0.1:8001'
-        self.assertEqual(self.call('/payments', a, 'POST', self.body, {'Origin': origin, 'X-Demo-ID': aid})[0], 201)
+        self.assertEqual(self.call(cookie=a, method='POST', headers={'Origin': 'https://example.com'})[0], 403)
+        self.assertEqual(self.call(cookie=a, method='POST', headers={'Sec-Fetch-Site': 'cross-site'})[0], 403)
+        self.assertEqual(self.call(cookie=a, method='POST',
+                                   headers={'Origin': LOCAL_ORIGIN, 'X-Demo-ID': aid})[0], 201)
 
-    # FEATURE 11 — Scenario — same cookie concurrent retries debit once
-    # Send four simultaneous requests using one browser cookie and retry key. The shared
-    # demo must debit only once.
-    def test_same_cookie_concurrent_retries_debit_once(self):
+    # FEATURE 11 — Scenario — same cookie concurrent requests share one demo
+    # Four simultaneous requests with one browser cookie all land in the same demo and
+    # do not start a second one.
+    def test_same_cookie_concurrent_requests_share_one_demo(self):
         a, aid = self.browser()
         with ThreadPoolExecutor(max_workers=4) as pool:
-            results = list(pool.map(lambda _: self.call('/payments', a, 'POST', self.body), range(4)))
-        self.assertEqual(sorted(v[0] for v in results), [200, 200, 200, 201])
-        self.assertEqual(len({json.loads(v[2])['payment_id'] for v in results}), 1)
-        self.assertEqual([v['balance'] for v in json.loads(self.call(cookie=a)[2])], ['75.00', '125.00'])
+            results = list(pool.map(lambda _: self.call(cookie=a, method='POST'), range(4)))
+        self.assertEqual([v[0] for v in results], [201] * 4)
+        self.assertEqual({json.loads(v[2])['demo_id'] for v in results}, {aid})
+        self.assertEqual(len(list((self.folder / 'demos').rglob('payments.sqlite3'))), 1)
 
-    # FEATURE 12 — Scenario — cookie not saved in logs and new browser starts fresh
-    # Check that raw browser tokens do not appear in logs and a fresh cookie receives
-    # fresh fictional balances.
-    def test_cookie_not_saved_in_logs_and_new_browser_starts_fresh(self):
+    # FEATURE 12 — Scenario — cookie not saved in logs and private files are not served
+    # Raw browser tokens never appear in logs, and demo or credential files are not
+    # reachable by URL.
+    def test_cookie_not_saved_in_logs_and_files_not_served(self):
         a, aid = self.browser()
-        self.call('/payments', a, 'POST', self.body)
-        b, bid = self.browser()
-        self.assertNotEqual(aid, bid)
+        self.call(cookie=a, method='POST')
         token = a.split('=', 1)[1]
         self.assertEqual(hashlib.sha256(token.encode()).hexdigest(), aid)
         for path in (self.folder / 'demos').rglob('*.log'):
             self.assertNotIn(token, path.read_text())
         self.assertEqual(self.call('/dwolla-credentials.local.json', a)[0], 404)
         self.assertEqual(self.call('/demos/' + aid + '/payments.sqlite3', a)[0], 404)
+
+
+class DemoStoreLimitTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.folder = Path(self.temp.name)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    # FEATURE 13 — Scenario — demo limits must be positive
+    def test_limits_must_be_positive(self):
+        with mock.patch.dict(os.environ, {'DEMO_MAX_SESSIONS': '0'}):
+            with self.assertRaises(ValueError):
+                DemoStore(self.folder, DeskDemo)
+
+    # FEATURE 14 — Scenario — a full service refuses a new demo but keeps existing ones
+    def test_capacity_refuses_new_demo(self):
+        with mock.patch.dict(os.environ, {'DEMO_MAX_SESSIONS': '1'}):
+            store = DemoStore(self.folder, DeskDemo)
+        try:
+            demo_id, _, _, cookie = store.resolve('', create=True)
+            store.release(demo_id)
+            with self.assertRaises(DemoCapacityError):
+                store.resolve('', create=True)
+            again = store.resolve(cookie.split(';')[0], create=True)
+            self.assertEqual(again[0], demo_id)
+            store.release(demo_id)
+        finally:
+            store.close()
+
+    # FEATURE 15 — Scenario — idle demos expire, demos in use do not
+    def test_idle_demo_expires_unless_in_use(self):
+        with mock.patch.dict(os.environ, {'DEMO_IDLE_SECONDS': '60'}):
+            store = DemoStore(self.folder, DeskDemo)
+        try:
+            idle, _, _, _ = store.resolve('', create=True)
+            store.release(idle)
+            busy, _, _, _ = store.resolve('', create=True)
+            old = time.time() - 120
+            for demo_id in (idle, busy):
+                os.utime(self.folder / demo_id / '.last-used', (old, old))
+            store.resolve('', create=True)
+            self.assertFalse((self.folder / idle).exists())
+            self.assertTrue((self.folder / busy).exists())
+        finally:
+            store.close()
 
 
 if __name__ == '__main__':
