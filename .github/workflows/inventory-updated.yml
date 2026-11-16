@@ -8,6 +8,10 @@
 # works once this is merged.
 # #227: a confirmation counts only if posted after the Inventory line last changed (read from
 # the PR body's edit history), and deleting a comment re-runs the check.
+# Dependabot PRs (author dependabot[bot], read from the GitHub API, not from the event text)
+# pass as "Inventory: no change": a dependency bump adds no service, key or setting. GitHub
+# gives Dependabot-triggered runs a read-only token unless the workflow's permissions key asks
+# for more, so the statuses: write below is what lets them post the status. No secrets are used.
 name: Inventory updated
 
 on:
@@ -32,8 +36,8 @@ concurrency:
 jobs:
   set-inventory-status:
     if: >-
-      (github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]') ||
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request && github.event.issue.user.login != 'dependabot[bot]')
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -52,6 +56,7 @@ jobs:
           gh api "repos/$REPO/pulls/$PR_NUMBER" > "$RUNNER_TEMP/pr.json"
           HEAD_SHA=$(jq -r .head.sha "$RUNNER_TEMP/pr.json")
           PR_BODY=$(jq -r '.body // ""' "$RUNNER_TEMP/pr.json")
+          PR_AUTHOR=$(jq -r '.user.login // ""' "$RUNNER_TEMP/pr.json")
           gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" | jq -s 'add // []' > "$RUNNER_TEMP/comments.json"
           # The Actions token may be refused the edit history ("Resource not accessible by
           # integration" once a body has been edited). Then fall back to the pre-#227 rule (any
@@ -64,7 +69,7 @@ jobs:
             echo "::warning title=Inventory gate::Couldn't read the PR body's edit history with the Actions token, so any Operations \"Inventory updated\" comment counts (the rule before #227)."
             : > "$RUNNER_TEMP/edits.json"
           fi
-          RESULT=$(PR_BODY="$PR_BODY" COMMENTS_FILE="$RUNNER_TEMP/comments.json" EDITS_FILE="$RUNNER_TEMP/edits.json" \
+          RESULT=$(PR_BODY="$PR_BODY" PR_AUTHOR="$PR_AUTHOR" COMMENTS_FILE="$RUNNER_TEMP/comments.json" EDITS_FILE="$RUNNER_TEMP/edits.json" \
             python3 .github/scripts/check_inventory_updated.py)
           STATE=$(jq -r .state <<<"$RESULT")
           DESC=$(jq -r .description <<<"$RESULT")
