@@ -8,7 +8,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import desk
 import payout_events
 import payouts
 
@@ -302,11 +301,8 @@ class MigrationTests(unittest.TestCase):
              'PO-1036', 'PO-1039', 'PO-1040', 'PO-1041', 'PO-1045'])
         sent = next(p for p in queue if p['payout_id'] == 'PO-1040')
         self.assertEqual(sent['status'], 'PAID')
-        self.assertEqual(desk.STATUS_WORDS[sent['status']], ('Sent', 's-sent'))
-        self.assertEqual(desk.STATUS_WORDS['APPROVED'], ('Sent', 's-sent'))
         # The screen word is taken from status, not from the payment outcome.
         self.assertEqual(sent['execution_status'], 'SETTLED')
-        self.assertEqual(desk.STATUS_WORDS[sent['status']][0], 'Sent')
 
 
 if __name__ == '__main__':

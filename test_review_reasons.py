@@ -7,12 +7,10 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-import demo_scenario
 import ofac
 import payout_rules
 import payouts
 import review_reasons
-from hosted_app import create_app
 from desk_common import APIError
 
 NOW = datetime(2026, 11, 12, 16, 0, tzinfo=timezone.utc)
@@ -102,9 +100,7 @@ class ReviewReasonsSeedTests(unittest.TestCase):
         self.assertEqual(caught.exception.status, 404)
 
     # FEATURE 05 — Scenario — reason codes equal the stored flags
-    def test_reason_codes_equal_stored_flags_for_seed_scenario_and_ofac(self):
-        self.assert_in_review_codes_match_stored()
-        demo_scenario.run(self.db)
+    def test_reason_codes_equal_stored_flags_for_seed_and_ofac(self):
         self.assert_in_review_codes_match_stored()
         payout_rules.create(
             self.db, 'PO-4100', ofac.DEMO_PAYEE_NAME, ofac.DEMO_PAYEE_ACCOUNT,
@@ -243,83 +239,6 @@ class ReviewReasonsCreateTests(unittest.TestCase):
         self.assertIn(payouts.DUPLICATE_24H, CODES(items))
         self.assertEqual(set(CODES(items)),
                          set(stored_flag_codes(self.db, 'PO-5105')))
-
-
-class ReviewReasonsHttpTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.app = create_app(self.temp.name, 'https://demo.example')
-        self.client = self.app.test_client()
-
-    def tearDown(self):
-        self.app.extensions['close']()
-        self.temp.cleanup()
-
-    def open_desk(self):
-        return self.client.get('/desk', base_url='https://demo.example')
-
-    def get_reasons(self, payout_id):
-        return self.client.get(f'/payouts/{payout_id}/review-reasons',
-                               base_url='https://demo.example')
-
-    # FEATURE 10 — Scenario — the GET endpoint returns the structured list
-    def test_get_review_reasons_for_a_seed_payout(self):
-        self.open_desk()
-        reply = self.get_reasons('PO-1042')
-        self.assertEqual(reply.status_code, 200)
-        self.assertEqual(reply.json['payout_id'], 'PO-1042')
-        codes = CODES(reply.json['reasons'])
-        self.assertEqual(codes, [payouts.AMOUNT_OVER_3X_AVG])
-        self.assertEqual(reply.json['reasons'][0]['details']['ratio'], 6)
-        self.assertEqual(reply.json['reasons'][0]['label'],
-                         'Amount is 6× this payee’s usual payout ($790 avg)')
-
-    def test_get_review_reasons_for_sanctions_demo_payee(self):
-        self.open_desk()
-        created = self.client.post(
-            '/payouts/simulate',
-            json={'payee_name': ofac.DEMO_PAYEE_NAME, 'payee_account': ofac.DEMO_PAYEE_ACCOUNT,
-                  'amount_cents': ofac.DEMO_AMOUNT_CENTS, 'rail': 'ACH', 'payout_id': 'PO-4100'},
-            base_url='https://demo.example',
-            headers={'Origin': 'https://demo.example'})
-        self.assertEqual(created.status_code, 201)
-        reply = self.get_reasons('PO-4100')
-        self.assertEqual(reply.status_code, 200)
-        self.assertEqual(CODES(reply.json['reasons']),
-                         [payouts.POSSIBLE_SANCTIONS_MATCH])
-        details = reply.json['reasons'][0]['details']
-        self.assertEqual(details['score'], 100)
-        self.assertEqual(details['list_published'], '2026-11-09')
-        self.assertEqual(details['snapshot_taken'], '2026-11-12')
-        self.assertNotIn('uid', details)
-
-    def test_get_missing_payout_is_404(self):
-        self.open_desk()
-        reply = self.get_reasons('PO-9999')
-        self.assertEqual(reply.status_code, 404)
-
-    def test_get_sent_payout_returns_an_empty_list(self):
-        self.open_desk()
-        reply = self.get_reasons('PO-1039')
-        self.assertEqual(reply.status_code, 200)
-        self.assertEqual(reply.json['reasons'], [])
-
-    def test_valid_routing_number_is_not_a_stored_reason(self):
-        self.open_desk()
-        created = self.client.post(
-            '/payouts/simulate',
-            json={'payee_name': 'Oak Street Books', 'payee_account': 'DEMO-OAKS-010',
-                  'amount_cents': 100001, 'rail': 'ACH', 'payout_id': 'PO-5110',
-                  'routing_number': '110000000'},
-            base_url='https://demo.example',
-            headers={'Origin': 'https://demo.example'})
-        self.assertEqual(created.status_code, 201)
-        reply = self.get_reasons('PO-5110')
-        self.assertEqual(reply.status_code, 200)
-        self.assertEqual(CODES(reply.json['reasons']), [payouts.NEW_PAYEE_OVER_1000])
-        blob = str(reply.json)
-        self.assertNotIn('routing', blob.lower())
-        self.assertNotIn('ABA', blob)
 
 
 if __name__ == '__main__':

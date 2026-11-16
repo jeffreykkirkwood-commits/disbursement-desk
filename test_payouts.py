@@ -3,7 +3,6 @@
 """Exercise the Disbursement Desk data model with temporary fictional databases."""
 import hashlib
 import json
-import re
 import sqlite3
 import tempfile
 import unittest
@@ -11,7 +10,8 @@ from datetime import datetime, timedelta
 from itertools import product
 from pathlib import Path
 import payouts
-from hosted_app import create_app
+import payout_events
+from test_hosted_app import probe_app
 from desk_common import APIError
 
 # Every move the Desk allows; all other pairs of statuses must be blocked.
@@ -286,9 +286,11 @@ class SeedTests(unittest.TestCase):
 
 
 class HostedSeedTests(unittest.TestCase):
+    # The app shell has no payout routes yet (they arrive with the Desk page in
+    # #122 step 4), so a test-only probe route opens each visitor's demo.
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.app = create_app(self.temp.name, 'https://demo.example')
+        self.app = probe_app(self.temp.name, 'https://demo.example')
 
     def tearDown(self):
         self.app.extensions['close']()
@@ -299,7 +301,7 @@ class HostedSeedTests(unittest.TestCase):
     def test_per_viewer_seed(self):
         first, second = self.app.test_client(), self.app.test_client()
         for client in (first, second):
-            self.assertEqual(client.get('/dashboard', base_url='https://demo.example').status_code, 200)
+            self.assertEqual(client.get('/probe', base_url='https://demo.example').status_code, 200)
         databases = sorted(Path(self.temp.name).rglob('payments.sqlite3'))
         self.assertEqual(len(databases), 2)
         with sqlite3.connect(databases[0]) as db:
@@ -308,37 +310,25 @@ class HostedSeedTests(unittest.TestCase):
         self.assertEqual(payouts.get_payout(databases[1], 'PO-1044')['status'], 'FLAGGED')
         self.assertEqual(len(payouts.list_payouts(databases[1])), SEED_COUNT)
 
-    # FEATURE 12 — Scenario — payouts show only on the Desk, its POST routes, the stream,
-    # and the behind-the-scenes review-reasons GET (#32).
-    # The payout APIs are the decision route (#35, clear/block in #111), Reset demo (#32 slice 4), the
-    # live update stream (#43), the behind-the-scenes simulate route (#91),
-    # the behind-the-scenes execution replay route (#56), and the behind-the-scenes
-    # review-reasons GET. The Payments Lab dashboard still lists no payouts, and no
-    # Desk control points at simulate, execution-replay or review-reasons.
-    def test_no_new_routes(self):
+    # FEATURE 12 — Scenario — a new demo gets the seed and its created events once
+    # Opening the same demo again adds no payouts and no events. The app still has no
+    # payout or Desk routes; only /health and the test's probe exist.
+    def test_seed_and_events_once_and_no_payout_routes(self):
         client = self.app.test_client()
-        page = client.get('/dashboard', base_url='https://demo.example').get_data(as_text=True)
-        self.assertNotIn('PO-10', page)
-        rules = [rule for rule in self.app.url_map.iter_rules() if re.search('payout', str(rule))]
-        self.assertEqual({str(r) for r in rules},
-                         {'/payouts/<payout_id>/<any(approve, hold, return, clear, block):action>',
-                          '/payouts/<payout_id>/review-reasons',
-                          '/payouts/reset', '/payouts/simulate', '/payouts/stream',
-                          '/payouts/execution-replay'})
-        posts = {str(r) for r in rules if (r.methods - {'OPTIONS'}) == {'POST'}}
-        self.assertEqual(posts, {'/payouts/<payout_id>/<any(approve, hold, return, clear, block):action>',
-                                 '/payouts/reset', '/payouts/simulate',
-                                 '/payouts/execution-replay'})
-        stream = next(r for r in rules if str(r) == '/payouts/stream')
-        self.assertEqual(stream.methods - {'OPTIONS', 'HEAD'}, {'GET'})
-        reasons = next(r for r in rules if str(r) == '/payouts/<payout_id>/review-reasons')
-        self.assertEqual(reasons.methods - {'OPTIONS', 'HEAD'}, {'GET'})
-        self.assertEqual({str(r) for r in self.app.url_map.iter_rules() if 'desk' in str(r)}, {'/desk', '/desk/', '/desk.js'})
-        self.assertEqual(client.get('/payouts', base_url='https://demo.example').status_code, 404)
-        self.assertEqual(client.get('/payouts/reset', base_url='https://demo.example').status_code, 405)
-        self.assertEqual(client.get('/payouts/simulate', base_url='https://demo.example').status_code, 405)
-        self.assertEqual(client.get('/payouts/execution-replay', base_url='https://demo.example').status_code, 405)
-        self.assertEqual(client.get('/payouts/stream', base_url='https://demo.example').status_code, 200)
+        self.assertEqual(client.get('/probe', base_url='https://demo.example').status_code, 200)
+        database = next(Path(self.temp.name).rglob('payments.sqlite3'))
+        events = payout_events.events_after(database, 0)
+        self.assertEqual(len(payouts.list_payouts(database)), SEED_COUNT)
+        self.assertEqual(len(events), SEED_COUNT)
+        self.assertTrue(all(event['type'] == 'created' for event in events))
+        self.assertEqual(client.get('/probe', base_url='https://demo.example').status_code, 200)
+        self.assertEqual(len(list(Path(self.temp.name).rglob('payments.sqlite3'))), 1)
+        self.assertEqual(len(payouts.list_payouts(database)), SEED_COUNT)
+        self.assertEqual(payout_events.events_after(database, 0), events)
+        rules = {str(rule) for rule in self.app.url_map.iter_rules()}
+        self.assertFalse([rule for rule in rules if 'payout' in rule or 'desk' in rule])
+        self.assertEqual(client.get('/payouts/reset', base_url='https://demo.example').status_code, 404)
+        self.assertEqual(client.get('/desk', base_url='https://demo.example').status_code, 404)
 
 
 # sha256 of the seed rows as sorted JSON; update only on purpose when the seed changes.
