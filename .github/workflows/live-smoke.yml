@@ -1,5 +1,7 @@
 # Live smoke check (#24): runs live_smoke.py against the Render demo and records PASS or
-# FAIL in the run summary. Manual only (Run workflow button), so it uses no Actions
+# FAIL in the run summary. The Desk has no Render service yet (Jeffrey creates it after
+# payments-api-simulator #122 step 4), so there is no default URL, and the run skips with a
+# notice until live_smoke.py has moved here. Manual only (Run workflow button), so it uses no Actions
 # minutes unless someone starts it; there is no schedule. Each run opens two fresh
 # visitor demos with fictional DEMO accounts and synthetic payouts. No secrets, no
 # Render API, no deploy. Inputs reach the script through env vars, never ${{ }} in run:.
@@ -9,8 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       base_url:
-        description: Demo URL to check
-        default: https://payments-api-simulator.onrender.com
+        description: Desk URL to check (no Render service yet; type it once it exists)
         required: true
       expect_commit:
         description: Optional commit SHA that /health must report (blank = any)
@@ -32,11 +33,23 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Skip until the Desk is deployed
+        id: ready
+        run: |
+          if [ -f live_smoke.py ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=Live smoke skipped::live_smoke.py has not moved to this repo yet, and the Desk has no Render service yet (#122)."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-python@v7
+        if: steps.ready.outputs.ready == 'true'
         with:
           python-version: "3.13"
 
       - name: Run the live smoke check
+        if: steps.ready.outputs.ready == 'true'
         env:
           SMOKE_BASE_URL: ${{ inputs.base_url }}
           SMOKE_EXPECT_COMMIT: ${{ inputs.expect_commit }}
