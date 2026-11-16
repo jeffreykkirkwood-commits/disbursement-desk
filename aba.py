@@ -5,7 +5,7 @@
 # file does not look up a directory of banks and does not call the network.
 """Validate an ABA routing number's check digit. Stdlib only."""
 import re
-from payments import APIError
+from desk_common import APIError
 
 # FEATURE 01 — Name the 3-7-1 weights and the error sentences
 # Positions 1, 4 and 7 are multiplied by 3; 2, 5 and 8 by 7; 3, 6 and 9 by 1.

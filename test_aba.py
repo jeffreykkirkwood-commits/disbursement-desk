@@ -5,7 +5,7 @@
 import unittest
 
 import aba
-from payments import APIError
+from desk_common import APIError
 
 # 110000000 is Stripe's documented US test routing number. The check digit is
 # valid: 3+7+0+0+0+0+0+0+0 = 10. 110000001 changes only the last digit and fails.

@@ -13,7 +13,7 @@ from decimal import Decimal
 import ofac
 import payout_notes
 import rails
-from payments import APIError
+from desk_common import APIError
 
 # FEATURE 01 — Name every payout status
 # PENDING = not checked yet; FLAGGED = a rule fired, waiting for an operator ("Needs

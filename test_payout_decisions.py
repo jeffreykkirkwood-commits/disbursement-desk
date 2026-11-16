@@ -12,7 +12,7 @@ import payout_events
 import payout_rules
 import payouts
 from hosted_app import create_app
-from payments import APIError
+from desk_common import APIError
 
 NOW = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc)
 SITE = 'https://demo.example'

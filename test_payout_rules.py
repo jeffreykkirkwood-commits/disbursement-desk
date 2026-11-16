@@ -12,7 +12,7 @@ import aba
 import payout_notes
 import payout_rules
 import payouts
-from payments import APIError
+from desk_common import APIError
 
 # Well after the seed window (late October 2026), so new payouts are not
 # caught by the 24-hour duplicate rule against the starting set.
