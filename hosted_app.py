@@ -1,6 +1,7 @@
 # START HERE — The web layer: every browser or API request enters here and gets matched to
-# that visitor's own demo database. In this app shell (#122 step 2) the only route is
-# /health; the payout routes and the Desk page arrive in steps 3 and 4.
+# that visitor's own demo database. Each demo gets the payout engine's tables and
+# fictional starting payouts (#122 step 3). The only route is still /health; the payout
+# routes and the Desk page arrive together in step 4.
 """Hosted HTTP interface for the Disbursement Desk. Fictional data, never Dwolla credentials."""
 import atexit
 import logging
@@ -12,15 +13,18 @@ from uuid import uuid4
 from flask import Flask, g, jsonify, request
 from werkzeug.exceptions import HTTPException
 from desk_common import APIError
+import payouts
+import payout_events
 from demo_sessions import DemoStore, DemoCapacityError
 from event_log import event, request_context, make_logger
 
 
-# FEATURE 00 — Open one visitor demo
+# FEATURE 00 — Open one visitor demo with its Desk payouts
 # Each visitor gets their own demo database file. The file keeps the name
 # payments.sqlite3 that demo_sessions.py looks for, so that module moves unchanged.
-# The shell only creates the file; the payout tables and the fictional starting
-# payouts are added here by the payout engine (#122 step 3).
+# The first time it opens, the payout tables and the fictional starting payouts
+# (payouts.py) are added to that file, and the payout event log is brought up to
+# date. Opening the same demo again changes nothing.
 class DeskDemo:
     def __init__(self, database, **options):
         self.database = database
@@ -30,6 +34,8 @@ class DeskDemo:
             connection.commit()
         finally:
             connection.close()
+        payouts.ensure_seeded(database)
+        payout_events.sync(database)
 
 
 # FEATURE 01 — Assemble the web application

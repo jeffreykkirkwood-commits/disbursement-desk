@@ -11,7 +11,8 @@ Synthetic data only. No secrets in this repo.
 ## Run the app shell locally
 
 The app shell (payments-api-simulator #122, step 2) has one route so far, `/health`.
-The payout engine and the Desk page arrive in later pull requests.
+The payout engine (step 3) gives each visitor's demo the payout tables and 40 fictional
+starting payouts, behind the scenes. The payout routes and the Desk page arrive in step 4.
 
 ```
 python3 -m venv .venv

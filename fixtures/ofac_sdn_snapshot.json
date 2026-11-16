@@ -1,0 +1,684 @@
+{
+  "source_url": "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.XML",
+  "source_page": "https://ofac.treasury.gov/sanctions-list-service",
+  "list_publish_date": "2026-11-09",
+  "snapshot_date": "2026-11-12",
+  "source_record_count": 19563,
+  "note": "Trimmed public subset of the OFAC Specially Designated Nationals (SDN) list for the Disbursement Desk prototype. Not the complete list. Refresh from the source_url and keep the snapshot_date current.",
+  "entries": [
+    {
+      "uid": "306",
+      "name": "BANCO NACIONAL DE CUBA",
+      "type": "Entity",
+      "programs": [
+        "CUBA"
+      ],
+      "aliases": [
+        "BNC",
+        "NATIONAL BANK OF CUBA"
+      ]
+    },
+    {
+      "uid": "10923",
+      "name": "REVIVAL OF ISLAMIC HERITAGE SOCIETY",
+      "type": "Entity",
+      "programs": [
+        "SDGT"
+      ],
+      "aliases": [
+        "RIHS",
+        "RIHS HEADQUARTERS-KUWAIT",
+        "REVIVAL OF ISLAMIC HERITAGE FOUNDATION",
+        "RIHF",
+        "SOCIETY FOR THE REVIVAL OF ISLAMIC HERITAGE",
+        "ISLAMIC HERITAGE REVIVAL PARTY",
+        "ISLAMIC HERITAGE RESTORATION SOCIETY",
+        "IHRS"
+      ]
+    },
+    {
+      "uid": "7140",
+      "name": "LASHKAR E-TAYYIBA",
+      "type": "Entity",
+      "programs": [
+        "FTO",
+        "SDGT"
+      ],
+      "aliases": [
+        "LASHKAR E-TOIBA",
+        "LASHKAR-I-TAIBA",
+        "ARMY OF THE RIGHTEOUS",
+        "ARMY OF THE PURE",
+        "ARMY OF THE PURE AND RIGHTEOUS",
+        "AL MANSOOREEN",
+        "AL MANSOORIAN",
+        "PAASBAN-E-KASHMIR"
+      ]
+    },
+    {
+      "uid": "8759",
+      "name": "ISLAMIC STATE OF IRAQ AND THE LEVANT",
+      "type": "Entity",
+      "programs": [
+        "SDGT",
+        "FTO"
+      ],
+      "aliases": [
+        "THE MONOTHEISM AND JIHAD GROUP",
+        "AL-ZARQAWI NETWORK",
+        "AL-TAWHID",
+        "TANZIM QA'IDAT AL-JIHAD FI BILAD AL-RAFIDAYN",
+        "THE ORGANIZATION OF AL-JIHAD'S BASE IN IRAQ",
+        "THE ORGANIZATION OF AL-JIHAD'S BASE OF OPERATIONS IN IRAQ",
+        "AL-QAIDA OF JIHAD IN IRAQ",
+        "AL-QAIDA IN IRAQ"
+      ]
+    },
+    {
+      "uid": "20820",
+      "name": "AL-OMGY AND BROTHERS MONEY EXCHANGE",
+      "type": "Entity",
+      "programs": [
+        "SDGT"
+      ],
+      "aliases": [
+        "AL-OMGY COMPANY FOR MONEY EXCHANGE",
+        "AL-OMGY & BROS. MONEY EXCHANGE",
+        "AL-OMGY EXCHANGE COMPANY",
+        "ALOMGY AND BROS. EXCHANGE",
+        "ALOMGY AND BROS MONEY EXCHANGE",
+        "AL-OMQY AND BROS COMPANY FOR MONEY EXCHANGE",
+        "AL-OMQY FOR EXCHANGING CO.",
+        "ALOMQY & BROS. FOR MONEY EXCHANGE"
+      ]
+    },
+    {
+      "uid": "17013",
+      "name": "VTB BANK PUBLIC JOINT STOCK COMPANY",
+      "type": "Entity",
+      "programs": [
+        "UKRAINE-EO13662",
+        "RUSSIA-EO14024",
+        "IRAN-EO13902"
+      ],
+      "aliases": [
+        "JSC VTB BANK",
+        "BANK VTB OPEN JOINT STOCK COMPANY",
+        "BANK VNESHNEY TORGOVLI OPEN JOINT STOCK COMPANY",
+        "BANK VNESHNEY TORGOVLI JOINT STOCK COMPANY",
+        "BANK VNESHNEI TORGOVLI RSFSR",
+        "BANK VNESHNEY TORGOVLI ROSSIYSKOY FEDERATSII CLOSED JOINT STOCK COMPANY",
+        "VNESHTORGBANK ROSSII CLOSED JOINT STOCK COMPANY",
+        "BANK VTB OAO"
+      ]
+    },
+    {
+      "uid": "7640",
+      "name": "FORENINGEN AL-AQSA",
+      "type": "Entity",
+      "programs": [
+        "SDGT"
+      ],
+      "aliases": [
+        "AL-AQSA SPANMAL STIFTELSE",
+        "AL-AQSA ASBL",
+        "AL-AQSA CHARITABLE FOUNDATION",
+        "AL-AQSA CHARITABLE ORGANIZATION",
+        "AL-AQSA E.V.",
+        "AL-AQSA FOUNDATION",
+        "AL-AQSA INTERNATIONAL FOUNDATION",
+        "AL-AQSA ISLAMIC CHARITABLE SOCIETY"
+      ]
+    },
+    {
+      "uid": "7639",
+      "name": "STICHTING AL-AQSA",
+      "type": "Entity",
+      "programs": [
+        "SDGT"
+      ],
+      "aliases": [
+        "AL-AQSA SPANMAL STIFTELSE",
+        "AL-AQSA ASBL",
+        "AL-AQSA CHARITABLE FOUNDATION",
+        "AL-AQSA CHARITABLE ORGANIZATION",
+        "AL-AQSA E.V.",
+        "AL-AQSA FOUNDATION",
+        "AL-AQSA INTERNATIONAL FOUNDATION",
+        "AL-AQSA ISLAMIC CHARITABLE SOCIETY"
+      ]
+    },
+    {
+      "uid": "12299",
+      "name": "JAYSH AL-ADL",
+      "type": "Entity",
+      "programs": [
+        "SDGT",
+        "FTO"
+      ],
+      "aliases": [
+        "PEOPLE'S RESISTANCE MOVEMENT OF IRAN (PMRI)",
+        "JONBESH-I MOQAVEMAT-I-MARDOM-I IRAN",
+        "THE POPULAR RESISTANCE MOVEMENT OF IRAN",
+        "SOLDIERS OF GOD",
+        "FEDAYEEN-E-ISLAM",
+        "FORMER JUNDALLAH OF IRAN",
+        "JUNDULLAH",
+        "JONDULLAH"
+      ]
+    },
+    {
+      "uid": "7916",
+      "name": "COMITE' DE BIENFAISANCE ET DE SECOURS AUX PALESTINIENS",
+      "type": "Entity",
+      "programs": [
+        "SDGT"
+      ],
+      "aliases": [
+        "AL AQSA ASSISTANCE CHARITABLE COUNCIL",
+        "AL-LAJNA AL-KHAYRIYYA LIL MUNASARA AL-AQSA",
+        "BENEVOLENCE COMMITTEE FOR SOLIDARITY WITH PALESTINE",
+        "BENEVOLENT COMMITTEE FOR SUPPORT OF PALESTINE",
+        "CBSP",
+        "CHARITABLE COMMITTEE FOR PALESTINE",
+        "CHARITABLE COMMITTEE FOR SOLIDARITY WITH PALESTINE",
+        "CHARITABLE COMMITTEE FOR SUPPORTING PALESTINE"
+      ]
+    },
+    {
+      "uid": "20010",
+      "name": "KHALID BIN AL-WALID ARMY",
+      "type": "Entity",
+      "programs": [
+        "SDGT"
+      ],
+      "aliases": [
+        "KATIBAH SHUHADA' AL-YARMOUK",
+        "LIWA' SHUHADA' AL-YARMOUK",
+        "YARMOUK BRIGADE",
+        "BRIGADE OF THE YARMOUK MARTYRS",
+        "MARTYRS OF YARMOUK",
+        "AL YARMUK BRIGADE",
+        "SHUHDA AL-YARMOUK",
+        "SHOHADAA AL-YARMOUK BRIGADE"
+      ]
+    },
+    {
+      "uid": "24744",
+      "name": "ELECTRONICS KATRANGI TRADING",
+      "type": "Entity",
+      "programs": [
+        "NPWMD"
+      ],
+      "aliases": [
+        "ELECTRONIC KATRANGI GROUP",
+        "EKT ELECTRONICS",
+        "KATRANGI TRADING",
+        "KATRANJI LABS",
+        "EKT (KATRANGI BROS)",
+        "KATRANGI ELECTRONICS",
+        "ELECTRONIC SYSTEM GROUP",
+        "AL AMIR ELECTRONICS"
+      ]
+    },
+    {
+      "uid": "8085",
+      "name": "DHAMAT HOUMET DAAWA SALAFIA",
+      "type": "Entity",
+      "programs": [
+        "SDGT"
+      ],
+      "aliases": [
+        "DJAMAAT HOUMAT ED DAWA ESSALAFIA",
+        "DJAMAAT HOUMAT ED DAAWA ES SALAFIYA",
+        "DJAMAATT HOUMAT ED DAAWA ES SALAFIYA",
+        "EL-AHOUAL BATTALION",
+        "GROUP PROTECTORS OF SALAFIST PREACHING",
+        "GROUP OF SUPPORTERS OF THE SALAFIST TREND",
+        "GROUP OF SUPPORTERS OF THE SALAFISTE TREND",
+        "THE HORROR SQUADRON"
+      ]
+    },
+    {
+      "uid": "7918",
+      "name": "PALESTINIAN ASSOCIATION IN AUSTRIA",
+      "type": "Entity",
+      "programs": [
+        "SDGT"
+      ],
+      "aliases": [
+        "PALAESTINAENSER VEREIN",
+        "PALAESTINAENSERVEREIN OESTERREICH",
+        "PALAESTINENSISCH VERBAND OESTERREICH",
+        "PALAESTINENSISCHE VEREINIGUNG",
+        "PALAESTININIENSISCHE BEREINIGUNG",
+        "PALESTINE LEAGUE",
+        "PALESTINE UNION",
+        "PALESTINENSISCHE VER IN STERREICH"
+      ]
+    },
+    {
+      "uid": "10486",
+      "name": "TAMILS REHABILITATION ORGANISATION",
+      "type": "Entity",
+      "programs": [
+        "SDGT"
+      ],
+      "aliases": [
+        "TAMILS REHABILITATION ORGANIZATION",
+        "TAMIL REHABILITATION ORGANIZATION",
+        "WHITE PIGEON",
+        "WHITEPIGEON",
+        "ORGANISATION DE REHABILITATION TAMOULE",
+        "ORGANIZZAZIONE PER LA RIABILITAZIONE DEI TAMIL",
+        "ORGANISATION PRE LA REHABILITATION TAMIL",
+        "TAMIL REHABILITERINGS ORGANISASJONEN"
+      ]
+    },
+    {
+      "uid": "12032",
+      "name": "MSP KALA NAFT CO. TEHRAN",
+      "type": "Entity",
+      "programs": [
+        "IRAN"
+      ],
+      "aliases": [
+        "MANUFACTURING SUPPORT & PROCUREMENT CO.-KALA NAFT",
+        "M.S.P.-KALA",
+        "KALA NAFT CO SSK",
+        "KALA NAFT COMPANY LTD",
+        "KALA NAFT TEHRAN",
+        "SHERKAT SAHAMI KHASS KALA NAFT",
+        "SHERKATE POSHTIBANI SAKHT VA TAHEIH KALAIE NAFTE TEHRAN",
+        "MSP KALANAFT"
+      ]
+    },
+    {
+      "uid": "15492",
+      "name": "WAQFIYA RI'AYA AL-USRA AL-FILISTINYA WA AL-LUBNANYA",
+      "type": "Entity",
+      "programs": [
+        "SDGT"
+      ],
+      "aliases": [
+        "WAQFIYA RI'AYA AL-ISRA AL-LIBNANIYA WA AL-FALASTINIYA",
+        "AL WAQFIYA AL USRAH AL FILASTINIA",
+        "AL-WAQFIYYAH FOR THE FAMILIES OF THE MARTYRS AND DETAINEES IN LEBANON",
+        "AL-WAQFIYA ASSOCIATION",
+        "WAKFIA RAAIA ALASRA ALFALESTINIA WALLBANANIA",
+        "WAFRA",
+        "WELFARE OF THE PALESTINIAN AND LEBANESE FAMILY CARE",
+        "THE ASSOCIATION FOR THE WELFARE OF PALESTINIAN AND LEBANESE FAMILIES"
+      ]
+    },
+    {
+      "uid": "33398",
+      "name": "OTKRYTOYE AKTSIONERNOYE OBSCHESTVO TAE AVIA",
+      "type": "Entity",
+      "programs": [
+        "BELARUS-EO14038"
+      ],
+      "aliases": [
+        "ADKRYTAE AKTSYIANERNAE TAVARYSTVA AVIIAKAMPANIIA TRANSAVIIAEKSPART",
+        "AAT AVIAKAMPANIIA TRANSAVIIAEKSPART",
+        "JOINT STOCK COMPANY TRANSAVIAEXPORT AIRLINES",
+        "TRANSAVIAEXPORT AIRLINES",
+        "OTKRYTOYE AKTSIONERNOYE OBSCHESTVO AVIAKOMPANIYA TRANSAVIAEKSPORT",
+        "OAO AVIAKOMPANIYA TRANSAVIAEKSPORT",
+        "AVIAKOMPANIYA TRANSAVIAEKSPORT OAO",
+        "OAO TAE AVIA"
+      ]
+    },
+    {
+      "uid": "12727",
+      "name": "BASIJ RESISTANCE FORCE",
+      "type": "Entity",
+      "programs": [
+        "IRAN-HR",
+        "IRGC",
+        "SDGT",
+        "IFSR"
+      ],
+      "aliases": [
+        "SAZMAN-E MOGHAVEMAT-E BASIJ",
+        "NATIONAL RESISTANCE MOBILIZATION",
+        "BASIJ-E MELLI",
+        "BASEEJ",
+        "RESISTANCE MOBILIZATION FORCE",
+        "MOBILIZATION OF THE OPPRESSED ORGANIZATION",
+        "SAZMAN BASIJ MELLI",
+        "NATIONAL MOBILIZATION ORGANIZATION"
+      ]
+    },
+    {
+      "uid": "16763",
+      "name": "ISIS-SINAI PROVINCE",
+      "type": "Entity",
+      "programs": [
+        "FTO",
+        "SDGT"
+      ],
+      "aliases": [
+        "ANSAR JERUSALEM",
+        "SUPPORTERS OF JERUSALEM",
+        "ANSAR BAYT AL-MAQDES",
+        "ANSAR BEIT AL-MAQDIS",
+        "JAMAAT ANSAR BEIT AL-MAQDIS FI SINAA",
+        "SUPPORTERS OF THE HOLY PLACE",
+        "ANSAR BAYT AL-MAQDIS",
+        "ISLAMIC STATE-SINAI PROVINCE"
+      ]
+    },
+    {
+      "uid": "9334",
+      "name": "ISLAMIC JIHAD GROUP",
+      "type": "Entity",
+      "programs": [
+        "SDGT",
+        "FTO"
+      ],
+      "aliases": [
+        "JAMA'AT AL-JIHAD",
+        "THE LIBYAN SOCIETY",
+        "THE KAZAKH JAMA'AT",
+        "THE JAMAAT MOJAHEDIN",
+        "JAMIYAT",
+        "JAMIAT AL-JIHAD AL-ISLAMI",
+        "ISLAMIC JIHAD GROUP OF UZBEKISTAN",
+        "AL-DJIHAD AL-ISLAMI"
+      ]
+    },
+    {
+      "uid": "23844",
+      "name": "ISIS-PHILIPPINES",
+      "type": "Entity",
+      "programs": [
+        "FTO",
+        "SDGT"
+      ],
+      "aliases": [
+        "ISIS IN THE PHILIPPINES",
+        "ISIL PHILIPPINES",
+        "ISIL IN THE PHILIPPINES",
+        "IS PHILIPPINES",
+        "ISP",
+        "ISLAMIC STATE IN THE PHILIPPINES",
+        "ISLAMIC STATE IN IRAQ AND SYRIA IN SOUTH-EAST ASIA",
+        "DAWLATUL ISLAMIYAH WALIYATUL MASRIK"
+      ]
+    },
+    {
+      "uid": "7280",
+      "name": "JEMAA ISLAMIYAH",
+      "type": "Entity",
+      "programs": [
+        "FTO",
+        "SDGT"
+      ],
+      "aliases": [
+        "JEMA'A ISLAMIYAH",
+        "JEMA'A ISLAMIYYA",
+        "JEMA'A ISLAMIYYAH",
+        "JEMA'AH ISLAMIYAH",
+        "JEMA'AH ISLAMIYYAH",
+        "JEMAA ISLAMIYA",
+        "JEMAA ISLAMIYYA",
+        "JEMAA ISLAMIYYAH"
+      ]
+    },
+    {
+      "uid": "27123",
+      "name": "REDIN EXCHANGE",
+      "type": "Entity",
+      "programs": [
+        "SDGT"
+      ],
+      "aliases": [
+        "REDIN DIS TICARET LTD. STI",
+        "REDIN COMPANY",
+        "REDIN CURRENCY EXCHANGE",
+        "REDIN MONEY EXCHANGE",
+        "RAYDAYIN COMPANY",
+        "RAYDAYIN TURKEY",
+        "RADIN MONEY EXCHANGE",
+        "RIDIN MONEY EXCHANGE"
+      ]
+    },
+    {
+      "uid": "4715",
+      "name": "SHINING PATH",
+      "type": "Entity",
+      "programs": [
+        "FTO",
+        "SDGT",
+        "SDNTK"
+      ],
+      "aliases": [
+        "SENDERO LUMINOSO",
+        "SL",
+        "PARTIDO COMUNISTA DEL PERU EN EL SENDERO LUMINOSO DE JOSE CARLOS MARIATEGUI (COMMUNIST PARTY OF PERU ON THE SHINING PATH OF JOSE CARLOS MARIATEGUI)",
+        "PARTIDO COMUNISTA DEL PERU (COMMUNIST PARTY OF PERU)",
+        "PCP",
+        "SOCORRO POPULAR DEL PERU",
+        "SPP",
+        "EJERCITO GUERRILLERO POPULAR"
+      ]
+    },
+    {
+      "uid": "10612",
+      "name": "Abdelmalek DROUKDEL",
+      "type": "Individual",
+      "programs": [
+        "SDGT"
+      ],
+      "aliases": [
+        "Abdelmalek DROUKDAL",
+        "Abdelmalek DROUKADAL",
+        "Abdelmalek DARDAKIL",
+        "Abdelmalek DROKDAL",
+        "Abdelmalek DOURKDAL",
+        "Abdelmalek DROUGDEL",
+        "Abdelmalek DROUKBEL",
+        "Abdelmalek DERDOUKAL"
+      ]
+    },
+    {
+      "uid": "21390",
+      "name": "Inayat ur RAHMAN",
+      "type": "Individual",
+      "programs": [
+        "SDGT"
+      ],
+      "aliases": [
+        "Inayat-ur- RAHMAN",
+        "Inayat ur REHMAN",
+        "Anayat ur RAHMAN",
+        "'Inayat al-Rahman bin Sheikh Jamil AL-RAHMAN",
+        "Inayat al Rahman bin Sheikh Jamil AL RAHMAN",
+        "'Inayat al-Rahman Bin al-Sheikh Jamil AL-RAHMAN",
+        "Inayat al-Rahman JAMIL",
+        "Inayatullah ur-Rahman JALIL"
+      ]
+    },
+    {
+      "uid": "9340",
+      "name": "Moon Chi WONG",
+      "type": "Individual",
+      "programs": [
+        "SDNTK"
+      ],
+      "aliases": [
+        "Chaisu WU",
+        "Chishu HU",
+        "Kamkong WONG",
+        "Shusheng CHEN",
+        "Bing Shen CHEN",
+        "Man Chi HUANG",
+        "Bingshen CHEN",
+        "Chai Su WU"
+      ]
+    },
+    {
+      "uid": "9762",
+      "name": "Aliaksandr Leanidavich ZIMOUSKY",
+      "type": "Individual",
+      "programs": [
+        "BELARUS"
+      ],
+      "aliases": [
+        "Akiaksandr Leanidavich ZIMOUSKI",
+        "Aliaksandr Lieanidavich ZIMOVSKY",
+        "Aliaksandr Leanidavich ZIMOVSKI",
+        "Aliaksandr Leanidavich ZIMOWSKY",
+        "Aliaksandr Leanidavich SIMOWSKI",
+        "Alaksandr Leanidavich ZIMOUSKI",
+        "Alaksandr Leanidavich ZIMOUSKY",
+        "Alaksandr Leanidavich ZIMOWSKI"
+      ]
+    },
+    {
+      "uid": "23243",
+      "name": "Vladimir Anatolyevich TYURIN",
+      "type": "Individual",
+      "programs": [
+        "TCO"
+      ],
+      "aliases": [
+        "Vladimir Anatolievich TYURIN",
+        "Vladimir TIOURINE",
+        "Vladimir TIURIN",
+        "Vladimir TURIN",
+        "Vladimir TYURINE",
+        "Vladimir TIURINE",
+        "Vladimir TIORINE",
+        "Vladimir TJRURIN"
+      ]
+    },
+    {
+      "uid": "6861",
+      "name": "Joaquin GUZMAN LOERA",
+      "type": "Individual",
+      "programs": [
+        "SDNTK"
+      ],
+      "aliases": [
+        "Max AREGON",
+        "Chapo GUZMAN",
+        "Jose Luis GUIERREZ LOERA",
+        "Joaquin GUZMAN FERNANDEZ",
+        "Joaquin GUZMAN LOESA",
+        "Joaquin GUZMAN PADILLA",
+        "Joaquin GUMAN LOERAL",
+        "Archibaldo GUZMAN"
+      ]
+    },
+    {
+      "uid": "18535",
+      "name": "Abu Ubaydah Khayri Hafiz AL-AGHA",
+      "type": "Individual",
+      "programs": [
+        "SDGT"
+      ],
+      "aliases": [
+        "Abu Obaidah Khairy Hafiz ALAGHA",
+        "Abou Oubida Khairy Hafiz EL AGHA",
+        "Abu Obaida Khairi Hafiz AL AGHA",
+        "Abu Obidah Khairi Hafez ALAGHA",
+        "Abu Ubaida Khairee Hafez AL AGHA",
+        "Abu-Obaidah Khairy HAFEZ",
+        "Abuobaida Khairy Hafez ALAGHA",
+        "Abu Obaida Khairy Hafiz AGHA"
+      ]
+    },
+    {
+      "uid": "9768",
+      "name": "Dzmitry Valeryevich PAULICHENKA",
+      "type": "Individual",
+      "programs": [
+        "BELARUS"
+      ],
+      "aliases": [
+        "Dmitry Vasilyevich PAVLIUCHENKO",
+        "Dmitri Vasilyevich PAVLICHENKO",
+        "Dmitry Vasilyevich PAVLICHENKO",
+        "Dmitri Vasilyevich PAVLIUCHENKO",
+        "Dmitri Valeryevich PAVLICHENKO",
+        "Dmitry Valeryevich PAVLICHENKO",
+        "Dmitri Valeryevich PAVLIUCHENKO",
+        "Dmitry Valeryevich PAVLIUCHENKO"
+      ]
+    },
+    {
+      "uid": "9766",
+      "name": "Stiapan Mikalayevich SUKHARENKA",
+      "type": "Individual",
+      "programs": [
+        "BELARUS"
+      ],
+      "aliases": [
+        "Stepan Mikalayevich SUKHORENKA",
+        "Stepan Nikolaevich SUKHORENKA",
+        "Stepan Mikalaevich SUKHORENKA",
+        "Stepan Mikalayevich SUKHORENKO",
+        "Stepan Nikolaevich SUKHORENKO",
+        "Stepan Mikalaevich SUKHORENKO",
+        "Stiapan Nikolaevich SUKHORENKA",
+        "Stiapan Mikalaevich SUKHORENKA"
+      ]
+    },
+    {
+      "uid": "10657",
+      "name": "Mish'an Rakin Thamin AL-JABURI",
+      "type": "Individual",
+      "programs": [
+        "IRAQ3"
+      ],
+      "aliases": [
+        "Mushan AL-JABURI",
+        "Meshaan AL-JUBURI",
+        "Mishan JIBOURI",
+        "Mishan AL-JABOURI",
+        "Mashaan JABOURI",
+        "Mash'an EL-JBURI",
+        "Mish'an AL-JUBURI",
+        "Mush'an AL-JIBURI"
+      ]
+    },
+    {
+      "uid": "9770",
+      "name": "Lidziya Mihaulauna YARMOSHINA",
+      "type": "Individual",
+      "programs": [
+        "BELARUS"
+      ],
+      "aliases": [
+        "Lidziya Mihaulauna YARMOSHYNA",
+        "Lidziya Mihaulauna YERMOSHINA",
+        "Lidziya Mikhailovna YARMOSHINA",
+        "Lidziya Mikhailovna YARMOSHYNA",
+        "Lidziya Mikhailovna YERMOSHINA",
+        "Lydia Mihaulauna YARMOSHINA",
+        "Lydia Mihaulauna YARMOSHYNA",
+        "Lydia Mihaulauna YERMOSHINA"
+      ]
+    },
+    {
+      "uid": "9538",
+      "name": "Warin CHAIJAMROONPHAN",
+      "type": "Individual",
+      "programs": [
+        "SDNTK"
+      ],
+      "aliases": [
+        "Hathaiwan WORAWATWICHAI",
+        "Hataiwan WORAWATWICHAI",
+        "Hathaiwan WORAWATVICHAI",
+        "Warin WORAWATWICHAI",
+        "Warin PICHAYOS",
+        "Surawee WORAWATWICHAI",
+        "Warin CHAIWORASILP",
+        "Warin CHAICHAMRUNPHAN"
+      ]
+    }
+  ]
+}
