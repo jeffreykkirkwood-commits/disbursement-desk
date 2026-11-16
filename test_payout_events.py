@@ -68,7 +68,7 @@ class StreamBase(unittest.TestCase):
         return (client or self.client).get(path, base_url='https://demo.example', headers=headers)
 
     def start(self, client=None):
-        return self.get('/dashboard', client)
+        return self.get('/desk', client)
 
     def stream(self, client=None, last_id=None, **headers):
         if last_id is not None:
@@ -236,7 +236,7 @@ class StreamCapTests(unittest.TestCase):
         self.thread.start()
         self.host, self.port = '127.0.0.1', self.server.server_port
         self.base = 'http://%s:%s' % (self.host, self.port)
-        with urlopen(self.base + '/dashboard', timeout=5) as response:
+        with urlopen(self.base + '/desk', timeout=5) as response:
             self.cookie = response.headers['Set-Cookie'].split(';')[0]
         self.open_conns = []
 

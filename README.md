@@ -10,14 +10,15 @@ Synthetic data only. No secrets in this repo.
 
 ## Run the app shell locally
 
-The app shell (payments-api-simulator #122, step 2) has one route so far, `/health`.
+The app shell (payments-api-simulator #122, step 2) answers `/health`.
 The payout engine (step 3) gives each visitor's demo the payout tables and 40 fictional
-starting payouts, behind the scenes. The payout routes and the Desk page arrive in step 4.
+starting payouts. Step 4 brings the Desk page at `/desk` (the root address redirects there)
+and the payout routes, unchanged from the Lab.
 
 ```
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python app.py                                   # http://127.0.0.1:8000/health
+.venv/bin/python app.py                                   # http://127.0.0.1:8000/desk
 .venv/bin/python -m unittest                              # tests
 STORAGE_TEST_BACKEND=libsql-local .venv/bin/python -m unittest
 ```

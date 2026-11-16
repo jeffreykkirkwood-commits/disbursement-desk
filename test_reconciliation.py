@@ -10,10 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
+import desk
 import execution_replay
 import payout_events
 import payouts
 import reconciliation
+from hosted_app import create_app
 
 
 SITE = 'https://demo.example'
@@ -261,7 +263,8 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual(before_queue, MAIN_QUEUE_IDS)
         sent = next(payout for payout in payouts.current_queue(self.db)
                     if payout['payout_id'] == 'PO-1040')
-        self.assertEqual(sent['status'], 'PAID')  # The Desk's 'Sent' wording is checked in step 4.
+        self.assertEqual(desk.STATUS_WORDS[sent['status']], ('Sent', 's-sent'))
+        self.assertEqual(desk.STATUS_WORDS['FLAGGED'], ('Needs review', 's-review'))
         self.assertEqual(seed_state(self.db), before_state)
         self.assertTrue(reconciliation.RECON_PAYOUT_IDS.issubset(
             {payout['payout_id'] for payout in payouts.list_payouts(self.db)}))
@@ -329,6 +332,76 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual(code, 0)
         report = json.loads(out.getvalue())
         self._assert_six_cases(report, self.db)
+
+
+class HostedReconciliationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.app = create_app(self.temp.name, SITE)
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        self.app.extensions['close']()
+        self.temp.cleanup()
+
+    def open_desk(self, client=None):
+        return (client or self.client).get('/desk', base_url=SITE)
+
+    def reconcile(self, client=None, **headers):
+        client = client or self.client
+        extra = {'Origin': SITE, **headers}
+        return client.post('/reconciliation', base_url=SITE, headers=extra)
+
+    def database(self):
+        self.open_desk()
+        files = sorted(Path(self.temp.name).rglob('payments.sqlite3'))
+        return files[0]
+
+    # FEATURE 11 — Scenario — the JSON API returns the report; the Desk does not show it
+    def test_json_api_returns_the_report_and_desk_is_unchanged(self):
+        html_before = self.open_desk().get_data(as_text=True)
+        self.assertIn('All <b>10</b>', html_before)
+        refused = self.app.test_client().post('/reconciliation', base_url=SITE,
+                                              headers={'Origin': SITE})
+        self.assertEqual(refused.status_code, 409)
+        reply = self.reconcile()
+        self.assertEqual(reply.status_code, 200)
+        self.assertEqual(reply.json['run']['fixture_name'], 'settlement_demo.csv')
+        self.assertEqual((reply.json['run']['matched_count'],
+                          reply.json['run']['mismatched_count'],
+                          reply.json['run']['unknown_count']),
+                         EXPECTED_COUNTS)
+        self.assertEqual(by_result(reply.json), EXPECTED_RESULTS)
+        html = self.open_desk().get_data(as_text=True)
+        self.assertIn('All <b>10</b>', html)
+        self.assertIn('Needs review', html)
+        self.assertIn('Sent', html)
+        self.assertNotIn('PO-RECON-', html)
+        self.assertNotIn('settlement_demo', html)
+        self.assertNotIn('status_mismatch', html)
+        self.assertNotIn('Recon Match Payee', html)
+        self.assertEqual(seed_flags(self.database()), MAIN_SEED_FLAGS)
+        self.assertEqual([payout['payout_id'] for payout in payouts.current_queue(self.database())],
+                         MAIN_QUEUE_IDS)
+        foreign = self.reconcile(**{'Origin': 'https://different.example'})
+        self.assertEqual(foreign.status_code, 403)
+
+    # FEATURE 12 — Scenario — another visitor's demo is unchanged
+    def test_only_this_visitors_demo_changes(self):
+        other = self.app.test_client()
+        self.open_desk()
+        mine = self.database()
+        self.open_desk(other)
+        self.reconcile()
+        files = sorted(Path(self.temp.name).rglob('payments.sqlite3'))
+        self.assertEqual(len(files), 2)
+        theirs = next(path for path in files if path != mine)
+        self.assertTrue(reconciliation.list_runs(mine))
+        self.assertEqual(reconciliation.list_runs(theirs), [])
+        self.assertEqual(len(payouts.list_payouts(theirs)), 40)
+        self.assertTrue({payout['payout_id'] for payout in payouts.list_payouts(theirs)
+                         }.isdisjoint(reconciliation.RECON_PAYOUT_IDS))
+        self.assertEqual(seed_flags(theirs), MAIN_SEED_FLAGS)
 
 
 if __name__ == '__main__':
