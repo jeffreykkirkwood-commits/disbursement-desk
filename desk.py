@@ -255,7 +255,6 @@ button{font:inherit;cursor:pointer}
 .brand{font-weight:750;font-size:19px;display:flex;gap:10px;align-items:center}
 .mark{background:var(--ink);color:#fff;border-radius:8px;width:32px;height:32px;display:grid;place-items:center;flex-shrink:0}
 .tag{font-size:13px;font-weight:700;background:var(--amber-bg);color:var(--amber);padding:4px 10px;border-radius:6px;white-space:nowrap}
-.lab-link{font-size:14px;font-weight:600;color:var(--green);text-decoration:underline;margin-right:12px;white-space:nowrap;min-height:44px;display:inline-flex;align-items:center}
 .layout{display:grid;grid-template-columns:minmax(0,1fr) 440px;gap:24px;max-width:1240px;margin:auto;padding:24px}
 .layout:has(.detail[hidden]){grid-template-columns:minmax(0,1fr)}
 h2{font-size:22px;margin:12px 0 0}h2:focus{outline:none}
@@ -334,7 +333,7 @@ dialog .btn{min-width:110px}
 <body>
 <header class="top">
   <div class="brand"><span class="mark" aria-hidden="true">D</span>Disbursement Desk</div>
-  <div class="right"><a class="lab-link" href="/">Payments Lab</a><span class="tag">Example data · fake money</span></div>
+  <div class="right"><span class="tag">Example data · fake money</span></div>
 </header>
 <main class="layout">
   <section class="queue" aria-labelledby="qh">
