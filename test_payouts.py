@@ -313,12 +313,20 @@ class HostedSeedTests(unittest.TestCase):
     # The payout APIs are the decision route (#35, clear/block in #111), Reset demo (#32 slice 4), the
     # live update stream (#43), the behind-the-scenes simulate route (#91),
     # the behind-the-scenes execution replay route (#56), and the behind-the-scenes
-    # review-reasons GET. The Payments Lab dashboard still lists no payouts, and no
-    # Desk control points at simulate, execution-replay or review-reasons.
+    # review-reasons GET. /dashboard is not a route here (the Lab dashboard stayed
+    # behind). / and /desk/ have no control that points at simulate, execution-replay
+    # or review-reasons. The full non-static route set is pinned at 13 rules.
     def test_no_new_routes(self):
         client = self.app.test_client()
-        page = client.get('/dashboard', base_url='https://demo.example').get_data(as_text=True)
-        self.assertNotIn('PO-10', page)
+        self.assertEqual(client.get('/dashboard', base_url='https://demo.example').status_code, 404)
+        root = client.get('/', base_url='https://demo.example', follow_redirects=True)
+        self.assertEqual(root.status_code, 200)
+        desk_slash = client.get('/desk/', base_url='https://demo.example')
+        self.assertEqual(desk_slash.status_code, 200)
+        for page in (root.get_data(as_text=True), desk_slash.get_data(as_text=True)):
+            self.assertNotIn('/payouts/simulate', page)
+            self.assertNotIn('/payouts/execution-replay', page)
+            self.assertNotIn('review-reasons', page)
         rules = [rule for rule in self.app.url_map.iter_rules() if re.search('payout', str(rule))]
         self.assertEqual({str(r) for r in rules},
                          {'/payouts/<payout_id>/<any(approve, hold, return, clear, block):action>',
@@ -334,6 +342,24 @@ class HostedSeedTests(unittest.TestCase):
         reasons = next(r for r in rules if str(r) == '/payouts/<payout_id>/review-reasons')
         self.assertEqual(reasons.methods - {'OPTIONS', 'HEAD'}, {'GET'})
         self.assertEqual({str(r) for r in self.app.url_map.iter_rules() if 'desk' in str(r)}, {'/desk', '/desk/', '/desk.js'})
+        expected = {
+            ('/', frozenset({'GET'})),
+            ('/desk', frozenset({'GET'})),
+            ('/desk/', frozenset({'GET'})),
+            ('/desk.js', frozenset({'GET'})),
+            ('/health', frozenset({'GET'})),
+            ('/demo-scenario', frozenset({'POST'})),
+            ('/payouts/<payout_id>/<any(approve, hold, return, clear, block):action>', frozenset({'POST'})),
+            ('/payouts/<payout_id>/review-reasons', frozenset({'GET'})),
+            ('/payouts/reset', frozenset({'POST'})),
+            ('/payouts/execution-replay', frozenset({'POST'})),
+            ('/payouts/simulate', frozenset({'POST'})),
+            ('/payouts/stream', frozenset({'GET'})),
+            ('/reconciliation', frozenset({'POST'})),
+        }
+        app_rules = [r for r in self.app.url_map.iter_rules() if r.endpoint != 'static']
+        self.assertEqual(len(app_rules), 13)
+        self.assertEqual({(str(r), frozenset(r.methods - {'HEAD', 'OPTIONS'})) for r in app_rules}, expected)
         self.assertEqual(client.get('/payouts', base_url='https://demo.example').status_code, 404)
         self.assertEqual(client.get('/payouts/reset', base_url='https://demo.example').status_code, 405)
         self.assertEqual(client.get('/payouts/simulate', base_url='https://demo.example').status_code, 405)

@@ -140,9 +140,13 @@ class SimulatePayoutTests(unittest.TestCase):
     # FEATURE 07 — Scenario — no viewer-facing control points at this route
     def test_no_viewer_facing_control(self):
         html = self.open_desk().get_data(as_text=True)
-        dashboard = self.client.get('/dashboard', base_url='https://demo.example').get_data(as_text=True)
+        self.assertEqual(self.client.get('/dashboard', base_url='https://demo.example').status_code, 404)
+        root = self.client.get('/', base_url='https://demo.example', follow_redirects=True)
+        self.assertEqual(root.status_code, 200)
+        desk_slash = self.client.get('/desk/', base_url='https://demo.example')
+        self.assertEqual(desk_slash.status_code, 200)
         script = self.client.get('/desk.js', base_url='https://demo.example').get_data(as_text=True)
-        for page in (html, dashboard, script):
+        for page in (html, root.get_data(as_text=True), desk_slash.get_data(as_text=True), script):
             self.assertNotIn('/payouts/simulate', page)
             self.assertNotIn('simulate payout', page.lower())
 
