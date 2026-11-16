@@ -120,12 +120,13 @@ class DeskTests(DeskBase):
         self.assertNotIn('disk I/O', html)
         self.assertEqual(self.rows(html), [])
 
-    # Scenario — one text link each way between Payments Lab and the Desk (Q1 option B)
-    # The Lab's dashboard stays in payments-api-simulator, so this repo checks the Desk's
-    # header link only. Here the root address redirects to the Desk (#122 step 4).
-    def test_header_links_both_ways(self):
+    # Scenario — the Desk header has only the example-data tag; no Payments Lab link (#122 step 5)
+    # The root address still redirects to the Desk.
+    def test_header_has_tag_and_no_lab_link(self):
         desk = self.get().get_data(as_text=True)
-        self.assertIn('<a class="lab-link" href="/">Payments Lab</a><span class="tag">Example data · fake money</span>', desk)
+        self.assertIn('<div class="right"><span class="tag">Example data · fake money</span></div>', desk)
+        self.assertNotIn('Payments Lab', desk)
+        self.assertNotIn('lab-link', desk)
         self.assertEqual(self.get('/').headers['Location'], '/desk')
 
     # Scenario — the queue row keyboard focus ring is drawn inside the row so .list does not clip it (#102)
