@@ -1,7 +1,7 @@
-# FEATURE — Continuous checks for the Payments API Simulator.
-# Runs the Python unittest suite (temporary databases, loopback ports) and the Node
-# payment-form client test. No Dwolla credentials, no network calls to providers,
-# no Render deploy.
+# FEATURE — Continuous checks for the Disbursement Desk.
+# Runs the Python unittest suite (temporary databases, loopback ports). The Lab's Node
+# payment-form client test stays in payments-api-simulator; it is not part of the Desk.
+# No Dwolla credentials, no network calls to providers, no Render deploy.
 name: CI
 
 on:
@@ -41,10 +41,3 @@ jobs:
 
       - name: Python tests
         run: python -m unittest -v
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "22"
-
-      - name: Payment form client test
-        run: node test-payment-client.cjs
