@@ -1,20 +1,24 @@
 # START HERE — The web layer: every browser or API request enters here and gets matched to
 # that visitor's own demo database. Each demo gets the payout engine's tables and
-# fictional starting payouts (#122 step 3). The only route is still /health; the payout
-# routes and the Desk page arrive together in step 4.
+# fictional starting payouts (#122 step 3). The Desk page and the payout routes (#122
+# step 4) are moved here unchanged from payments-api-simulator.
 """Hosted HTTP interface for the Disbursement Desk. Fictional data, never Dwolla credentials."""
 import atexit
 import logging
 import os
+import sqlite3
 import storage
 import time
 from pathlib import Path
 from uuid import uuid4
-from flask import Flask, g, jsonify, request
+from flask import Flask, Response, g, jsonify, redirect, request, stream_with_context
 from werkzeug.exceptions import HTTPException
 from desk_common import APIError
+import execution_replay
 import payouts
+import payout_rules
 import payout_events
+from desk import render_desk
 from demo_sessions import DemoStore, DemoCapacityError
 from event_log import event, request_context, make_logger
 
@@ -82,8 +86,8 @@ def create_app(directory=None, public_origin=None):
         event('http_request_received', method=request.method,
               endpoint=str(request.url_rule) if request.url_rule else '(unknown endpoint)')
         g.cookie = g.demo_id = None
-        # Health probes and unknown routes must not allocate databases.
-        if request.endpoint in (None, 'health'):
+        # Health probes, assets and unknown routes must not allocate databases.
+        if request.endpoint in (None, 'health', 'desk_script', 'home'):
             return
         # Reject foreign websites before looking up a browser session. The server log retains the rejection.
         if request.method == 'POST':
@@ -175,5 +179,208 @@ def create_app(directory=None, public_origin=None):
     def health():
         return jsonify(status='ok', mode='fictional payments only',
                        commit=os.environ.get('RENDER_GIT_COMMIT') or None)
+
+    # FEATURE 09 — Open the Desk
+    # This repo holds only the Desk, so visiting the root address redirects to /desk.
+    # It is not an API information page and does not start a demo by itself.
+    @app.get('/')
+    def home():
+        return redirect('/desk')
+
+    # FEATURE 19 — Open the Disbursement Desk (read-only queue, #32 slice 1)
+    # Read this visitor's current payouts and render them with the page, so the list is
+    # the first paint (no loading message). If they cannot be read, the page still opens
+    # and shows the approved load-error sentence (503). Nothing is written.
+    @app.get('/desk')
+    @app.get('/desk/')
+    def desk():
+        try:
+            queue = payouts.current_queue(g.payments.database)
+        except (sqlite3.Error, OSError, KeyError) as error:  # unreadable or unexpected data
+            event('desk_load_failed', level=logging.ERROR, error_type=type(error).__name__)
+            return render_desk(None, g.demo_id or 'local-test'), 503
+        return render_desk(queue, g.demo_id or 'local-test')
+
+    # FEATURE 20 — Deliver the Desk filter script
+    # Serve this one named JavaScript file (Exceptions / All switch) without a demo database.
+    @app.get('/desk.js')
+    def desk_script():
+        return Response(Path(__file__).with_name('desk.js').read_text(), mimetype='text/javascript')
+
+    # FEATURE 28 — Run the fixed demo scenario (#61)
+    # Behind the scenes only. POST uses this visitor's existing demo session
+    # cookie (a POST cannot start a new session). Resets this visitor's demo,
+    # applies the scripted Approve, Hold and Return, and runs the #56 replay
+    # once. Results are JSON only. No page, link or button is added. The Desk
+    # words and layout are unchanged. Reset demo still restores the starting
+    # set, including execution_events and the reconciliation tables.
+    # Reconciliation (#57, PR #107) is not on main yet and is not run here.
+    @app.post('/demo-scenario')
+    def run_demo_scenario():
+        import demo_scenario
+        database = g.payments.database
+        report = demo_scenario.run(database)
+        event('demo_scenario_run',
+              decisions=len(report['decisions']),
+              replay_applied=report['replay']['applied'])
+        return jsonify(report)
+
+    # FEATURE 21 — Approve, hold, return, clear or block one payout (Desk back end, issues #35 and #111)
+    # JSON body: reviewer (required) and reason (optional; Hold and Return are
+    # confirm-only). Needs an Idempotency-Key header. Works only on this visitor's own
+    # demo database. 201 = decision recorded; 200 = same key seen before, nothing changed;
+    # 409 = move not allowed from the current status. No screen calls this yet.
+    @app.post('/payouts/<payout_id>/<any(approve, hold, return, clear, block):action>')
+    def decide_payout(payout_id, action):
+        if request.mimetype != 'application/json':
+            raise APIError(415, 'Use Content-Type: application/json.')
+        body = request.get_json()
+        if not isinstance(body, dict):
+            raise APIError(422, 'Send a JSON object with a reviewer name.')
+        database = g.payments.database
+        payout_events.sync(database)
+        status, decision = payouts.decide(database, payout_id, action, body.get('reviewer'),
+                                          request.headers.get('Idempotency-Key'), body.get('reason'))
+        event('payout_decision_replayed' if status == 200 else 'payout_decision_saved',
+              payout_id=payout_id, action=action, from_status=decision['from_status'],
+              to_status=decision['to_status'])
+        payout_events.sync(database)
+        return jsonify(payout=payouts.get_payout(database, payout_id), decision=decision), status
+
+    # FEATURE 29 — List every reason a payout is in review (#32)
+    # Behind the scenes JSON for the later "Why this is in review" panel.
+    # Read-only. No Desk HTML or screen change. 200 returns the payout id and a
+    # list of {code, label, details} items (empty when the payout is not in
+    # review). 404 if the payout does not exist.
+    @app.get('/payouts/<payout_id>/review-reasons')
+    def payout_review_reasons(payout_id):
+        import review_reasons
+        items = review_reasons.for_payout(g.payments.database, payout_id)
+        return jsonify(payout_id=payout_id, reasons=items)
+
+    # FEATURE 22 — Reset this visitor's Desk demo to the starting set (#32 slice 4)
+    # Calls payouts.reset() on this visitor's own database only. That restores the
+    # synthetic seed and clears this demo's action log; it never touches anyone else.
+    # 200 means the starting set was written back. No request body is required.
+    @app.post('/payouts/reset')
+    def reset_payouts():
+        database = g.payments.database
+        restored = payouts.reset(database)
+        event('payouts_reset', restored=restored)
+        payout_events.after_reset(database)
+        return jsonify(restored=restored)
+
+    # FEATURE 26 — Replay the bundled synthetic payment-outcome events (#56)
+    # Behind the scenes only: a POST that uses this visitor's existing demo
+    # session cookie (a POST cannot start a new session). Plays fixtures/
+    # execution_events_demo.json once, in order, into this visitor's database.
+    # Results are JSON only. No page, link or button is added. Replay does not
+    # emit stream events or change Desk words, layout or queue order. Reset
+    # demo still restores the starting set.
+    @app.post('/payouts/execution-replay')
+    def replay_execution_events():
+        database = g.payments.database
+        report = execution_replay.replay(database)
+        event('execution_events_replayed', applied=report['applied'],
+              skipped=report['skipped'], refused=report['refused'])
+        return jsonify(report)
+
+    # FEATURE 25 — Create one synthetic payee payout in this visitor's demo (#91)
+    # Behind the scenes only: POST JSON, requires this visitor's existing demo
+    # session cookie (a POST cannot start a new session). Creates only fictional
+    # DEMO- payouts in that visitor's database and returns JSON. No page, link
+    # or button is added. Reset demo still restores the starting set.
+    def _next_demo_payout_id(database):
+        with storage.connect(str(database)) as db:
+            ids = [row[0] for row in db.execute('SELECT payout_id FROM payouts')]
+        numbers = [int(payout_id[3:]) for payout_id in ids
+                   if payout_id.startswith('PO-') and payout_id[3:].isdigit()]
+        return f'PO-{max(numbers, default=0) + 1}'
+
+    @app.post('/payouts/simulate')
+    def simulate_payout():
+        if request.mimetype != 'application/json':
+            raise APIError(415, 'Use Content-Type: application/json.')
+        body = request.get_json()
+        if not isinstance(body, dict):
+            raise APIError(422, 'Send a JSON object with a payee name, DEMO- account and amount.')
+        database = g.payments.database
+        payout_id = body.get('payout_id') or _next_demo_payout_id(database)
+        payout_events.sync(database)
+        result = payout_rules.create(
+            database, payout_id, body.get('payee_name'), body.get('payee_account'),
+            body.get('amount_cents'), body.get('rail', 'ACH'),
+            bank_details_changed_at=body.get('bank_details_changed_at'),
+            routing_number=body.get('routing_number'))
+        event('payout_simulated', payout_id=payout_id, status=result['status'])
+        payout_events.sync(database)
+        return jsonify(payout=payouts.get_payout(database, payout_id),
+                       status=result['status'], changed=result['changed'],
+                       event=result['event']), 201
+
+    # FEATURE 23 — Stream payout created and status-changed events (#43)
+    # Server-sent events for this visitor's demo only. A reconnect sends the
+    # Last-Event-ID header (or lastEventId query) and resumes after that id.
+    # The connection closes after a short hold so the one Gunicorn worker's
+    # four threads stay available; EventSource reconnects. The Desk page does
+    # not subscribe yet, so nothing on screen changes.
+    # FEATURE 24 — Cap concurrent streams so they cannot block /health (#83)
+    # At most two streams may be open in this process. A third request gets
+    # 503 with Retry-After and a short plain body, so two of the four
+    # Gunicorn threads stay free for /health and other work. The slot is
+    # acquired before the response starts and released in a finally block
+    # when the generator ends, errors, or the client disconnects. This does
+    # not change the Render start command or thread count.
+    @app.get('/payouts/stream')
+    def payout_stream():
+        last_id = payout_events.parse_last_id(
+            request.headers.get('Last-Event-ID') or request.args.get('lastEventId'))
+        if not payout_events.acquire_stream():
+            return Response(
+                'Too many live update streams are open. Try again shortly.\n',
+                status=503,
+                mimetype='text/plain',
+                headers={'Retry-After': str(payout_events.RETRY_AFTER_SECONDS)})
+        released = False
+
+        def release_slot():
+            nonlocal released
+            if not released:
+                released = True
+                payout_events.release_stream()
+
+        def body():
+            try:
+                yield from payout_events.stream(g.payments.database, last_id)
+            finally:
+                release_slot()
+
+        try:
+            return Response(stream_with_context(body()),
+                            mimetype='text/event-stream',
+                            headers={'X-Accel-Buffering': 'no', 'Connection': 'keep-alive'})
+        except Exception:
+            release_slot()
+            raise
+
+    # FEATURE 27 — Reconcile payment outcomes with a separate settlement file (#57)
+    # Behind the scenes only. POST uses this visitor's existing demo session
+    # cookie (a POST cannot start a new session). Compares this visitor's
+    # payouts with fixtures/settlement_demo.csv, which was written by hand
+    # and not generated from the replay event file. Results are JSON only.
+    # No page, link or button is added. review_status and status are not
+    # rewritten, so the Desk does not change. Reset demo still restores the
+    # starting set.
+    @app.post('/reconciliation')
+    def run_reconciliation():
+        import reconciliation
+        database = g.payments.database
+        report = reconciliation.reconcile(database)
+        event('reconciliation_run', run_id=report['run']['run_id'],
+              matched=report['run']['matched_count'],
+              mismatched=report['run']['mismatched_count'],
+              unknown=report['run']['unknown_count'])
+        return jsonify(report)
+
 
     return app

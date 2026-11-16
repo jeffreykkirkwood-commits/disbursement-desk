@@ -7,9 +7,11 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+import desk
 import payout_events
 import payout_rules
 import payouts
+from hosted_app import create_app
 from desk_common import APIError
 
 NOW = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc)
@@ -243,7 +245,10 @@ class DecisionTests(unittest.TestCase):
         queue = payouts.current_queue(self.db)
         self.assertEqual([p['payout_id'] for p in queue], MAIN_QUEUE_IDS)
         sent = next(p for p in queue if p['payout_id'] == 'PO-1040')
-        self.assertEqual(sent['status'], 'PAID')  # The Desk's 'Sent' wording is checked in step 4.
+        self.assertEqual(desk.STATUS_WORDS[sent['status']], ('Sent', 's-sent'))
+        self.assertEqual(desk.STATUS_WORDS['FLAGGED'], ('Needs review', 's-review'))
+        self.assertEqual(desk.STATUS_WORDS['HELD'], ('Held', 's-held'))
+        self.assertEqual(desk.STATUS_WORDS['RETURNED'], ('Returned', 's-returned'))
 
     # FEATURE 17 — Scenario — simulated payouts flag the same as they did on main
     def test_simulated_payouts_flag_as_on_main(self):
@@ -320,6 +325,93 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual((clean['status'], clean['review_status'], clean['execution_status']),
                          ('PAID', 'APPROVED', 'SETTLED'))
         self.assertEqual(clean['execution_ref'], 'demo:PO-WRITE-CLEAN')
+
+
+
+class HostedDecisionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.app = create_app(self.temp.name, SITE)
+
+    def tearDown(self):
+        self.app.extensions['close']()
+        self.temp.cleanup()
+
+    def client(self):
+        client = self.app.test_client()
+        self.assertEqual(client.get('/desk', base_url=SITE).status_code, 200)
+        return client
+
+    def post(self, client, path, body=None, key='k1', **kwargs):
+        return client.post(path, json={'reviewer': 'Test Reviewer'} if body is None else body, base_url=SITE,
+                           headers={'Idempotency-Key': key, 'Origin': SITE}, **kwargs)
+
+    # FEATURE 09 — Scenario — the routes record decisions, replay retries, refuse bad moves
+    def test_routes(self):
+        client = self.client()
+        held = self.post(client, '/payouts/PO-1043/hold')
+        self.assertEqual(held.status_code, 201)
+        self.assertEqual(held.json['payout']['status'], 'HELD')
+        self.assertEqual(held.json['decision']['actor'], 'Test Reviewer')
+        self.assertIsNone(held.json['decision']['reason'])
+        retry = self.post(client, '/payouts/PO-1043/hold')
+        self.assertEqual((retry.status_code, retry.json), (200, held.json))
+        sent = self.post(client, '/payouts/PO-1043/approve', {'reviewer': 'Test Reviewer', 'reason': 'ok'}, 'k2')
+        self.assertEqual((sent.status_code, sent.json['payout']['status']), (201, 'PAID'))
+        refused = self.post(client, '/payouts/PO-1043/return', key='k3')
+        self.assertEqual(refused.status_code, 409)
+        self.assertIn('PAID', refused.json['error'])
+        self.assertEqual(self.post(client, '/payouts/PO-1043/hold', {}, 'k4').status_code, 422)
+        self.assertEqual(self.post(client, '/payouts/PO-1043/hold', key='').status_code, 422)
+        self.assertEqual(self.post(client, '/payouts/PO-1043/hold', [], 'k5').status_code, 422)
+        self.assertEqual(self.post(client, '/payouts/PO-9999/hold', key='k6').status_code, 404)
+        self.assertEqual(self.post(client, '/payouts/PO-1042/pay', key='k7').status_code, 404)
+        self.assertEqual(client.post('/payouts/PO-1042/hold', data='x', base_url=SITE,
+                                     headers={'Idempotency-Key': 'k8', 'Origin': SITE}).status_code, 415)
+        self.assertEqual(client.get('/payouts/PO-1042/hold', base_url=SITE).status_code, 405)
+
+    # FEATURE 10 — Scenario — a decision changes only this viewer's demo
+    def test_per_viewer_isolation(self):
+        first, second = self.client(), self.client()
+        self.assertEqual(self.post(first, '/payouts/PO-1042/approve').status_code, 201)
+        databases = sorted(Path(self.temp.name).rglob('payments.sqlite3'))
+        self.assertEqual(len(databases), 2)
+        statuses = sorted(payouts.get_payout(db, 'PO-1042')['status'] for db in databases)
+        self.assertEqual(statuses, ['FLAGGED', 'PAID'])
+        self.assertEqual(sorted(len(payouts.list_events(db)) for db in databases), [0, 1])
+        # The same key in the other viewer's demo is a fresh, separate decision.
+        again = self.post(second, '/payouts/PO-1042/approve')
+        self.assertEqual(again.status_code, 201)
+        self.assertEqual(again.json['decision']['from_status'], 'FLAGGED')
+
+    # FEATURE 11 — Scenario — a decision cannot be made without a demo or from another site
+    def test_needs_own_session(self):
+        stranger = self.app.test_client()
+        self.assertEqual(self.post(stranger, '/payouts/PO-1042/approve').status_code, 409)
+        client = self.client()
+        foreign = client.post('/payouts/PO-1042/approve', json={'reviewer': 'X'}, base_url=SITE,
+                              headers={'Idempotency-Key': 'k', 'Origin': 'https://evil.example'})
+        self.assertEqual(foreign.status_code, 403)
+        for db in Path(self.temp.name).rglob('payments.sqlite3'):
+            self.assertEqual(payouts.list_events(db), [])
+
+    # FEATURE 21 — Scenario — the JSON API returns evidence; the Desk does not show it
+    def test_json_returns_evidence_desk_does_not(self):
+        client = self.client()
+        reply = self.post(client, '/payouts/PO-1042/approve', key='desk-ev')
+        self.assertEqual(reply.status_code, 201)
+        self.assertEqual(reply.json['payout']['status'], 'PAID')
+        self.assertEqual(reply.json['payout']['review_status'], 'APPROVED')
+        self.assertEqual(reply.json['payout']['execution_status'], 'SETTLED')
+        self.assertIn('evidence', reply.json['decision'])
+        self.assertEqual(reply.json['decision']['evidence']['rules_version'], payouts.RULES_VERSION)
+        html = client.get('/desk', base_url=SITE).get_data(as_text=True)
+        self.assertIn('Sent', html)
+        self.assertIn('PO-1042', html)
+        self.assertNotIn('rules_version', html)
+        self.assertNotIn('desk-rules-1', html)
+        self.assertNotIn('execution_ref', html)
+        self.assertNotIn('demo:PO-1042', html)
 
 
 

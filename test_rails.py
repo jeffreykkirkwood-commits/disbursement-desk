@@ -7,6 +7,7 @@ import unittest
 from datetime import date, datetime, time
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import desk
 import payout_rules
 import payouts
 import rails
@@ -367,6 +368,16 @@ class PayoutJsonWiringTest(unittest.TestCase):
             self.assertEqual(timing['payment_limit'], limit)
             self.assertEqual(timing['limit_source'], source)
             self.assertTrue(timing['over_limit'])
+
+    def test_desk_html_does_not_surface_timing_or_return_codes(self):
+        queue = payouts.current_queue(self.db)
+        self.assertTrue(any('rail_timing' in row for row in queue))
+        html = desk.render_desk(queue)
+        for needle in ('expected_settlement', 'rail_timing', 'R01', 'R02', 'R03',
+                       'request_for_return', 'payment_limit', 'limit_source',
+                       'limit_note', 'over_limit', 'cutoff_source',
+                       'fed_deadlines', 'cutoff_note', 'bank_policy'):
+            self.assertNotIn(needle, html)
 
 
 if __name__ == '__main__':

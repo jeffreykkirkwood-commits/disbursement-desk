@@ -14,6 +14,7 @@ import ofac
 import payout_notes
 import payout_rules
 import payouts
+from hosted_app import create_app
 from desk_common import APIError
 
 NOW = datetime(2026, 11, 12, 15, 0, tzinfo=timezone.utc)
@@ -237,6 +238,89 @@ class OfacPayoutFlowTests(unittest.TestCase):
                 self.assertIn('possible sanctions match', caught.exception.message)
                 self.assertEqual(payouts.get_payout(self.db, payout_id), before)
                 self.assertEqual(payouts.list_events(self.db, payout_id), [])
+
+
+class OfacDeskTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.app = create_app(self.temp.name, 'https://demo.example')
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        self.app.extensions['close']()
+        self.temp.cleanup()
+
+    def open_desk(self):
+        return self.client.get('/desk', base_url='https://demo.example')
+
+    def simulate(self, body=None):
+        return self.client.post('/payouts/simulate', json=body or DEMO,
+                                base_url='https://demo.example',
+                                headers={'Origin': 'https://demo.example'})
+
+    def decide(self, payout_id, action):
+        return self.client.post(f'/payouts/{payout_id}/{action}',
+                                json={'reviewer': 'Desk operator'},
+                                base_url='https://demo.example',
+                                headers={'Origin': 'https://demo.example',
+                                         'Idempotency-Key': f'desk-{action}-{payout_id}'})
+
+    # FEATURE 08 — Scenario — the Desk shows the flag and Clear / Block
+    def test_desk_shows_possible_match_flag_and_clear_block(self):
+        seed = self.open_desk().get_data(as_text=True)
+        self.assertIn('Exceptions <b>4</b>', seed)
+        self.assertIn('All <b>10</b>', seed)
+        self.assertNotIn('Possible sanctions match', seed)
+        reply = self.simulate()
+        self.assertEqual(reply.status_code, 201)
+        self.assertEqual(reply.json['status'], 'FLAGGED')
+        html = self.open_desk().get_data(as_text=True)
+        self.assertIn('Exceptions <b>5</b>', html)
+        self.assertIn('All <b>11</b>', html)
+        self.assertIn('Banco Nacional de Cuba', html)
+        self.assertIn('Possible sanctions match', html)
+        self.assertIn('BANCO NACIONAL DE CUBA', html)
+        self.assertIn('score 100', html)
+        self.assertIn('OFAC SDN list published 2026-11-09', html)
+        self.assertIn('snapshot taken 2026-11-12', html)
+        self.assertIn('data-act="clear"', html)
+        self.assertIn('>Clear</button>', html)
+        self.assertIn('data-act="block"', html)
+        self.assertIn('>Block</button>', html)
+        # The new payout's panel does not keep Approve / Hold / Return.
+        panel = html.split('<div class="panel" data-id="PO-4100"', 1)[1].split('<div class="panel"', 1)[0]
+        self.assertNotIn('data-act="approve"', panel)
+        self.assertNotIn('data-act="hold"', panel)
+        self.assertNotIn('data-act="return"', panel)
+        self.assertIn('data-act="clear"', panel)
+        self.assertIn('data-act="block"', panel)
+        # The starting exceptions still use Approve / Hold / Return.
+        acme = html.split('<div class="panel" data-id="PO-1042"', 1)[1].split('<div class="panel"', 1)[0]
+        self.assertIn('data-act="approve"', acme)
+        self.assertIn('data-act="hold"', acme)
+        self.assertIn('data-act="return"', acme)
+
+    def test_desk_clear_sends_and_block_cancels(self):
+        self.open_desk()
+        self.simulate()
+        cleared = self.decide('PO-4100', 'clear')
+        self.assertEqual(cleared.status_code, 201)
+        self.assertEqual(cleared.json['payout']['status'], 'PAID')
+        html = self.open_desk().get_data(as_text=True)
+        self.assertIn('Exceptions <b>4</b>', html)
+        self.assertIn('>Sent</span>', html.split('data-id="PO-4100"', 1)[1][:800])
+
+        reset = self.client.post('/payouts/reset', base_url='https://demo.example',
+                                 headers={'Origin': 'https://demo.example'})
+        self.assertEqual(reset.status_code, 200)
+        self.open_desk()
+        self.simulate({'payee_name': ofac.DEMO_PAYEE_NAME, 'payee_account': ofac.DEMO_PAYEE_ACCOUNT,
+                       'amount_cents': ofac.DEMO_AMOUNT_CENTS, 'rail': 'ACH', 'payout_id': 'PO-4105'})
+        blocked = self.decide('PO-4105', 'block')
+        self.assertEqual(blocked.status_code, 201)
+        self.assertEqual(blocked.json['payout']['status'], 'RETURNED')
+        html = self.open_desk().get_data(as_text=True)
+        self.assertIn('>Returned</span>', html.split('data-id="PO-4105"', 1)[1][:800])
 
 
 if __name__ == '__main__':
