@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 
 import payouts
 import storage
-from payments import APIError
+from desk_common import APIError
 
 # FEATURE 01 — In-review statuses and the stored-flag list
 # The reason list is the payout's stored flag_code values, in stored order.

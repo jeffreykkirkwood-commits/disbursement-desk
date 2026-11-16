@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 import aba
 import payout_notes
 import payouts
-from payments import APIError
+from desk_common import APIError
 
 # FEATURE 01 — Name the automation actor and the log action
 # The action is "route", never approve, hold or return, so a flagged payout cannot

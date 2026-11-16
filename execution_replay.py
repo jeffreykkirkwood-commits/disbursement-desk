@@ -8,7 +8,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from payments import APIError
+from desk_common import APIError
 import payout_notes
 import payouts
 

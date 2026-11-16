@@ -12,7 +12,7 @@ from itertools import product
 from pathlib import Path
 import payouts
 from hosted_app import create_app
-from payments import APIError
+from desk_common import APIError
 
 # Every move the Desk allows; all other pairs of statuses must be blocked.
 ALLOWED = {

@@ -9,7 +9,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from payments import APIError
+from desk_common import APIError
 import payout_rules
 import payouts
 from test_payout_migration import make_pre54_demo

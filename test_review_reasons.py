@@ -13,7 +13,7 @@ import payout_rules
 import payouts
 import review_reasons
 from hosted_app import create_app
-from payments import APIError
+from desk_common import APIError
 
 NOW = datetime(2026, 11, 12, 16, 0, tzinfo=timezone.utc)
 CODES = lambda items: [item['code'] for item in items]
