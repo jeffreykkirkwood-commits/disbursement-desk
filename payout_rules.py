@@ -61,7 +61,6 @@ def route_one(db, payout_id, now=None):
         step = target
     at = (now or datetime.now(timezone.utc)).isoformat()
     review, outcome = payouts.review_and_outcome(step)
-    # Stripe submit must not pre-write SETTLED. Demo mode keeps that pre-write.
     if stripe_connect.stripe_enabled() and step == payouts.PAID:
         db.execute(
             'UPDATE payouts SET status = ?, review_status = ?, execution_status = ?, '
@@ -79,12 +78,10 @@ def route_one(db, payout_id, now=None):
              payout['note_source'], int(payout['note_fallback']), at, payout_id))
     held = None
     if step == payouts.PAID:
-        # The settle step writes the send. Demo mode already stored PAID and SETTLED.
         held = payouts._settle(db, payout_id, at, actor=ACTOR,
                                idempotency_key=f'settle-screen:route:{payout_id}')
         if held:
             if held.get('action') == payouts.SCREEN:
-                # Rare: explain_flag was clean but settle re-screen held. Audit is the screen row.
                 return dict(changed=True, payout_id=payout_id, status=payouts.FLAGGED, event=held)
     evidence = None
     if held and held.get('kind') == 'stripe_submit':

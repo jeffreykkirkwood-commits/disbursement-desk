@@ -648,10 +648,8 @@ def record_transition(db, payout_id, action, from_status, to_status, actor, idem
 # refused with a clear 409 and change nothing. Works only on the one viewer database it
 # is given. Approve (#55 option B) records review_status APPROVED and the evidence, then
 # the settle step in the same save writes status PAID, an execution event,
-# execution_ref and execution_updated_at. Demo settle writes execution_status
-# SETTLED. A Stripe submit writes SUBMITTED and leaves SETTLED and FAILED to
-# the signed webhook. The queue, stream and Sent word still see PAID.
-# Approve itself does not write PAID.
+# execution_ref and execution_updated_at. The queue, stream and Sent word still
+# see PAID. Approve itself does not write PAID.
 def decide(database, payout_id, action, actor, idempotency_key, reason=None, now=None):
     actor, reason, idempotency_key = _clean(action, actor, reason, idempotency_key)
     with storage.connect(str(database), timeout=10) as db:
@@ -704,14 +702,12 @@ def decide(database, payout_id, action, actor, idempotency_key, reason=None, now
             step = target
         held = None
         if action in (APPROVE, CLEAR):
-            # Record the review only; the settle step writes PAID.
             db.execute(
                 'UPDATE payouts SET review_status = ?, updated_at = ? WHERE payout_id = ?',
                 (APPROVED, at, payout_id))
             held = _settle(db, payout_id, at, allow_sanctions_clear=(action == CLEAR),
                            actor=actor, idempotency_key=f'settle-screen:{idempotency_key}')
             if held and held.get('action') == SCREEN:
-                # Settle re-screen held the payout; the screen row is the audit trail.
                 return 201, held
         else:
             review, outcome = review_and_outcome(step)
@@ -776,14 +772,6 @@ def _apply_sanctions_hold(db, payout, match, at):
 
 def _settle_demo(db, payout_id, at, allow_sanctions_clear=False, actor='automation',
                  idempotency_key=None):
-    """Option B demo settle: check NOT_STARTED → SUBMITTED → SETTLED, then store SETTLED.
-
-    Writes status PAID, execution_status SETTLED, execution_ref, execution_updated_at,
-    and one execution_events row. Approve and clean automation call this; they do not
-    write PAID themselves. A second call with the same payout is a no-op.
-    When a sanctions re-screen holds the payout, appends a screen audit row and returns
-    that event; otherwise returns None.
-    """
     row = db.execute(
         f'SELECT {", ".join(COLUMNS)} FROM payouts WHERE payout_id = ?', (payout_id,)).fetchone()
     if not row:
@@ -844,11 +832,6 @@ def _demo_id(db):
 
 def _settle(db, payout_id, at, allow_sanctions_clear=False, actor='automation',
             idempotency_key=None):
-    """Demo-settle, or submit a test Transfer when this demo is the pilot.
-
-    OFAC and the rail check run before any Stripe call. A refused send raises
-    and leaves the payout unsent. SETTLED and FAILED are webhook outcomes.
-    """
     if not stripe_connect.stripe_enabled():
         return _settle_demo(
             db, payout_id, at, allow_sanctions_clear=allow_sanctions_clear,
@@ -878,6 +861,10 @@ def _settle(db, payout_id, at, allow_sanctions_clear=False, actor='automation',
         return _settle_demo(
             db, payout_id, at, allow_sanctions_clear=allow_sanctions_clear,
             actor=actor, idempotency_key=idempotency_key)
+    return _submit_stripe_transfer(db, payout, payout_id, at, demo_id)
+
+
+def _submit_stripe_transfer(db, payout, payout_id, at, demo_id):
     if payout['execution_status'] == UNKNOWN:
         check_execution_transition(UNKNOWN, SUBMITTED)
     if payout['execution_status'] == SUBMITTED:
@@ -916,10 +903,6 @@ def _settle(db, payout_id, at, allow_sanctions_clear=False, actor='automation',
 
 
 def apply_stripe_event(database, command, now=None):
-    """Apply one verified webhook command. Return 'applied', 'ignored', or 'pending'.
-
-    Updates execution_status, execution_ref, and execution_updated_at only.
-    """
     if not isinstance(command, dict) or command.get('outcome') not in (SETTLED, FAILED):
         return 'ignored'
     if command.get('livemode'):

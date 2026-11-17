@@ -53,6 +53,11 @@ class DeskDemo:
 def create_app(directory=None, public_origin=None):
     app = Flask(__name__, static_folder=None)
     app.config['MAX_CONTENT_LENGTH'] = 10000  # Refuse request bodies over ~10 KB.
+    WEBHOOK_MAX_CONTENT_LENGTH = 65536
+    ENDPOINTS_WITHOUT_DEMO_DB = frozenset({
+        None, 'health', 'ready', 'metrics_snapshot', 'openapi_document',
+        'desk_script', 'home', 'stripe_webhook',
+    })
     # Render supplies its public HTTPS URL. An explicit origin supports custom domains.
     # Do not trust forwarded headers or a caller's Host header to authorize submissions.
     origin = (public_origin or os.environ.get('PUBLIC_ORIGIN') or
@@ -95,13 +100,9 @@ def create_app(directory=None, public_origin=None):
               endpoint=str(request.url_rule) if request.url_rule else '(unknown endpoint)')
         g.cookie = g.demo_id = None
         g.operator = None
-        # The signed webhook may carry a Transfer event larger than the demo body cap.
         if request.endpoint == 'stripe_webhook':
-            request.max_content_length = 65536
-        # Health/readiness/metrics/OpenAPI probes, assets, the Stripe webhook,
-        # and unknown routes must not allocate databases.
-        if request.endpoint in (None, 'health', 'ready', 'metrics_snapshot', 'openapi_document',
-                                'desk_script', 'home', 'stripe_webhook'):
+            request.max_content_length = WEBHOOK_MAX_CONTENT_LENGTH
+        if request.endpoint in ENDPOINTS_WITHOUT_DEMO_DB:
             return
         # Reject foreign websites before looking up a browser session. The server log retains the rejection.
         if request.method == 'POST':
@@ -513,8 +514,6 @@ def create_app(directory=None, public_origin=None):
               unknown=report['run']['unknown_count'])
         return jsonify(report)
 
-    # Signed Stripe webhooks are the only writer of SETTLED or FAILED for a Transfer.
-    # The signature replaces the demo cookie and the Origin check.
     @app.post('/stripe/webhook')
     def stripe_webhook():
         secret = (os.environ.get('STRIPE_WEBHOOK_SECRET') or '').strip()

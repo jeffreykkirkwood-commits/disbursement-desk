@@ -1,6 +1,3 @@
-# START HERE — Test-mode Stripe Connect Transfers.
-# The only module that imports the Stripe SDK. It does not write payout rows.
-"""Create a platform-balance Transfer and parse a signed webhook into a desk command."""
 import json
 import os
 import re
@@ -17,11 +14,11 @@ API_VERSION = '2026-09-30.endive'
 _TEST_PREFIXES = ('rk_test_', 'sk_test_')
 _LIVE_PREFIXES = ('sk_live_', 'rk_live_')
 _ACCT = re.compile(r'^acct_[A-Za-z0-9]+$')
-_PARSE_KEY = 'rk_test_webhook_parse_only'
+_WEBHOOK_VERIFY_KEY = 'rk_test_webhook_parse_only'
 
 
 class WebhookSignatureError(Exception):
-    """The webhook body failed signature verification or was not a JSON event."""
+    pass
 
 
 class StripeConfig:
@@ -34,17 +31,11 @@ class StripeConfig:
 
 
 def stripe_enabled(env=None):
-    """True only when STRIPE_PAYOUTS_ENABLED is exactly '1'. Secrets are not read."""
     env = os.environ if env is None else env
     return env.get('STRIPE_PAYOUTS_ENABLED') == '1'
 
 
 def load_config(env=None):
-    """Return StripeConfig when the flag is '1' and the test config is safe.
-
-    Return None when the flag is not exactly '1'. Raise STRIPE_SEND_BLOCKED
-    when the flag is '1' and the key, webhook secret, map, or pilot id is unsafe.
-    """
     env = os.environ if env is None else env
     if not stripe_enabled(env):
         return None
@@ -65,7 +56,6 @@ def load_config(env=None):
 
 
 def send_mode(env=None, demo_id=None):
-    """Return 'demo' or 'stripe'. Misconfigured flag-on config raises."""
     return mode_for(load_config(env), demo_id)
 
 
@@ -80,7 +70,6 @@ def mode_for(config, demo_id):
 
 
 def destination_for(payee_account, column=None, env=None):
-    """Use the payout column when it is set, otherwise the env map."""
     config = load_config(env)
     if config is None:
         _blocked()
@@ -101,7 +90,6 @@ def transfer_idempotency_key(demo_id, payout_id):
 
 def create_transfer(*, payout_id, amount_cents, currency, destination, demo_id,
                     idempotency_key, env=None):
-    """POST /v1/transfers. Return the transfer fields. Do not write the database."""
     config = load_config(env)
     if config is None or mode_for(config, demo_id) != 'stripe':
         _blocked()
@@ -126,11 +114,10 @@ def create_transfer(*, payout_id, amount_cents, currency, destination, demo_id,
 
 
 def parse_webhook(payload, signature_header, secret):
-    """Verify the raw body, then return a desk command, or None to ignore the event."""
     if not isinstance(payload, (bytes, bytearray)):
         raise WebhookSignatureError('Webhook payload must be the raw body.')
     client = stripe.StripeClient(
-        _PARSE_KEY, stripe_version=API_VERSION, max_network_retries=0)
+        _WEBHOOK_VERIFY_KEY, stripe_version=API_VERSION, max_network_retries=0)
     try:
         event = client.construct_event(payload, signature_header, secret)
     except (stripe.SignatureVerificationError, ValueError):
@@ -139,7 +126,6 @@ def parse_webhook(payload, signature_header, secret):
 
 
 def demo_database(directory, demo_id):
-    """Return the visitor payments file for a 64-hex demo id, or None."""
     if not isinstance(demo_id, str) or not storage.DEMO_TENANT.fullmatch(demo_id):
         return None
     root = Path(directory).resolve()
@@ -226,20 +212,22 @@ def _checked_transfer(transfer, payout_id, amount_cents, destination, demo_id, i
     }
 
 
-def _command_from_event(event):
-    obj = _field(_field(event, 'data'), 'object')
-    event_type = str(_field(event, 'type') or '')
+def _transfer_outcome(event_type, obj):
     reversed_flag = bool(_field(obj, 'reversed'))
     is_transfer = (
         _field(obj, 'object') == 'transfer'
         or str(_field(obj, 'id') or '').startswith('tr_'))
     if event_type == 'transfer.reversed' or (is_transfer and reversed_flag):
-        outcome = 'FAILED'
-    elif event_type == 'transfer.created' and not reversed_flag:
-        outcome = 'SETTLED'
-    else:
-        return None
-    if obj is None:
+        return 'FAILED'
+    if event_type == 'transfer.created' and not reversed_flag:
+        return 'SETTLED'
+    return None
+
+
+def _command_from_event(event):
+    obj = _field(_field(event, 'data'), 'object')
+    outcome = _transfer_outcome(str(_field(event, 'type') or ''), obj)
+    if outcome is None or obj is None:
         return None
     try:
         amount_cents = int(_field(obj, 'amount'))

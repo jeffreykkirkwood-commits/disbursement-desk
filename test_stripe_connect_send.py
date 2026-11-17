@@ -1,5 +1,3 @@
-# Behavior of the test-mode Stripe Connect Transfer send path.
-"""Flag off keeps the demo settle. Flag on submits a Transfer. The webhook settles it."""
 import json
 import os
 import sqlite3
