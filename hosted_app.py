@@ -19,6 +19,7 @@ import execution_replay
 import payouts
 import payout_rules
 import payout_events
+import stripe_connect
 from desk import render_desk
 from demo_sessions import DemoStore, DemoCapacityError
 from event_log import event, request_context, make_logger
@@ -94,9 +95,13 @@ def create_app(directory=None, public_origin=None):
               endpoint=str(request.url_rule) if request.url_rule else '(unknown endpoint)')
         g.cookie = g.demo_id = None
         g.operator = None
-        # Health/readiness/metrics/OpenAPI probes, assets and unknown routes must not allocate databases.
+        # The signed webhook may carry a Transfer event larger than the demo body cap.
+        if request.endpoint == 'stripe_webhook':
+            request.max_content_length = 65536
+        # Health/readiness/metrics/OpenAPI probes, assets, the Stripe webhook,
+        # and unknown routes must not allocate databases.
         if request.endpoint in (None, 'health', 'ready', 'metrics_snapshot', 'openapi_document',
-                                'desk_script', 'home'):
+                                'desk_script', 'home', 'stripe_webhook'):
             return
         # Reject foreign websites before looking up a browser session. The server log retains the rejection.
         if request.method == 'POST':
@@ -508,5 +513,27 @@ def create_app(directory=None, public_origin=None):
               unknown=report['run']['unknown_count'])
         return jsonify(report)
 
+    # Signed Stripe webhooks are the only writer of SETTLED or FAILED for a Transfer.
+    # The signature replaces the demo cookie and the Origin check.
+    @app.post('/stripe/webhook')
+    def stripe_webhook():
+        secret = (os.environ.get('STRIPE_WEBHOOK_SECRET') or '').strip()
+        try:
+            command = stripe_connect.parse_webhook(
+                request.get_data(cache=False), request.headers.get('Stripe-Signature'), secret)
+        except stripe_connect.WebhookSignatureError:
+            return jsonify(error='Invalid Stripe signature.'), 400
+        if command is None:
+            return jsonify(received=True), 200
+        if command.get('livemode'):
+            return jsonify(error='Stripe send is blocked.',
+                           code=api_contract.STRIPE_SEND_BLOCKED), 422
+        path = stripe_connect.demo_database(directory, command.get('demo_id') or '')
+        if path is None:
+            return jsonify(received=True), 200
+        result = payouts.apply_stripe_event(path, command)
+        if result == 'pending':
+            return jsonify(error='Payout is not submitted yet.'), 503
+        return jsonify(received=True), 200
 
     return app

@@ -199,7 +199,7 @@ class OfacPayoutFlowTests(unittest.TestCase):
                 f'({", ".join("?" * len(payouts.COLUMNS))})',
                 ('PO-4110', ofac.DEMO_PAYEE_NAME, ofac.DEMO_PAYEE_ACCOUNT, ofac.DEMO_PAYEE_NAME,
                  ofac.DEMO_AMOUNT_CENTS, 'USD', 'ACH', 'FLAGGED', None, None, None, None,
-                 None, None, None, at, at, 'FLAGGED', 'NOT_STARTED', None, None))
+                 None, None, None, at, at, 'FLAGGED', 'NOT_STARTED', None, None, None))
         status, event = self.decide('PO-4110', 'approve', key='approve-unscreened-4110')
         self.assertEqual(status, 201)
         self.assertEqual(event['action'], 'screen')

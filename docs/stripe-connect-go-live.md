@@ -1,10 +1,11 @@
 # Stripe Connect go-live (P3) — gated checklist
 
-**Frame: checklist and design only.** Do **not** merge send-path Connect code
-(Transfers / Payouts / PaymentIntents that move money) until every **entry
-criterion** below is true and the go-live items are signed off.
+Test-mode Transfers run only when `STRIPE_PAYOUTS_ENABLED` is exactly `1`,
+and only for the demo folder named by `STRIPE_DEMO_ID`. Any other flag value
+keeps the demo settle, even when Stripe secrets are present. Live mode stays
+closed until the unchecked items below are signed off.
 
-This Desk remains fictional money until that gate opens. Related gates:
+Related gates:
 [pre-send-gates.md](pre-send-gates.md), [ofac-vendor.md](ofac-vendor.md),
 [decide-exclusivity.md](decide-exclusivity.md), [desk-audit.md](desk-audit.md).
 
@@ -21,23 +22,24 @@ Re-verify these on any change to `decide`, `_settle`, `route_one`, or OFAC scree
 
 ## Go-live checklist (open only after entry criteria)
 
-Product / compliance / platform decisions — still unchecked until a real Connect pilot:
+Checked items are enforced by the test-mode send path. Unchecked items still block a live pilot:
 
 - [ ] Connected account type chosen (Express vs Custom); KYC ownership documented
 - [ ] Platform vs connected-account fund flow decided (destination charges vs separate charges + transfers)
-- [ ] Desk `Idempotency-Key` maps 1:1 to Stripe `Transfer` / `PaymentIntent` / `Payout` ids in `payout_events` evidence
-- [ ] OFAC **Clear** is a hard precondition in code **before** any Stripe money-movement API call
-- [ ] Failure / retry: Stripe webhooks update `execution_status` without inventing Desk `status`
-- [ ] Reconciliation treats Stripe as source of truth for SETTLED / FAILED
-- [ ] Secrets only via env / secret manager; no keys in repo
+- [x] Desk `Idempotency-Key` maps 1:1 to Stripe `Transfer` / `PaymentIntent` / `Payout` ids in `payout_events` evidence
+- [x] OFAC **Clear** is a hard precondition in code **before** any Stripe money-movement API call
+- [x] Failure / retry: Stripe webhooks update `execution_status` without inventing Desk `status`
+- [x] Reconciliation treats Stripe as source of truth for SETTLED / FAILED
+- [x] Secrets only via env / secret manager; no keys in repo
 - [ ] Test-mode end-to-end on Connect test clocks; then limited live pilot with a kill switch
 - [ ] Compliance review (sanctions, money transmission, ToS) signed off outside this repo
 
-## Explicit non-goals until the checklist opens
+## Still out of scope
 
-- No Stripe SDK send path in `payouts._settle` / approve / clear
-- No live Connect account onboarding UI in this repo
-- Spikes and design notes are fine; they must not call money-movement APIs in merged code
+- Connected-account onboarding UI
+- Live `sk_live_` and `rk_live_` keys (the send path refuses them)
+- Test clocks and a limited live pilot
+- Compliance sign-off outside this repo
 
 ## When entry criteria regress
 

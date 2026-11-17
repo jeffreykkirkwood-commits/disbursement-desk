@@ -37,9 +37,17 @@ Concurrent decide exclusivity (stress + formal `Inv_AtMostOneSettle`): see
 Desk detail Activity (who/what/when from `payout_events`): see
 [docs/desk-audit.md](docs/desk-audit.md).
 
-Stripe Connect real-money phase is **gated** (checklist only until entry
-criteria hold): [docs/stripe-connect-go-live.md](docs/stripe-connect-go-live.md).
-No Connect send-path in this repo until that gate opens.
+Stripe Connect test-mode Transfers stay off unless `STRIPE_PAYOUTS_ENABLED`
+is exactly `1`. Any other value keeps the demo settle. See
+[docs/stripe-connect-go-live.md](docs/stripe-connect-go-live.md).
+
+Set these in the environment. Do not commit them.
+
+- `STRIPE_PAYOUTS_ENABLED`: `1` arms test-mode Transfers. Any other value keeps the demo settle.
+- `STRIPE_SECRET_KEY`: test key. Prefer `rk_test_`. `sk_test_` is allowed. `sk_live_` and `rk_live_` are refused.
+- `STRIPE_WEBHOOK_SECRET`: signing secret for `POST /stripe/webhook`. It must start with `whsec_`.
+- `STRIPE_DESTINATION_MAP`: JSON object mapping a `payee_account` to an `acct_` id. A payout column `stripe_connected_account_id` wins when it is set.
+- `STRIPE_DEMO_ID`: the one 64-hex demo folder allowed to create Transfers. Other folders keep the demo settle.
 
 ## Run the app shell locally
 

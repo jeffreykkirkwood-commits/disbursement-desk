@@ -392,11 +392,12 @@ class HostedSeedTests(unittest.TestCase):
             ('/payouts/simulate', frozenset({'POST'})),
             ('/payouts/stream', frozenset({'GET'})),
             ('/reconciliation', frozenset({'POST'})),
+            ('/stripe/webhook', frozenset({'POST'})),
             ('/v1/payouts', frozenset({'POST'})),
             ('/v1/payouts/<payout_id>/decisions', frozenset({'POST'})),
         }
         app_rules = [r for r in self.app.url_map.iter_rules() if r.endpoint != 'static']
-        self.assertEqual(len(app_rules), 19)
+        self.assertEqual(len(app_rules), 20)
         self.assertEqual({(str(r), frozenset(r.methods - {'HEAD', 'OPTIONS'})) for r in app_rules}, expected)
         self.assertEqual(client.get('/payouts', base_url='https://demo.example').status_code, 404)
         self.assertEqual(client.get('/payouts/reset', base_url='https://demo.example').status_code, 405)
@@ -406,4 +407,4 @@ class HostedSeedTests(unittest.TestCase):
 
 
 # sha256 of the seed rows as sorted JSON; update only on purpose when the seed changes.
-PINNED_FINGERPRINT = '308856bd86fd9ed521ec2fefb784741fe5061f6290ce3010c7685d7fe0b7bea1'
+PINNED_FINGERPRINT = 'aa63fcc3867818fe31af81d958bd4348c37d2f3086bf63e0279858e0efbda690'
