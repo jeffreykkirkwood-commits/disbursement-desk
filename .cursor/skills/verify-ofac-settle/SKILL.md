@@ -36,7 +36,7 @@ Read every TLC result with `/statechart` so invariant breaks show as shortest pa
 
 Files: `payouts.py` (`decide`, `_settle`, `_apply_sanctions_hold`, `explain_flag`, `POSSIBLE_SANCTIONS_MATCH`); `ofac.py` (`screen`, `FLAG_CODE`); `payout_rules.py` (`route_one`).
 
-**Last sync commit:** `444e2c3ebb2ef97d1c3f40071cfd1094309c2675` (confirm before trusting after later edits). Move this forward only after you confirm the model still describes those functions.
+**Last sync commit:** `aa9b3a118371f13335680fa747b91881f16a6072` (#16 create idempotency + transition audit; decide/_settle/route_one gates re-checked — Inv_NoSettleWithoutClear still holds; structural sync also requires settle-hold `if held:` and `record_transition` screen audit). Confirm before trusting after later edits. Move this forward only after you confirm the model still describes those functions.
 
 ## When to run
 
