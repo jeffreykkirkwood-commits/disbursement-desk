@@ -21,6 +21,7 @@ import payout_events
 from desk import render_desk
 from demo_sessions import DemoStore, DemoCapacityError
 from event_log import event, request_context, make_logger
+import metrics
 import operators
 
 
@@ -88,8 +89,8 @@ def create_app(directory=None, public_origin=None):
               endpoint=str(request.url_rule) if request.url_rule else '(unknown endpoint)')
         g.cookie = g.demo_id = None
         g.operator = None
-        # Health/readiness probes, assets and unknown routes must not allocate databases.
-        if request.endpoint in (None, 'health', 'ready', 'desk_script', 'home'):
+        # Health/readiness/metrics probes, assets and unknown routes must not allocate databases.
+        if request.endpoint in (None, 'health', 'ready', 'metrics_snapshot', 'desk_script', 'home'):
             return
         # Reject foreign websites before looking up a browser session. The server log retains the rejection.
         if request.method == 'POST':
@@ -100,6 +101,7 @@ def create_app(directory=None, public_origin=None):
         try:
             session = demos.resolve(request.headers.get('Cookie'), create=request.method in ('GET', 'HEAD'))
         except DemoCapacityError as error:
+            g.metric_503_reason = 'demo_capacity'
             return jsonify(error=str(error)), 503
         if not session:
             return jsonify(error='Demo session missing. Reload the dashboard before submitting.',
@@ -134,16 +136,20 @@ def create_app(directory=None, public_origin=None):
             response.headers['X-Demo-ID'] = g.demo_id
         if g.cookie:
             response.headers['Set-Cookie'] = g.cookie
+        endpoint = str(request.url_rule) if request.url_rule else '(unknown endpoint)'
         if response.status_code >= 400:
             payload = response.get_json(silent=True) or {}
             event('request_rejected', level=logging.WARNING, http_status=response.status_code,
                   reason=payload.get('error', 'Request failed'))
+        if response.status_code == 503:
+            # Catch-all for 503s not already labeled (desk load, stream cap, etc.).
+            reason = getattr(g, 'metric_503_reason', None) or 'http_503'
+            metrics.inc(metrics.HTTP_503_TOTAL, reason=reason, endpoint=endpoint)
         event('request_finished', http_status=response.status_code,
               duration_ms=round((time.monotonic() - g.started) * 1000, 2))
         token = request_context.set((server_logger, g.request_id))
         try:
-            event('http_response', http_status=response.status_code,
-                  endpoint=str(request.url_rule) if request.url_rule else '(unknown endpoint)')
+            event('http_response', http_status=response.status_code, endpoint=endpoint)
         finally:
             request_context.reset(token)
         return response
@@ -207,6 +213,14 @@ def create_app(directory=None, public_origin=None):
         return jsonify(status='ready', mode='fictional payments only',
                        commit=os.environ.get('RENDER_GIT_COMMIT') or None)
 
+    # FEATURE 10c — Process-local metrics snapshot (decide/create/503/stream)
+    # No demo allocation. Values are per Gunicorn worker; scrapers should poll each
+    # instance. Structured metric_recorded lines are also written to the request log.
+    @app.get('/metrics')
+    def metrics_snapshot():
+        return jsonify(status='ok', metrics=metrics.snapshot(),
+                       commit=os.environ.get('RENDER_GIT_COMMIT') or None)
+
     # FEATURE 09 — Open the Desk
     # This repo holds only the Desk, so visiting the root address redirects to /desk.
     # It is not an API information page and does not start a demo by itself.
@@ -225,6 +239,7 @@ def create_app(directory=None, public_origin=None):
             queue = payouts.current_queue(g.payments.database)
         except (sqlite3.Error, OSError, KeyError) as error:  # unreadable or unexpected data
             event('desk_load_failed', level=logging.ERROR, error_type=type(error).__name__)
+            g.metric_503_reason = 'desk_load'
             return render_desk(None, g.demo_id or 'local-test', operator=g.operator), 503
         return render_desk(queue, g.demo_id or 'local-test', operator=g.operator)
 
@@ -288,6 +303,8 @@ def create_app(directory=None, public_origin=None):
         event('payout_decision_replayed' if status == 200 else 'payout_decision_saved',
               payout_id=payout_id, action=action, from_status=decision['from_status'],
               to_status=decision['to_status'], operator_id=g.operator.operator_id)
+        metrics.inc(metrics.DECIDE_TOTAL, action=action, http_status=status,
+                    replayed=(status == 200))
         payout_events.sync(database)
         return jsonify(payout=payouts.get_payout(database, payout_id), decision=decision,
                        operator=g.operator.public()), status
@@ -369,6 +386,9 @@ def create_app(directory=None, public_origin=None):
         status = 200 if result.get('replayed') else 201
         event('payout_simulated_replayed' if status == 200 else 'payout_simulated',
               payout_id=payout_id, status=result['status'])
+        metrics.inc(metrics.CREATE_TOTAL, http_status=status,
+                    payout_status=result['status'],
+                    replayed=bool(result.get('replayed')))
         payout_events.sync(database)
         return jsonify(payout=payouts.get_payout(database, payout_id),
                        status=result['status'], changed=result['changed'],
@@ -394,11 +414,14 @@ def create_app(directory=None, public_origin=None):
         last_id = payout_events.parse_last_id(
             request.headers.get('Last-Event-ID') or request.args.get('lastEventId'))
         if not payout_events.acquire_stream():
+            metrics.inc(metrics.STREAM_REFUSED_TOTAL, reason='slot_cap')
+            g.metric_503_reason = 'stream_cap'
             return Response(
                 'Too many live update streams are open. Try again shortly.\n',
                 status=503,
                 mimetype='text/plain',
                 headers={'Retry-After': str(payout_events.RETRY_AFTER_SECONDS)})
+        metrics.inc(metrics.STREAM_OPEN_TOTAL)
         released = False
 
         def release_slot():
