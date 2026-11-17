@@ -281,7 +281,8 @@ class ReviewReasonsHttpTests(unittest.TestCase):
             json={'payee_name': ofac.DEMO_PAYEE_NAME, 'payee_account': ofac.DEMO_PAYEE_ACCOUNT,
                   'amount_cents': ofac.DEMO_AMOUNT_CENTS, 'rail': 'ACH', 'payout_id': 'PO-4100'},
             base_url='https://demo.example',
-            headers={'Origin': 'https://demo.example'})
+            headers={'Origin': 'https://demo.example',
+                     'Idempotency-Key': 'review-reasons-ofac-4100'})
         self.assertEqual(created.status_code, 201)
         reply = self.get_reasons('PO-4100')
         self.assertEqual(reply.status_code, 200)
@@ -312,7 +313,8 @@ class ReviewReasonsHttpTests(unittest.TestCase):
                   'amount_cents': 100001, 'rail': 'ACH', 'payout_id': 'PO-5110',
                   'routing_number': '110000000'},
             base_url='https://demo.example',
-            headers={'Origin': 'https://demo.example'})
+            headers={'Origin': 'https://demo.example',
+                     'Idempotency-Key': 'review-reasons-sim-5110'})
         self.assertEqual(created.status_code, 201)
         reply = self.get_reasons('PO-5110')
         self.assertEqual(reply.status_code, 200)

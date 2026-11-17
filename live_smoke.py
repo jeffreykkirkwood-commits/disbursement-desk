@@ -213,9 +213,11 @@ def run(base_url, expect_commit=None, transport=urllib_transport, sleep=time.sle
     yield 'a POST without its own demo is refused', 'HTTP 409, no demo created'
 
     stamp = (now or datetime.now(timezone.utc)).isoformat()
-    for case in PAYOUT_CASES:
+    for index, case in enumerate(PAYOUT_CASES):
         body = {key: (stamp if value == 'NOW' else value) for key, value in case['body'].items()}
-        reply = first.request('POST', '/payouts/simulate', body)
+        reply = first.request(
+            'POST', '/payouts/simulate', body,
+            headers={'Idempotency-Key': f'smoke-simulate-{index}-{stamp}'})
         expect(reply.status == 201, f'simulate ({case["name"]}) returned HTTP {reply.status}: {reply.text[:200]}')
         result = reply.json()
         flags = set(filter(None, ((result.get('payout') or {}).get('flag_code') or '').split(',')))
