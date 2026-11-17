@@ -22,5 +22,5 @@ Issue: #
 
 <!-- Tests you ran and their results, plus what was not tested. Later, a link to QA's pass and live check. -->
 
-<!-- Inventory: write "no change", or name what changed (services, secrets, settings, workflows). A listed change stays pending until a comment starts with "Inventory updated". -->
-Inventory:
+<!-- Replace "no change" if this adds or changes something running: a service, database, env var name, third-party API, or setting. A listed change stays pending until a comment starts with "Inventory updated". The Card format check fails without this line. -->
+Inventory: no change
