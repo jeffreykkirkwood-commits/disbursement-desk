@@ -20,6 +20,7 @@ Execution / reconciliation logs stay on their own APIs.
 
 ## Create payout (Desk UI)
 
-Queue header **Create payout** opens a dialog that POSTs `/payouts/simulate`
-with a client `Idempotency-Key` minted when the dialog opens. Retries reuse the
-same key; Cancel / close discards it. See `desk.js` (`pendingCreate`).
+Queue header **Create payout** opens a dialog that POSTs `/v1/payouts` (same
+create handler as `/payouts/simulate`) with a client `Idempotency-Key` minted
+when the dialog opens. Retries reuse the same key; Cancel / close discards it.
+See `desk.js` (`pendingCreate`).

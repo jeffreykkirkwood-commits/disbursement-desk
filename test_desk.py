@@ -424,9 +424,11 @@ class DeskActionTests(DeskBase):
         self.assertIn('<p id="cr-error" class="err-inline" role="alert" hidden>'
                       'That didn’t create. Nothing has changed. Try again.</p>', html)
         script = self.client.get('/desk.js').get_data(as_text=True)
-        self.assertIn("fetch('/payouts/simulate'", script)
+        self.assertIn("fetch('/v1/payouts'", script)
         self.assertIn("'Idempotency-Key': pendingCreate.key", script)
         self.assertIn('pendingCreate = {key: newKey()}', script)
+        self.assertNotIn("fetch('/payouts/simulate'", script)
+        self.assertIn("'#f=all'", script)
 
     # Scenario — after an operator Hold: Held, "Held by operator", still in Exceptions, Hold disabled
     def test_after_hold(self):
@@ -855,7 +857,7 @@ class DeskNoteTests(DeskBase):
         self.assertEqual(script.count('fetch('), 3)
         self.assertIn("fetch('/payouts/' + encodeURIComponent(pending.id)", script)
         self.assertIn("fetch('/payouts/reset'", script)
-        self.assertIn("fetch('/payouts/simulate'", script)
+        self.assertIn("fetch('/v1/payouts'", script)
         self.assertNotIn('workers.ai', script.lower())
         self.assertNotIn('openai', script.lower())
         self.assertNotIn('AI-drafted, review required', script)

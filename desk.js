@@ -207,7 +207,9 @@
     setCreateBusy(true);
     const demo = document.querySelector('meta[name="demo-id"]');
     try {
-      const reply = await fetch('/payouts/simulate', {
+      // Versioned create (same handler as simulate). Do not read the response body
+      // onto the page — reload All so the new row is visible.
+      const reply = await fetch('/v1/payouts', {
         method: 'POST',
         headers: {'Content-Type': 'application/json', 'Idempotency-Key': pendingCreate.key,
                   'X-Demo-ID': demo ? demo.content : ''},
@@ -218,7 +220,6 @@
         throw new Error('not created');
       }
       try { sessionStorage.removeItem('desk-session-reloaded'); } catch (err) {}
-      // Show All so the new payout is visible; avoid parsing the body (same rule as reset).
       location.replace(location.pathname + location.search + '#f=all');
     } catch (error) {
       setCreateBusy(false);

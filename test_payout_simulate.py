@@ -146,8 +146,9 @@ class SimulatePayoutTests(unittest.TestCase):
         self.assertIn('id="create-open"', html)
         self.assertIn('<dialog id="create"', html)
         script = self.client.get('/desk.js', base_url='https://demo.example').get_data(as_text=True)
-        self.assertIn("fetch('/payouts/simulate'", script)
+        self.assertIn("fetch('/v1/payouts'", script)
         self.assertIn("'Idempotency-Key': pendingCreate.key", script)
+        self.assertNotIn('/payouts/simulate', script)
         self.assertNotIn('simulate payout', html.lower())
         self.assertNotIn('simulate payout', script.lower())
 
