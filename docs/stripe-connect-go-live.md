@@ -32,7 +32,7 @@ Checked items are enforced by the test-mode send path. Unchecked items still blo
 
 - [ ] Connected account type and KYC ownership signed off. The recommendation is Express. See [Account ownership](stripe-connect-account-ownership.md). The owner sign-off box is unchecked.
 - [x] Platform → connected-account fund flow: test-mode destination charge (`PaymentIntent` with `transfer_data[destination]`). `STRIPE_SEND_PATH=transfer` keeps Transfers.
-- [x] Desk `Idempotency-Key` maps 1:1 to Stripe `Transfer` / `PaymentIntent` / `Payout` ids in `payout_events` evidence
+- [x] Desk Stripe-call idempotency keys map 1:1 to Stripe `Transfer` / `PaymentIntent` / `Payout` ids in `payout_events` evidence (see [Idempotency to Stripe id mapping](#idempotency-to-stripe-id-mapping))
 - [x] OFAC **Clear** is a hard precondition in code **before** any Stripe money-movement API call
 - [x] Failure / retry: Stripe webhooks update `execution_status` without inventing Desk `status`
 - [x] Reconciliation treats Stripe as source of truth for SETTLED / FAILED
@@ -40,6 +40,30 @@ Checked items are enforced by the test-mode send path. Unchecked items still blo
 - [x] Kill switch. New Stripe sends run only when `STRIPE_PAYOUTS_ENABLED` is exactly `1`. Steps are in [Disarm Stripe payouts](stripe-connect-kill-switch.md).
 - [ ] Test-mode end-to-end on Connect test clocks, then a limited live pilot that can be disarmed with the kill switch
 - [ ] Compliance review (sanctions, money transmission, ToS) signed off outside this repo
+
+## Idempotency to Stripe id mapping
+
+Each money-movement call uses a Stripe `Idempotency-Key`:
+
+- Destination charge (default): `desk-charge:{demo_id}:{payout_id}` (`charge_idempotency_key`)
+- Legacy Transfer (`STRIPE_SEND_PATH=transfer`): `desk-transfer:{demo_id}:{payout_id}` (`transfer_idempotency_key`)
+
+On submit, `decide` and `route` write both sides into `payout_events.evidence`:
+
+| Field | Meaning |
+|-------|---------|
+| `stripe_idempotency_key` | Key sent to Stripe |
+| `stripe_object_id` | Returned Stripe object id (`pi_…`, `tr_…`, or `po_…`) |
+| `stripe_object_type` | `payment_intent`, `transfer`, or `payout` |
+| `stripe_payment_intent_id` | Alias when the object is a PaymentIntent |
+| `stripe_transfer_id` | Alias when the object is a Transfer |
+
+Look up either direction without live Stripe:
+
+- Key → object: `payouts.stripe_mapping_by_idempotency_key(database, key)`
+- Object → key: `payouts.stripe_mapping_by_object_id(database, object_id)`
+
+`execution_ref` on the payout row also stores the PaymentIntent or Transfer id after submit.
 
 ## Still out of scope
 

@@ -720,13 +720,7 @@ def decide(database, payout_id, action, actor, idempotency_key, reason=None, now
                 (step, review, outcome, at, payout_id))
         evidence = _decision_evidence(payout, actor, reason, at)
         if held and held.get('kind') == 'stripe_submit':
-            if held.get('payment_intent_id'):
-                evidence['stripe_payment_intent_id'] = held['payment_intent_id']
-            else:
-                evidence['stripe_transfer_id'] = held['transfer_id']
-            evidence['stripe_destination'] = held['destination']
-            evidence['stripe_idempotency_key'] = held['idempotency_key']
-            evidence['stripe_livemode'] = False
+            evidence.update(stripe_connect.submit_evidence(held))
         return 201, record_transition(
             db, payout_id, action, current, step, actor, idempotency_key,
             reason=reason, at=at, evidence=evidence)
@@ -985,6 +979,68 @@ def list_events(database, payout_id=None):
         query, args = query + ' WHERE payout_id = ?', (payout_id,)
     with storage.connect(str(database)) as db:
         return [_as_event(row) for row in db.execute(query + ' ORDER BY event_id', args)]
+
+
+def _stripe_mapping_from_event(event):
+    evidence = event.get('evidence')
+    if not isinstance(evidence, dict):
+        return None
+    object_id = (
+        evidence.get('stripe_object_id')
+        or evidence.get('stripe_payment_intent_id')
+        or evidence.get('stripe_transfer_id'))
+    key = evidence.get('stripe_idempotency_key')
+    if not object_id or not key:
+        return None
+    object_type = evidence.get('stripe_object_type') or stripe_connect.object_type_for_id(object_id)
+    if object_type is None:
+        return None
+    mapping = {
+        'event_id': event['event_id'],
+        'payout_id': event['payout_id'],
+        'stripe_object_id': object_id,
+        'stripe_object_type': object_type,
+        'stripe_idempotency_key': key,
+    }
+    if 'stripe_destination' in evidence:
+        mapping['stripe_destination'] = evidence['stripe_destination']
+    if 'stripe_livemode' in evidence:
+        mapping['stripe_livemode'] = evidence['stripe_livemode']
+    if object_type == stripe_connect.OBJECT_TRANSFER:
+        mapping['stripe_transfer_id'] = object_id
+    elif object_type == stripe_connect.OBJECT_PAYMENT_INTENT:
+        mapping['stripe_payment_intent_id'] = object_id
+    return mapping
+
+
+def stripe_mapping_by_idempotency_key(database, key):
+    """Return the Stripe object mapping for a Transfer/PI/Payout idempotency key."""
+    if not isinstance(key, str) or not key.strip():
+        return None
+    needle = key.strip()
+    for event in list_events(database):
+        mapping = _stripe_mapping_from_event(event)
+        if mapping and mapping['stripe_idempotency_key'] == needle:
+            return mapping
+    return None
+
+
+def stripe_mapping_by_object_id(database, object_id):
+    """Return the Stripe call mapping for a Transfer/PI/Payout id."""
+    if not isinstance(object_id, str) or not object_id.strip():
+        return None
+    needle = object_id.strip()
+    for event in list_events(database):
+        mapping = _stripe_mapping_from_event(event)
+        if not mapping:
+            continue
+        if mapping['stripe_object_id'] == needle:
+            return mapping
+        if mapping.get('stripe_transfer_id') == needle:
+            return mapping
+        if mapping.get('stripe_payment_intent_id') == needle:
+            return mapping
+    return None
 
 
 def list_execution_events(database, payout_id=None):
