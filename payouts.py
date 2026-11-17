@@ -923,7 +923,7 @@ def apply_stripe_event(database, command, now=None):
     payout_id = command.get('payout_id')
     event_id = command.get('stripe_event_id')
     transfer_id = command.get('transfer_id') or ''
-    if not payout_id or not event_id or not str(transfer_id).startswith(('tr_', 'pi_')):
+    if not payout_id or not event_id or not stripe_connect.is_stripe_ref(transfer_id):
         return 'ignored'
     outcome = command['outcome']
     at = (now or datetime.now(timezone.utc)).isoformat()
