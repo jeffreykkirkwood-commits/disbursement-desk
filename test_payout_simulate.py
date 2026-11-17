@@ -32,9 +32,11 @@ class SimulatePayoutTests(unittest.TestCase):
         client = client or self.client
         return client.get('/desk', base_url='https://demo.example')
 
-    def simulate(self, body=None, client=None, **headers):
+    def simulate(self, body=None, client=None, idempotency_key=None, **headers):
         client = client or self.client
-        extra = {'Origin': 'https://demo.example', **headers}
+        key = idempotency_key or f'simulate-{getattr(self, "_sim_n", 0)}'
+        self._sim_n = getattr(self, '_sim_n', 0) + 1
+        extra = {'Origin': 'https://demo.example', 'Idempotency-Key': key, **headers}
         return client.post('/payouts/simulate', json=body or NEW_PAYEE,
                            base_url='https://demo.example', headers=extra)
 
@@ -212,6 +214,31 @@ class SimulatePayoutTests(unittest.TestCase):
                 self.assertNotEqual(reply.status_code, 500)
                 self.assertEqual(reply.json['error'], aba.LENGTH_MESSAGE)
                 self.assertEqual(payouts.list_payouts(db), before)
+
+    # FEATURE 10 — Scenario — Idempotency-Key required; same key replays create
+    def test_simulate_requires_idempotency_key(self):
+        self.open_desk()
+        reply = self.client.post(
+            '/payouts/simulate', json=dict(NEW_PAYEE, payout_id='PO-3020'),
+            base_url='https://demo.example', headers={'Origin': 'https://demo.example'})
+        self.assertEqual(reply.status_code, 422)
+        self.assertIn('Idempotency-Key', reply.json['error'])
+
+    def test_simulate_idempotent_retry(self):
+        self.open_desk()
+        body = dict(NEW_PAYEE, payout_id='PO-3021', amount_cents=50000)
+        first = self.simulate(body, idempotency_key='sim-retry-1')
+        self.assertEqual(first.status_code, 201)
+        self.assertFalse(first.json['replayed'])
+        self.assertEqual(first.json['create_event']['action'], 'create')
+        again = self.simulate(body, idempotency_key='sim-retry-1')
+        self.assertEqual(again.status_code, 200)
+        self.assertTrue(again.json['replayed'])
+        self.assertEqual(again.json['payout']['payout_id'], 'PO-3021')
+        db = self.database()
+        self.assertEqual(sum(1 for p in payouts.list_payouts(db) if p['payout_id'] == 'PO-3021'), 1)
+        conflict = self.simulate(dict(body, amount_cents=50001), idempotency_key='sim-retry-1')
+        self.assertEqual(conflict.status_code, 409)
 
 
 if __name__ == '__main__':

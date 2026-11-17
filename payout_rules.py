@@ -16,8 +16,10 @@ from desk_common import APIError
 # FEATURE 01 — Name the automation actor and the log action
 # The action is "route", never approve, hold or return, so a flagged payout cannot
 # be decided by this path. The actor is "automation", never an operator name.
+# Create uses action "create" so a double-submit can replay via Idempotency-Key.
 ACTOR = 'automation'
 ACTION = 'route'
+CREATE_ACTION = payouts.CREATE
 
 
 def _earlier_than(db, payout):
@@ -66,15 +68,15 @@ def route_one(db, payout_id, now=None):
     if step == payouts.PAID:
         # The settle step writes PAID/SETTLED details; route_one already moved status
         # through APPROVED to PAID, and settle fills the execution event if needed.
-        payouts._settle(db, payout_id, at)
+        held = payouts._settle(db, payout_id, at, actor=ACTOR,
+                               idempotency_key=f'settle-screen:route:{payout_id}')
+        if held:
+            # Rare: explain_flag was clean but settle re-screen held. Audit is the screen row.
+            return dict(changed=True, payout_id=payout_id, status=payouts.FLAGGED, event=held)
     key = f'route:{payout_id}'
-    cursor = db.execute(
-        'INSERT INTO payout_events (payout_id, action, from_status, to_status, actor, reason, '
-        'idempotency_key, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        (payout_id, ACTION, current, step, ACTOR, payout['flag_text'], key, at))
-    event = dict(event_id=cursor.lastrowid, payout_id=payout_id, action=ACTION,
-                 from_status=current, to_status=step, actor=ACTOR, reason=payout['flag_text'],
-                 idempotency_key=key, at=at)
+    event = payouts.record_transition(
+        db, payout_id, ACTION, current, step, ACTOR, key,
+        reason=payout['flag_text'], at=at)
     return dict(changed=True, payout_id=payout_id, status=step, event=event)
 
 
@@ -102,14 +104,30 @@ def route(database, payout_id=None, now=None):
         return route_one(db, payout_id, now=now)
 
 
+def _create_fingerprint(payout_id, payee_name, payee_account, amount_cents, rail,
+                        bank_details_changed_at):
+    return {
+        'payout_id': payout_id,
+        'payee_name': payee_name,
+        'payee_account': payee_account,
+        'amount_cents': amount_cents,
+        'rail': rail,
+        'bank_details_changed_at': bank_details_changed_at,
+    }
+
+
 # FEATURE 05 — Create one new synthetic payout and route it
 # Inserts the row as PENDING (not checked yet), fills the usual amount from that
 # payee's earlier payouts when they exist, then runs route_one(). Callers pass
 # invented DEMO- accounts and amounts only. An optional ABA routing number is
 # checked (#112) when one is entered; a number that fails the check digit is
-# refused and nothing is saved. No HTTP route and no screen control is added here.
+# refused and nothing is saved. An Idempotency-Key (required on HTTP; optional
+# here with default create:{payout_id}) makes a double-submit replay the first
+# create instead of inserting a second disbursement. A create audit row is
+# written before routing so every birth is in the action log.
 def create(database, payout_id, payee_name, payee_account, amount_cents, rail,
-           bank_details_changed_at=None, now=None, routing_number=None):
+           bank_details_changed_at=None, now=None, routing_number=None,
+           idempotency_key=None):
     if not isinstance(payout_id, str) or not payout_id.strip() or len(payout_id) > 40:
         raise APIError(422, 'Provide a payout id (1–40 characters).')
     if not isinstance(payee_name, str) or not payee_name.strip() or len(payee_name.strip()) > 80:
@@ -135,6 +153,10 @@ def create(database, payout_id, payee_name, payee_account, amount_cents, rail,
     aba.validate(routing_number)
     payout_id, payee_name = payout_id.strip(), payee_name.strip()
     payee_account = payee_account.strip()
+    key = payouts.clean_idempotency_key(
+        idempotency_key if idempotency_key is not None else f'create:{payout_id}')
+    fingerprint = _create_fingerprint(
+        payout_id, payee_name, payee_account, amount_cents, rail, bank_details_changed_at)
     at = (now or datetime.now(timezone.utc)).isoformat()
     with storage.connect(str(database), timeout=10) as db:
         db.execute('BEGIN IMMEDIATE')
@@ -142,6 +164,17 @@ def create(database, payout_id, payee_name, payee_account, amount_cents, rail,
             db.execute(statement)
         db.execute('PRAGMA foreign_keys = ON')
         payouts._upgrade(db)
+        existing = db.execute(
+            f'SELECT {", ".join(payouts.EVENT_COLUMNS)} FROM payout_events WHERE idempotency_key = ?',
+            (key,)).fetchone()
+        if existing:
+            previous = payouts._as_event(existing)
+            prior = (previous.get('evidence') or {}) if isinstance(previous.get('evidence'), dict) else {}
+            if previous['action'] != CREATE_ACTION or prior != fingerprint:
+                raise APIError(409, 'This Idempotency-Key was already used for a different create.')
+            payout = _load(db, previous['payout_id'])
+            return dict(changed=False, replayed=True, payout_id=previous['payout_id'],
+                        status=payout['status'], event=None, create_event=previous)
         if db.execute('SELECT 1 FROM payouts WHERE payout_id = ?', (payout_id,)).fetchone():
             raise APIError(409, 'A payout with this id already exists.')
         # Usual amount is the average of earlier SETTLED payouts, matching the seed,
@@ -163,4 +196,10 @@ def create(database, payout_id, payee_name, payee_account, amount_cents, rail,
             f'INSERT INTO payouts ({", ".join(payouts.COLUMNS)}) VALUES '
             f'({", ".join("?" * len(payouts.COLUMNS))})',
             tuple(row[c] for c in payouts.COLUMNS))
-        return route_one(db, payout_id, now=now)
+        create_event = payouts.record_transition(
+            db, payout_id, CREATE_ACTION, payouts.PENDING, payouts.PENDING, ACTOR, key,
+            reason=None, at=at, evidence=fingerprint)
+        result = route_one(db, payout_id, now=now)
+        result['create_event'] = create_event
+        result['replayed'] = False
+        return result

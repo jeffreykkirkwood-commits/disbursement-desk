@@ -62,8 +62,10 @@ class AutomationTests(unittest.TestCase):
         self.assertEqual(event['idempotency_key'], 'route:PO-TEST-CLEAN')
         self.assertNotIn(event['action'], payouts.DECISIONS)
         events = payouts.list_events(self.db, 'PO-TEST-CLEAN')
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]['action'], 'route')
+        self.assertEqual([e['action'] for e in events], ['create', 'route'])
+        self.assertEqual(result['create_event']['action'], 'create')
+        self.assertEqual(result['create_event']['from_status'], 'PENDING')
+        self.assertEqual(result['create_event']['to_status'], 'PENDING')
 
     # FEATURE 02 — Scenario — each approved rule stops the payout at FLAGGED
     def test_flagged_payouts_stop_at_flagged(self):
@@ -114,14 +116,16 @@ class AutomationTests(unittest.TestCase):
         self.assertEqual(second['status'], 'PAID')
         self.assertEqual(payouts.get_payout(self.db, 'PO-TEST-REPEAT'), payout)
         self.assertEqual(payouts.list_events(self.db, 'PO-TEST-REPEAT'), events)
-        self.assertEqual(len(events), 1)
+        self.assertEqual([e['action'] for e in events], ['create', 'route'])
         self.assertEqual(third, [])
         # A flagged payout is also unchanged on a second run.
         flagged = self.create('PO-TEST-REPEAT-FLAG', 'Harbor Hardware', 'DEMO-HRBR-006', 207550)
         after = payout_rules.route(self.db, 'PO-TEST-REPEAT-FLAG')
         self.assertEqual(flagged['status'], 'FLAGGED')
         self.assertFalse(after['changed'])
-        self.assertEqual(len(payouts.list_events(self.db, 'PO-TEST-REPEAT-FLAG')), 1)
+        self.assertEqual(
+            [e['action'] for e in payouts.list_events(self.db, 'PO-TEST-REPEAT-FLAG')],
+            ['create', 'route'])
         self.assertEqual(payouts.get_payout(self.db, 'PO-TEST-REPEAT-FLAG')['status'], 'FLAGGED')
 
     # FEATURE 04 — Scenario — automation cannot approve, hold or return a flagged payout
@@ -146,7 +150,7 @@ class AutomationTests(unittest.TestCase):
         self.assertFalse(again['changed'])
         self.assertEqual(payouts.get_payout(self.db, 'PO-TEST-NO-DECIDE')['status'], 'FLAGGED')
         actions = {event['action'] for event in payouts.list_events(self.db)}
-        self.assertEqual(actions, {'route'})
+        self.assertEqual(actions, {'create', 'route'})
         self.assertTrue(actions.isdisjoint(payouts.DECISIONS))
 
     # FEATURE 05 — Scenario — seed load and reset keep the starting set and add no events
@@ -179,19 +183,27 @@ class AutomationTests(unittest.TestCase):
         self.assertEqual(decision['to_status'], 'PAID')
         self.assertEqual(payouts.get_payout(self.db, 'PO-TEST-DECIDE')['status'], 'PAID')
         actions = [event['action'] for event in payouts.list_events(self.db, 'PO-TEST-DECIDE')]
-        self.assertEqual(actions, ['route', 'approve'])
+        self.assertEqual(actions, ['create', 'route', 'approve'])
 
-    # FEATURE 07 — Scenario — a missing payout is refused; a second create is refused
+    # FEATURE 07 — Scenario — missing route is 404; create is idempotent; id clash is 409
     def test_missing_and_duplicate_create_are_refused(self):
         with self.assertRaises(APIError) as missing:
             payout_rules.route(self.db, 'PO-MISSING')
         self.assertEqual(missing.exception.status, 404)
-        self.create('PO-TEST-ONCE', 'Cedar Cleaning Co.', 'DEMO-CEDR-004', 64000)
-        with self.assertRaises(APIError) as exists:
-            self.create('PO-TEST-ONCE', 'Cedar Cleaning Co.', 'DEMO-CEDR-004', 64000)
-        self.assertEqual(exists.exception.status, 409)
+        first = self.create('PO-TEST-ONCE', 'Cedar Cleaning Co.', 'DEMO-CEDR-004', 64000)
+        # Same default create:{id} key + same body replays instead of inserting twice.
+        again = self.create('PO-TEST-ONCE', 'Cedar Cleaning Co.', 'DEMO-CEDR-004', 64000)
+        self.assertTrue(again['replayed'])
+        self.assertEqual(again['payout_id'], first['payout_id'])
         self.assertEqual(sum(1 for payout in payouts.list_payouts(self.db)
                              if payout['payout_id'] == 'PO-TEST-ONCE'), 1)
+        # A different Idempotency-Key with the same payout id still cannot insert twice.
+        with self.assertRaises(APIError) as exists:
+            payout_rules.create(
+                self.db, 'PO-TEST-ONCE', 'Cedar Cleaning Co.', 'DEMO-CEDR-004', 64000, 'ACH',
+                now=NOW, idempotency_key='create-other-key')
+        self.assertEqual(exists.exception.status, 409)
+        self.assertIn('already exists', exists.exception.message)
 
     # FEATURE 08 — Scenario — a new payee's first payout over $1,000 is flagged (#86)
     def test_new_payee_first_payout_over_1000_is_flagged(self):
@@ -253,7 +265,7 @@ class AutomationTests(unittest.TestCase):
         self.assertEqual(second['status'], 'FLAGGED')
         self.assertEqual(payouts.get_payout(self.db, 'PO-TEST-NEW-REPEAT'), payout)
         self.assertEqual(payouts.list_events(self.db, 'PO-TEST-NEW-REPEAT'), events)
-        self.assertEqual(len(events), 1)
+        self.assertEqual([e['action'] for e in events], ['create', 'route'])
 
     # FEATURE 08e — Scenario — the seed still has no new-payee flags
     def test_seed_is_unchanged_by_the_new_payee_rule(self):
@@ -359,6 +371,44 @@ class AutomationTests(unittest.TestCase):
         self.assertEqual(short.exception.status, 422)
         self.assertEqual(short.exception.message, aba.LENGTH_MESSAGE)
         self.assertEqual(payouts.list_payouts(self.db), before)
+
+    # FEATURE 10 — Scenario — create Idempotency-Key replays; conflict is 409
+    def test_create_idempotency_key_replays_and_conflicts(self):
+        first = payout_rules.create(
+            self.db, 'PO-TEST-IDEM', 'Cedar Cleaning Co.', 'DEMO-CEDR-004', 64000, 'ACH',
+            now=NOW, idempotency_key='create-key-1')
+        self.assertFalse(first['replayed'])
+        self.assertEqual(first['status'], 'PAID')
+        again = payout_rules.create(
+            self.db, 'PO-TEST-IDEM', 'Cedar Cleaning Co.', 'DEMO-CEDR-004', 64000, 'ACH',
+            now=LATER, idempotency_key='create-key-1')
+        self.assertTrue(again['replayed'])
+        self.assertEqual(again['payout_id'], 'PO-TEST-IDEM')
+        self.assertEqual(again['status'], 'PAID')
+        self.assertEqual(sum(1 for p in payouts.list_payouts(self.db)
+                             if p['payout_id'] == 'PO-TEST-IDEM'), 1)
+        with self.assertRaises(APIError) as conflict:
+            payout_rules.create(
+                self.db, 'PO-TEST-IDEM-B', 'Cedar Cleaning Co.', 'DEMO-CEDR-004', 65000, 'ACH',
+                now=NOW, idempotency_key='create-key-1')
+        self.assertEqual(conflict.exception.status, 409)
+        self.assertIn('different create', conflict.exception.message)
+
+    # FEATURE 11 — Scenario — create + route leave a who/what/when audit trail
+    def test_create_and_route_write_an_audit_trail(self):
+        result = self.create('PO-TEST-AUDIT', 'Harbor Hardware', 'DEMO-HRBR-006', 207550)
+        events = payouts.list_events(self.db, 'PO-TEST-AUDIT')
+        self.assertEqual([e['action'] for e in events], ['create', 'route'])
+        create_event, route_event = events
+        self.assertEqual(create_event['actor'], 'automation')
+        self.assertEqual(create_event['from_status'], 'PENDING')
+        self.assertEqual(create_event['to_status'], 'PENDING')
+        self.assertEqual(create_event['idempotency_key'], 'create:PO-TEST-AUDIT')
+        self.assertEqual(create_event['evidence']['amount_cents'], 207550)
+        self.assertEqual(route_event['from_status'], 'PENDING')
+        self.assertEqual(route_event['to_status'], 'FLAGGED')
+        self.assertEqual(route_event['actor'], 'automation')
+        self.assertEqual(result['create_event']['event_id'], create_event['event_id'])
 
 
 if __name__ == '__main__':

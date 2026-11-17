@@ -574,6 +574,7 @@ def current_queue(database):
 # waiting for an operator (FLAGGED = "Needs review", or HELD) can be decided; HELD can
 # still be approved or returned later.
 APPROVE, HOLD, RETURN, CLEAR, BLOCK = 'approve', 'hold', 'return', 'clear', 'block'
+CREATE, SCREEN = 'create', 'screen'
 DECISIONS = {
     APPROVE: (APPROVED, PAID), HOLD: (HELD,), RETURN: (RETURNED,),
     CLEAR: (APPROVED, PAID), BLOCK: (RETURNED,),
@@ -584,6 +585,13 @@ EVENT_COLUMNS = ('event_id', 'payout_id', 'action', 'from_status', 'to_status', 
 EXECUTION_EVENT_COLUMNS = ('event_id', 'payout_id', 'execution_status', 'execution_ref', 'at', 'source')
 
 
+def clean_idempotency_key(key):
+    """Require a non-empty Idempotency-Key (1–200 characters), same rules as decide."""
+    if not isinstance(key, str) or not key.strip() or len(key) > 200:
+        raise APIError(422, 'Provide an Idempotency-Key header (1–200 characters).')
+    return key.strip()
+
+
 # FEATURE 14 — Check the decision details
 # Reviewer name is required (it goes in the action log). A reason is optional: Jeffrey
 # approved confirm-only Hold and Return, so a blank or missing reason is saved as empty.
@@ -591,8 +599,7 @@ EXECUTION_EVENT_COLUMNS = ('event_id', 'payout_id', 'execution_status', 'executi
 def _clean(action, actor, reason, key):
     if action not in DECISIONS:
         raise APIError(422, 'Decision must be approve, hold, return, clear or block.')
-    if not isinstance(key, str) or not key.strip() or len(key) > 200:
-        raise APIError(422, 'Provide an Idempotency-Key header (1–200 characters).')
+    key = clean_idempotency_key(key)
     if not isinstance(actor, str) or not actor.strip() or len(actor.strip()) > 80:
         raise APIError(422, 'Provide a reviewer name (1–80 characters).')
     if reason is not None and not isinstance(reason, str):
@@ -600,7 +607,20 @@ def _clean(action, actor, reason, key):
     reason = (reason or '').strip() or None
     if reason is not None and len(reason) > 500:
         raise APIError(422, 'Reason must be 500 characters or fewer.')
-    return actor.strip(), reason
+    return actor.strip(), reason, key
+
+
+def record_transition(db, payout_id, action, from_status, to_status, actor, idempotency_key,
+                      reason=None, at=None, evidence=None):
+    """Append one payout_events audit row for a Desk status transition (who/what/when)."""
+    payload = None if evidence is None else json.dumps(evidence, sort_keys=True)
+    cursor = db.execute(
+        'INSERT INTO payout_events (payout_id, action, from_status, to_status, actor, reason, '
+        'idempotency_key, at, evidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        (payout_id, action, from_status, to_status, actor, reason, idempotency_key, at, payload))
+    return dict(event_id=cursor.lastrowid, payout_id=payout_id, action=action,
+                from_status=from_status, to_status=to_status, actor=actor, reason=reason,
+                idempotency_key=idempotency_key, at=at, evidence=evidence)
 
 
 # FEATURE 15 — Record one decision, at most once per key
@@ -614,7 +634,7 @@ def _clean(action, actor, reason, key):
 # event, execution_ref and execution_updated_at, and status PAID, so the queue, stream
 # and Sent word still see PAID. Approve itself does not write PAID.
 def decide(database, payout_id, action, actor, idempotency_key, reason=None, now=None):
-    actor, reason = _clean(action, actor, reason, idempotency_key)
+    actor, reason, idempotency_key = _clean(action, actor, reason, idempotency_key)
     with storage.connect(str(database), timeout=10) as db:
         db.execute('PRAGMA foreign_keys = ON')
         db.execute('BEGIN IMMEDIATE')
@@ -652,15 +672,9 @@ def decide(database, payout_id, action, actor, idempotency_key, reason=None, now
             match = ofac.screen(payout['payee_name'])
             if match:
                 _apply_sanctions_hold(db, payout, match, at)
-                cursor = db.execute(
-                    'INSERT INTO payout_events (payout_id, action, from_status, to_status, actor, reason, '
-                    'idempotency_key, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                    (payout_id, 'screen', current, FLAGGED, actor, ofac.flag_sentence(match),
-                     idempotency_key, at))
-                return 201, dict(event_id=cursor.lastrowid, payout_id=payout_id, action='screen',
-                                 from_status=current, to_status=FLAGGED, actor=actor,
-                                 reason=ofac.flag_sentence(match), idempotency_key=idempotency_key,
-                                 at=at, evidence=None)
+                return 201, record_transition(
+                    db, payout_id, SCREEN, current, FLAGGED, actor, idempotency_key,
+                    reason=ofac.flag_sentence(match), at=at)
         step = current
         for target in DECISIONS[action]:
             check_transition(step, target)
@@ -670,7 +684,11 @@ def decide(database, payout_id, action, actor, idempotency_key, reason=None, now
             db.execute(
                 'UPDATE payouts SET review_status = ?, updated_at = ? WHERE payout_id = ?',
                 (APPROVED, at, payout_id))
-            _settle(db, payout_id, at, allow_sanctions_clear=(action == CLEAR))
+            held = _settle(db, payout_id, at, allow_sanctions_clear=(action == CLEAR),
+                           actor=actor, idempotency_key=f'settle-screen:{idempotency_key}')
+            if held:
+                # Settle re-screen held the payout; the screen row is the audit trail.
+                return 201, held
         else:
             review, outcome = review_and_outcome(step)
             db.execute(
@@ -678,14 +696,9 @@ def decide(database, payout_id, action, actor, idempotency_key, reason=None, now
                 'WHERE payout_id = ?',
                 (step, review, outcome, at, payout_id))
         evidence = _decision_evidence(payout, actor, reason, at)
-        cursor = db.execute(
-            'INSERT INTO payout_events (payout_id, action, from_status, to_status, actor, reason, '
-            'idempotency_key, at, evidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            (payout_id, action, current, step, actor, reason, idempotency_key, at,
-             json.dumps(evidence, sort_keys=True)))
-        return 201, dict(event_id=cursor.lastrowid, payout_id=payout_id, action=action, from_status=current,
-                         to_status=step, actor=actor, reason=reason, idempotency_key=idempotency_key, at=at,
-                         evidence=evidence)
+        return 201, record_transition(
+            db, payout_id, action, current, step, actor, idempotency_key,
+            reason=reason, at=at, evidence=evidence)
 
 
 # FEATURE 16 — Read the action log
@@ -732,12 +745,15 @@ def _apply_sanctions_hold(db, payout, match, at):
          at, payout['payout_id']))
 
 
-def _settle(db, payout_id, at, allow_sanctions_clear=False):
+def _settle(db, payout_id, at, allow_sanctions_clear=False, actor='automation',
+            idempotency_key=None):
     """Option B demo settle: check NOT_STARTED → SUBMITTED → SETTLED, then store SETTLED.
 
     Writes status PAID, execution_status SETTLED, execution_ref, execution_updated_at,
     and one execution_events row. Approve and clean automation call this; they do not
     write PAID themselves. A second call with the same payout is a no-op.
+    When a sanctions re-screen holds the payout, appends a screen audit row and returns
+    that event; otherwise returns None.
     """
     row = db.execute(
         f'SELECT {", ".join(COLUMNS)} FROM payouts WHERE payout_id = ?', (payout_id,)).fetchone()
@@ -752,8 +768,12 @@ def _settle(db, payout_id, at, allow_sanctions_clear=False):
     elif not allow_sanctions_clear:
         match = ofac.screen(payout['payee_name'])
         if match:
+            from_status = payout['status']
             _apply_sanctions_hold(db, payout, match, at)
-            return
+            key = idempotency_key or f'settle-screen:{payout_id}:{at}'
+            return record_transition(
+                db, payout_id, SCREEN, from_status, FLAGGED, actor, key,
+                reason=ofac.flag_sentence(match), at=at)
     if not already:
         if payout['review_status'] != APPROVED:
             raise APIError(409, 'Only an Approved payout can be settled.')
@@ -774,11 +794,12 @@ def _settle(db, payout_id, at, allow_sanctions_clear=False):
             'UPDATE payouts SET execution_ref = ?, execution_updated_at = ? WHERE payout_id = ?',
             (ref, payout['execution_updated_at'] or at, payout_id))
     if db.execute('SELECT 1 FROM execution_events WHERE event_id = ?', (event_id,)).fetchone():
-        return
+        return None
     db.execute(
         'INSERT INTO execution_events (event_id, payout_id, execution_status, execution_ref, at, source) '
         'VALUES (?, ?, ?, ?, ?, ?)',
         (event_id, payout_id, SETTLED, ref, at, DEMO))
+    return None
 
 
 def list_events(database, payout_id=None):

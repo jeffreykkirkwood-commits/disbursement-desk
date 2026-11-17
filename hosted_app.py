@@ -288,8 +288,10 @@ def create_app(directory=None, public_origin=None):
     # FEATURE 25 — Create one synthetic payee payout in this visitor's demo (#91)
     # Behind the scenes only: POST JSON, requires this visitor's existing demo
     # session cookie (a POST cannot start a new session). Creates only fictional
-    # DEMO- payouts in that visitor's database and returns JSON. No page, link
-    # or button is added. Reset demo still restores the starting set.
+    # DEMO- payouts in that visitor's database and returns JSON. Needs an
+    # Idempotency-Key header so a double-submit replays the first create (200)
+    # instead of inserting a second disbursement. No page, link or button is
+    # added. Reset demo still restores the starting set.
     def _next_demo_payout_id(database):
         with storage.connect(str(database)) as db:
             ids = [row[0] for row in db.execute('SELECT payout_id FROM payouts')]
@@ -305,18 +307,26 @@ def create_app(directory=None, public_origin=None):
         if not isinstance(body, dict):
             raise APIError(422, 'Send a JSON object with a payee name, DEMO- account and amount.')
         database = g.payments.database
+        # Require the header here so a missing key is 422 (not a silent create:{id} default).
+        idempotency_key = payouts.clean_idempotency_key(request.headers.get('Idempotency-Key'))
         payout_id = body.get('payout_id') or _next_demo_payout_id(database)
         payout_events.sync(database)
         result = payout_rules.create(
             database, payout_id, body.get('payee_name'), body.get('payee_account'),
             body.get('amount_cents'), body.get('rail', 'ACH'),
             bank_details_changed_at=body.get('bank_details_changed_at'),
-            routing_number=body.get('routing_number'))
-        event('payout_simulated', payout_id=payout_id, status=result['status'])
+            routing_number=body.get('routing_number'),
+            idempotency_key=idempotency_key)
+        payout_id = result['payout_id']
+        status = 200 if result.get('replayed') else 201
+        event('payout_simulated_replayed' if status == 200 else 'payout_simulated',
+              payout_id=payout_id, status=result['status'])
         payout_events.sync(database)
         return jsonify(payout=payouts.get_payout(database, payout_id),
                        status=result['status'], changed=result['changed'],
-                       event=result['event']), 201
+                       replayed=bool(result.get('replayed')),
+                       create_event=result.get('create_event'),
+                       event=result['event']), status
 
     # FEATURE 23 — Stream payout created and status-changed events (#43)
     # Server-sent events for this visitor's demo only. A reconnect sends the

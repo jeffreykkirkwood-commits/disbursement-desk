@@ -254,9 +254,11 @@ class OfacDeskTests(unittest.TestCase):
         return self.client.get('/desk', base_url='https://demo.example')
 
     def simulate(self, body=None):
+        payout_id = (body or DEMO).get('payout_id', 'PO-4100')
         return self.client.post('/payouts/simulate', json=body or DEMO,
                                 base_url='https://demo.example',
-                                headers={'Origin': 'https://demo.example'})
+                                headers={'Origin': 'https://demo.example',
+                                         'Idempotency-Key': f'ofac-sim-{payout_id}'})
 
     def decide(self, payout_id, action):
         return self.client.post(f'/payouts/{payout_id}/{action}',
