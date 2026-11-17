@@ -207,8 +207,7 @@
     setCreateBusy(true);
     const demo = document.querySelector('meta[name="demo-id"]');
     try {
-      // Versioned create (same handler as simulate). Do not read the response body
-      // onto the page — reload All so the new row is visible.
+      // Versioned create. Do not copy the response body onto the page — reload All.
       const reply = await fetch('/v1/payouts', {
         method: 'POST',
         headers: {'Content-Type': 'application/json', 'Idempotency-Key': pendingCreate.key,
