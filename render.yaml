@@ -29,6 +29,8 @@ services:
         sync: false
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
+      - key: RENDER_EVENTS_SECRET
+        sync: false
       - key: OFAC_HTTP_URL
         sync: false
       - key: OFAC_HTTP_TOKEN

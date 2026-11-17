@@ -24,6 +24,12 @@ Observability (structured logs + decide/create/503/stream counters): see
 Deploy posture (Render Blueprint, ephemeral `/tmp`, secrets, free spin-down):
 see [docs/deploy-posture.md](docs/deploy-posture.md). Blueprint: `render.yaml`.
 
+Render failure notices use Dashboard email or Slack (failed deploy, unhealthy
+service). `POST /internal/render-events` stays closed until
+`RENDER_EVENTS_SECRET` is set in the Dashboard (`sync: false`). See
+[docs/deploy-posture.md](docs/deploy-posture.md) and
+[docs/observability.md](docs/observability.md).
+
 Multi-worker stream-slot cap (`STREAM_SLOT_BACKEND=file` under
 `DEMO_DIRECTORY/_stream_slots`): see [docs/stream-slots.md](docs/stream-slots.md).
 
@@ -59,6 +65,13 @@ Set these in the environment. Do not commit them.
 - `STRIPE_WEBHOOK_SECRET`: signing secret for `POST /stripe/webhook`. It must start with `whsec_`.
 - `STRIPE_DESTINATION_MAP`: JSON object mapping a `payee_account` to an `acct_` id. A payout column `stripe_connected_account_id` wins when it is set.
 - `STRIPE_DEMO_ID`: the one 64-hex demo folder allowed to create Transfers. Other folders keep the demo settle.
+
+## Render events
+
+`RENDER_EVENTS_SECRET` is the shared secret for `POST /internal/render-events`.
+Leave it unset and that path returns 404. Do not commit the value. Render's
+webhook signing secret starts with `whsec_` and belongs on a Render webhook,
+not in this variable. See [docs/deploy-posture.md](docs/deploy-posture.md).
 
 ## Run the app shell locally
 
