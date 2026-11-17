@@ -403,8 +403,8 @@ def create_app(directory=None, public_origin=None):
     # session cookie (a POST cannot start a new session). Creates only fictional
     # DEMO- payouts in that visitor's database and returns JSON. Needs an
     # Idempotency-Key header so a double-submit replays the first create (200)
-    # instead of inserting a second disbursement. No page, link or button is
-    # added. Reset demo still restores the starting set.
+    # instead of inserting a second disbursement. The Desk New payout form posts
+    # here with a client-minted key. Reset demo still restores the starting set.
     def _next_demo_payout_id(database):
         with storage.connect(str(database)) as db:
             ids = [row[0] for row in db.execute('SELECT payout_id FROM payouts')]

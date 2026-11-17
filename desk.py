@@ -1,9 +1,9 @@
 # START HERE — Builds the Disbursement Desk page (HTML): the payout queue, the payout
-# detail, the Approve / Hold / Return confirm dialog and the note badges (issue #32
-# slices 1 to 5). This file never changes the database: desk.js sends a confirmed
-# decision to the #35 decision API (POST /payouts/<id>/<action>) and reloads. Slice 5
-# reads each payout's stored #37 note (note_text, note_source, note_fallback) and
-# shows it on screen. It does not call a model or invent note sentences.
+# detail, the Approve / Hold / Return confirm dialog, the New payout form (idempotent
+# create), and the note badges (issue #32 slices 1 to 5). This file never changes the
+# database: desk.js posts decisions and creates, then reloads. Slice 5 reads each
+# payout's stored #37 note (note_text, note_source, note_fallback) and shows it on
+# screen. It does not call a model or invent note sentences.
 """Disbursement Desk presentation for the approved #40 design. Never writes to the database."""
 from desk_common import money, text
 import payout_notes
@@ -41,6 +41,11 @@ ACTION_WORDS = {
 }
 AUDIT_EMPTY = 'No activity yet.'
 AUDIT_HEADING = 'Activity'
+CREATE_HEADING = 'New payout'
+CREATE_FAILED = 'That didn’t create. Nothing has changed. Try again.'
+CREATE_HINT = (
+    'Uses a one-time Idempotency-Key so a double-click or retry cannot insert two '
+    'disbursements. DEMO- accounts only.')
 
 # FEATURE 01b — The three confirm dialogs, word for word from #40
 # action: (button, heading, body, confirm-button classes). Return's confirm is red.
@@ -352,6 +357,19 @@ h1{font-size:26px;margin:0;letter-spacing:-.5px}
 .err{background:var(--red-bg);color:var(--red);border-radius:8px;padding:14px 16px;margin:8px;font-size:15px}
 .foot{font-size:14px;color:var(--muted);margin-top:12px}
 .link{background:none;border:0;color:var(--green);text-decoration:underline;font-weight:600;min-height:44px;padding:0 8px}
+.create{background:#fff;border:1px solid var(--line);border-radius:12px;margin:0 0 14px;overflow:hidden}
+.create > summary{list-style:none;cursor:pointer;min-height:48px;padding:12px 18px;font-weight:700;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.create > summary::-webkit-details-marker{display:none}
+.create > summary::after{content:"+";font-weight:700;color:var(--muted)}
+.create[open] > summary::after{content:"–"}
+.create-body{padding:0 18px 16px;border-top:1px solid var(--line)}
+.create-hint{font-size:14px;color:var(--muted);margin:12px 0}
+.create-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px}
+.create-grid label{display:flex;flex-direction:column;gap:4px;font-size:13px;font-weight:650;color:var(--muted)}
+.create-grid label.span2{grid-column:1 / -1}
+.create-grid input,.create-grid select{min-height:44px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font:inherit;color:var(--ink);background:#fff}
+.create-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:12px}
+@media(max-width:760px){.create-grid{grid-template-columns:1fr}}
 .detail{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;align-self:start;position:sticky;top:16px}
 .panel[hidden]{display:none}
 .dtop{display:flex;justify-content:space-between;align-items:center;gap:8px}
@@ -426,6 +444,29 @@ dialog .btn{min-width:110px}
         <button type="button" class="chip" data-f="all" aria-pressed="false">All''' + total + '''</button>
       </div>
     </div>
+    <details class="create" id="create-panel">
+      <summary>''' + CREATE_HEADING + '''</summary>
+      <div class="create-body">
+        <p class="create-hint">''' + CREATE_HINT + '''</p>
+        <form id="create-form" class="create-grid" novalidate>
+          <label>Payee name <input name="payee_name" id="c-payee-name" required maxlength="80" autocomplete="off"></label>
+          <label>DEMO- account <input name="payee_account" id="c-payee-account" required maxlength="40" pattern="DEMO-.+" placeholder="DEMO-ACME-001" autocomplete="off"></label>
+          <label>Amount (USD) <input name="amount" id="c-amount-usd" required inputmode="decimal" placeholder="1000.00" autocomplete="off"></label>
+          <label>Rail <select name="rail" id="c-rail">
+            <option value="ACH" selected>ACH</option>
+            <option value="SAME_DAY_ACH">Same-day ACH</option>
+            <option value="RTP">RTP</option>
+            <option value="FEDNOW">FedNow</option>
+            <option value="WIRE">Wire</option>
+          </select></label>
+          <label class="span2">Payout id (optional) <input name="payout_id" id="c-payout-id" maxlength="40" placeholder="Auto if blank" autocomplete="off"></label>
+          <div class="create-actions span2">
+            <button type="submit" class="btn primary" id="c-submit">Create payout</button>
+            <span id="c-create-error" class="err-inline" role="alert" hidden>''' + CREATE_FAILED + '''</span>
+          </div>
+        </form>
+      </div>
+    </details>
     <ul id="list" class="list">''' + items + '''</ul>
     <p class="foot">Your changes stay in this browser only. <button type="button" id="reset" class="link">Reset demo</button><span id="r-error" class="err-inline" role="status" hidden>''' + RESET_FAILED + '''</span></p>
   </section>

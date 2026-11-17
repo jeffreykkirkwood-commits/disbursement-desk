@@ -17,4 +17,4 @@ A fresh seed payout with no decisions yet shows “No activity yet.”
 ## Not in this panel
 
 Execution / reconciliation logs stay on their own APIs. Safe create UI with
-client idempotency keys is a separate Desk UX item.
+client Idempotency-Keys: [desk-create.md](desk-create.md).

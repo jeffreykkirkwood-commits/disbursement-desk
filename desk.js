@@ -1,11 +1,13 @@
 // Disbursement Desk, slices 1 to 5 (#32): switch the queue between Exceptions and All,
 // open one payout's detail, Approve / Hold / Return it after a confirm dialog,
-// Reset demo, and show the stored rules note or the AI-unavailable fallback. The
-// server already rendered every row, panel, note and the dialog words; this shows
-// or hides them. A confirmed
+// create a synthetic payout with a client Idempotency-Key, Reset demo, and show
+// the stored rules note or the AI-unavailable fallback. The server already rendered
+// every row, panel, note and the dialog words; this shows or hides them. A confirmed
 // action is sent to the #35 decision API (POST /payouts/<id>/<action>) and the page
 // reloads, so the list and detail show the saved state. If it does not save, the
 // dialog stays open and says so; nothing on screen changes. Cancel changes nothing.
+// New payout posts to /payouts/simulate with one Idempotency-Key per attempt (retries
+// reuse the same key so a double-click cannot create two disbursements).
 // Reset demo posts to /payouts/reset, which restores this visitor's synthetic seed
 // only, then reloads on Exceptions with no payout open. If reset does not save,
 // nothing on screen changes, and one approved line appears next to Reset demo.
@@ -24,6 +26,8 @@
   let filter = 'exceptions';
   let selected = null;
   let pending = null; // {id, action, key} while the dialog is open
+  let createKey = null; // Idempotency-Key reused while a create is in flight / retrying
+  let creating = false;
   let aiOff = false;
 
   function writeHash() {
@@ -155,6 +159,77 @@
   }
 
   if (dialog) dialog.addEventListener('close', () => { pending = null; });
+
+  function dollarsToCents(raw) {
+    const cleaned = String(raw || '').trim().replace(/\$/g, '').replace(/,/g, '');
+    if (!/^\d+(\.\d{1,2})?$/.test(cleaned)) return null;
+    const [whole, frac = ''] = cleaned.split('.');
+    return parseInt(whole, 10) * 100 + parseInt((frac + '00').slice(0, 2), 10);
+  }
+
+  // One Idempotency-Key per create attempt: a failed submit retries the same key
+  // so a double-click or network retry cannot insert two disbursements.
+  async function createPayout(event) {
+    event.preventDefault();
+    if (creating) return;
+    const form = document.getElementById('create-form');
+    const err = document.getElementById('c-create-error');
+    if (!form) return;
+    const payee = form.payee_name.value.trim();
+    const account = form.payee_account.value.trim();
+    const cents = dollarsToCents(form.amount.value);
+    const rail = form.rail.value;
+    const payoutId = form.payout_id.value.trim();
+    if (!payee || !account.startsWith('DEMO-') || cents === null || cents <= 0) {
+      if (err) err.hidden = false;
+      return;
+    }
+    creating = true;
+    if (err) err.hidden = true;
+    if (!createKey) createKey = newKey();
+    const submit = document.getElementById('c-submit');
+    if (submit) submit.disabled = true;
+    const demo = document.querySelector('meta[name="demo-id"]');
+    const body = {
+      payee_name: payee,
+      payee_account: account,
+      amount_cents: cents,
+      rail: rail,
+    };
+    if (payoutId) body.payout_id = payoutId;
+    try {
+      const reply = await fetch('/payouts/simulate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': createKey,
+          'X-Demo-ID': demo ? demo.content : '',
+        },
+        body: JSON.stringify(body),
+      });
+      if (!reply.ok) {
+        if (await sessionCode(reply) === 'DEMO_SESSION_CHANGED' && recoverSession()) return;
+        throw new Error('not created');
+      }
+      const payload = await reply.json();
+      const id = payload && payload.payout && payload.payout.payout_id;
+      try { sessionStorage.removeItem('desk-session-reloaded'); } catch (e) {}
+      createKey = null;
+      if (id) {
+        location.replace(location.pathname + location.search + '#f=all&id=' + encodeURIComponent(id));
+        location.reload();
+        return;
+      }
+      location.reload();
+    } catch (error) {
+      creating = false;
+      if (submit) submit.disabled = false;
+      if (err) err.hidden = false;
+    }
+  }
+
+  const createForm = document.getElementById('create-form');
+  if (createForm) createForm.addEventListener('submit', createPayout);
 
   // Reset is immediate: the approved mock and slice 4 spec have no confirm dialog.
   // A failed reset leaves the page as it is and shows the approved line next to

@@ -40,6 +40,9 @@ Concurrent decide exclusivity (stress + formal `Inv_AtMostOneSettle`): see
 Desk detail Activity (who/what/when from `payout_events`): see
 [docs/desk-audit.md](docs/desk-audit.md).
 
+Desk **New payout** form (client `Idempotency-Key`, no double create): see
+[docs/desk-create.md](docs/desk-create.md).
+
 Stripe Connect test-mode Transfers stay off unless `STRIPE_PAYOUTS_ENABLED`
 is exactly `1`. Any other value keeps the demo settle. See
 [docs/stripe-connect-go-live.md](docs/stripe-connect-go-live.md).

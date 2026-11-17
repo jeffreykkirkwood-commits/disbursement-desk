@@ -341,11 +341,11 @@ class HostedSeedTests(unittest.TestCase):
     # FEATURE 12 — Scenario — payouts show only on the Desk, its POST routes, the stream,
     # and the behind-the-scenes review-reasons GET (#32).
     # The payout APIs are the decision route (#35, clear/block in #111), Reset demo (#32 slice 4), the
-    # live update stream (#43), the behind-the-scenes simulate route (#91),
+    # live update stream (#43), simulate (#91; Desk New payout posts via desk.js),
     # the behind-the-scenes execution replay route (#56), and the behind-the-scenes
     # review-reasons GET. /dashboard is not a route here (the Lab dashboard stayed
-    # behind). / and /desk/ have no control that points at simulate, execution-replay
-    # or review-reasons. Route pin includes /v1 create+decide and /openapi.json.
+    # behind). HTML has no simulate/execution-replay/review-reasons link; desk.js posts
+    # simulate with Idempotency-Key. Route pin includes /v1 create+decide and /openapi.json.
     def test_no_new_routes(self):
         client = self.app.test_client()
         self.assertEqual(client.get('/dashboard', base_url='https://demo.example').status_code, 404)
@@ -357,6 +357,9 @@ class HostedSeedTests(unittest.TestCase):
             self.assertNotIn('/payouts/simulate', page)
             self.assertNotIn('/payouts/execution-replay', page)
             self.assertNotIn('review-reasons', page)
+        script = client.get('/desk.js', base_url='https://demo.example').get_data(as_text=True)
+        self.assertIn("fetch('/payouts/simulate'", script)
+        self.assertIn('Idempotency-Key', script)
         rules = [rule for rule in self.app.url_map.iter_rules() if re.search('payout', str(rule))]
         self.assertEqual({str(r) for r in rules},
                          {'/payouts/<payout_id>/<any(approve, hold, return, clear, block):action>',

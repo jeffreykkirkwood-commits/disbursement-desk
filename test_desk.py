@@ -147,7 +147,10 @@ class DeskTests(DeskBase):
         with closing(sqlite3.connect(str(self.database()))) as db, db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM payout_events').fetchone()[0], 0)
         html = self.get().get_data(as_text=True)
-        self.assertNotIn('<form', html)
+        # New payout is the only form; opening Desk still writes nothing (#P2 create UX).
+        self.assertEqual(html.count('<form'), 1)
+        self.assertIn('id="create-form"', html)
+        self.assertIn('id="create-panel"', html)
 
     # Scenario — the filter script is served without starting a demo
     def test_script_does_not_create_demo(self):
@@ -471,6 +474,54 @@ class DeskActionTests(DeskBase):
         self.assertNotIn("'reviewer'", script)
         self.assertNotIn('reason', script)
 
+    # Scenario — Desk renders New payout form for safe create (P2)
+    def test_new_payout_form_markup(self):
+        html = self.get().get_data(as_text=True)
+        self.assertIn('id="create-panel"', html)
+        self.assertIn('>New payout</summary>', html)
+        self.assertIn('id="create-form"', html)
+        self.assertIn('id="c-payee-name"', html)
+        self.assertIn('id="c-payee-account"', html)
+        self.assertIn('pattern="DEMO-.+"', html)
+        self.assertIn('id="c-amount-usd"', html)
+        self.assertIn('id="c-rail"', html)
+        self.assertIn('Idempotency-Key so a double-click', html)
+        self.assertIn('id="c-create-error"', html)
+
+    # Scenario — desk.js posts create with a reused Idempotency-Key (no double insert)
+    def test_script_creates_with_idempotency_key(self):
+        script = self.get('/desk.js').get_data(as_text=True)
+        self.assertIn("fetch('/payouts/simulate'", script)
+        self.assertIn("'Idempotency-Key': createKey", script)
+        self.assertIn('if (!createKey) createKey = newKey()', script)
+        self.assertIn('amount_cents: cents', script)
+        self.assertIn("location.replace(location.pathname + location.search + '#f=all&id='", script)
+
+    # Scenario — New payout through the Desk simulate path uses one key for create+replay
+    def test_new_payout_from_desk_session_is_idempotent(self):
+        self.get()
+        headers = {
+            'Origin': 'https://demo.example',
+            'Idempotency-Key': 'desk-create-ui-1',
+        }
+        body = {
+            'payee_name': 'Oak Street Books',
+            'payee_account': 'DEMO-OAKS-010',
+            'amount_cents': 42000,
+            'rail': 'ACH',
+            'payout_id': 'PO-DESK-CREATE-1',
+        }
+        first = self.client.post('/payouts/simulate', json=body,
+                                 base_url='https://demo.example', headers=headers)
+        again = self.client.post('/payouts/simulate', json=body,
+                                 base_url='https://demo.example', headers=headers)
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(again.status_code, 200)
+        self.assertTrue(again.json['replayed'])
+        matches = [p for p in payouts.list_payouts(self.database())
+                   if p['payout_id'] == 'PO-DESK-CREATE-1']
+        self.assertEqual(len(matches), 1)
+
     # Scenario — a Desk POST after the demo folder is gone (instance replace) is session missing
     def test_desk_post_after_demo_folder_gone_is_session_missing(self):
         page = self.get()
@@ -656,15 +707,16 @@ class DeskResetTests(DeskBase):
         self.assertIn('resetError.hidden = false', script)
         self.assertIn('resetError.hidden = true', script)
         # No confirm dialog for Reset. Badge wording stays in the HTML. The
-        # failed-reset line lives in the HTML (option A, c6774718893); the script
-        # never copies the API body onto the page.
+        # failed-reset line lives in the HTML (option A, c6774718893); Reset never
+        # copies the API body onto the page. New payout may read reply.json for id.
         self.assertNotIn('confirm=reset', script)
         self.assertNotIn('RULES NOTE', script)
         self.assertNotIn('AI NOTE', script)
-        self.assertNotIn('reply.json', script)
         self.assertNotIn('reply.text', script)
-        self.assertNotIn('.json()', script)
         self.assertNotIn('internal_error', script)
+        self.assertIn('resetError.hidden = false', script)
+        self.assertNotIn('resetError.textContent', script)
+        self.assertNotIn('resetError.innerHTML', script)
         # The approved sentence is in the page HTML, not built from the response.
         self.assertNotIn('That didn’t reset. Nothing has changed. Try again.', script)
 
@@ -676,9 +728,9 @@ class DeskResetTests(DeskBase):
         self.assertIn('dialog.open', script)
         self.assertIn('close(true)', script)
         self.assertIn('writeHash()', script)
-        # Leave Escape to the confirm dialog while it is open; do not add a third fetch.
+        # Leave Escape to the confirm dialog while it is open; do not add a fourth fetch.
         self.assertIn('if (dialog && dialog.open) return;', script)
-        self.assertEqual(script.count('fetch('), 2)
+        self.assertEqual(script.count('fetch('), 3)
 
     # Scenario — the failed-reset line is the exact approved sentence, next to Reset demo
     def test_failed_reset_wording_is_exact(self):
@@ -831,10 +883,11 @@ class DeskNoteTests(DeskBase):
         self.assertIn("q.set('ai', 'off')", script)
         self.assertIn('.note[data-note="fallback"]', script)
         self.assertIn('.note[data-note="rules"]', script)
-        # The only fetches are the existing decision and reset routes; no model endpoint.
-        self.assertEqual(script.count('fetch('), 2)
+        # Fetches are decision, reset, and New payout simulate — no model endpoint.
+        self.assertEqual(script.count('fetch('), 3)
         self.assertIn("fetch('/payouts/' + encodeURIComponent(pending.id)", script)
         self.assertIn("fetch('/payouts/reset'", script)
+        self.assertIn("fetch('/payouts/simulate'", script)
         self.assertNotIn('workers.ai', script.lower())
         self.assertNotIn('openai', script.lower())
         self.assertNotIn('AI-drafted, review required', script)
