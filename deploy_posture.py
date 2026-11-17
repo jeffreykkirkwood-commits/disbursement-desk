@@ -14,6 +14,7 @@ _EPHEMERAL_PREFIXES = ('/tmp', '/var/tmp')
 # Keep in sync with docs/deploy-posture.md and render.yaml sync:false entries.
 SECRET_ENV_KEYS = (
     'OPERATOR_BEARER_TOKENS',
+    'DESK_OIDC_CLIENT_SECRET',
     'STRIPE_SECRET_KEY',
     'STRIPE_WEBHOOK_SECRET',
     'OFAC_HTTP_URL',

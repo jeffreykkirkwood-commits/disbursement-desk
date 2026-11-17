@@ -1,15 +1,15 @@
-# How Desk would bind OIDC operators
+# How Desk binds OIDC operators
 
-This is a design for a later change. Desk does not speak OIDC today.
-Current behavior is in [operator-authz.md](operator-authz.md).
+Desk speaks OIDC when `DESK_OIDC_ISSUER` is set. Leave that variable unset
+and the demo mint stays as described in [operator-authz.md](operator-authz.md).
 
 The demo cookie `payments_demo` selects the tenant database.
 The operator is a separate fact. Today that fact is a minted
 `operator.json` in the demo folder, or an entry in `DESK_OPERATOR_TOKENS`.
-OIDC would supply the same `Operator` (`operator_id`, `display_name`, `role`)
+OIDC supplies the same `Operator` (`operator_id`, `display_name`, `role`)
 from an identity provider. Decide, reset, and the audit actor stay as they are.
 
-## What would stay
+## What stays
 
 - `Operator.can_decide` is true for `reviewer` and `admin`.
 - `Operator.can_reset` is true only for `admin`.
@@ -21,7 +21,7 @@ from an identity provider. Decide, reset, and the audit actor stay as they are.
 - A present `Authorization: Bearer` token still replaces the session principal.
   An unknown token still returns `401` `OPERATOR_UNAUTHORIZED` and does not fall through.
 
-## What would change
+## What changes
 
 When `DESK_OIDC_ISSUER` is unset, behavior stays as it is now.
 The demo mint (`DESK_OPERATOR_ROLE`, `DESK_OPERATOR_NAME`, default `admin`)
@@ -36,28 +36,34 @@ The demo id pattern is 2 to 64 characters from `a-z`, `0-9`, `.`, `_`, and `-`.
 That pattern rejects many real subjects, including uppercase UUIDs and long ids.
 The OIDC path does not use that pattern and does not slug the subject.
 Reject an empty `sub`, a `sub` longer than 256 characters, and a `sub`
-that contains a newline, `<`, or `>`. The 256-character cap keeps the
-audit actor line bounded. SQLite does not enforce it today.
+that contains a newline, `<`, or `>`.
+The audit actor is `display_name <operator_id>`.
+Decide accepts that string up to 339 characters, which is an 80-character
+display name, a 256-character subject, and the three characters in ` <>`.
 `display_name` is the first non-empty claim among `name`, `email`,
 `preferred_username`, and `sub`, trimmed to 80 characters.
 
 ## Browser login
 
-Proposed routes, not built here: `GET /auth/oidc/login` and
-`GET /auth/oidc/callback`.
+The routes are `GET /auth/oidc/login` and `GET /auth/oidc/callback`.
 
 1. A demo route has no Bearer token and no operator session.
 2. If OIDC is unset, Desk mints `operator.json` as it does today.
-3. If OIDC is set and the method is GET or HEAD, Desk redirects to the
-   provider authorization endpoint. The flow is authorization code with
-   Proof Key for Code Exchange (PKCE). Desk stores `state` and `nonce`
-   until the callback.
+3. If OIDC is set and the method is GET or HEAD, Desk redirects to
+   `GET /auth/oidc/login`, which redirects to the provider authorization
+   endpoint. The flow is authorization code with a proof key for code exchange.
+   Desk stores `state`
+   and `nonce` until the callback.
 4. The provider redirects to the callback with a code.
 5. Desk exchanges the code and checks the ID token.
-   The signature must match the issuer JSON Web Key Set (JWKS).
+   Desk verifies `HS256` with the client secret, using the standard library.
+   Any other `alg`, including `none` and `RS256`, is rejected.
    `iss` must equal `DESK_OIDC_ISSUER`. `aud` must be the client id, or a list that contains it.
-   Desk rejects an expired token. The later slice uses a maintained
-   OIDC client for that check.
+   A list of more than one audience must also set `azp` to the client id.
+   Desk rejects an expired token (`exp` at or before now) and a nonce that
+   does not match the login it started.
+   A non-mock issuer is discovered at
+   `/.well-known/openid-configuration`. Discovery failure rejects the login.
 6. Desk maps claims to an `Operator`. If the claims match no Desk group,
    Desk returns `403` `OPERATOR_FORBIDDEN` and does not mint a demo operator.
    The group names are in Roles from claims below.
@@ -70,7 +76,8 @@ Proposed routes, not built here: `GET /auth/oidc/login` and
    a POST to the provider. Desk does not mint `operator.json` on that POST.
 
 The session record is `session_id`, `operator_id`, `display_name`, `role`,
-and `expires_at`. It does not hold the ID token or the client secret.
+and `expires_at`. It lasts 8 hours. The one-time login state lasts 10 minutes.
+The record does not hold the ID token or the client secret.
 It does not live in process memory. It does not live in `payments.sqlite3`.
 That file is the tenant ledger, and Reset demo rewrites it.
 Demo cleanup only deletes a 64-hex folder that contains `payments.sqlite3`.
@@ -112,9 +119,8 @@ Migration order:
 3. Browsers sign in through the provider. API clients keep their bearer tokens.
 4. New decisions show `display_name <sub>` in `payout_events.actor`.
 5. A human token leaves the map only after that person has signed in.
-6. A machine token stays until that client sends an OIDC access token.
-   The access token uses the same issuer, audience, and group checks as the
-   ID token. That client path is part of the same later slice.
+6. A machine token stays until a later change accepts an OIDC access token.
+   This slice does not treat an access token as a bearer token.
 7. `DESK_OPERATOR_TOKENS` is removed when the map is empty.
    An unknown bearer still returns `401`.
 
@@ -137,9 +143,9 @@ Defaulting a missing group to `admin` was rejected.
 The demo mint defaults to `admin` so the visitor who owns a sandbox can
 reset it. A provider user with no Desk group must not become `admin`.
 
-## Configuration to add later
+## Configuration
 
-Desk does not read these variables in this change.
+Desk reads these variables when the process starts.
 Secrets stay in the host secret store. Do not commit them.
 
 | Variable | Purpose |
@@ -151,10 +157,27 @@ Secrets stay in the host secret store. Do not commit them.
 | `DESK_OIDC_GROUPS_CLAIM` | Claim that lists groups. Default `groups`. |
 | `DESK_OIDC_ADMIN_GROUP` | Group that maps to `admin`. Default `desk-admin`. |
 | `DESK_OIDC_REVIEWER_GROUP` | Group that maps to `reviewer`. Default `desk-reviewer`. |
+| `DESK_OIDC_MOCK` | `1` turns on the in-process issuer. Never set this when `RENDER` is set. |
+
+## Mock issuer
+
+`DESK_OIDC_MOCK=1` handles authorize and token exchange inside the process.
+CI and local tests do not call a network identity provider.
+`GET /auth/oidc/mock/authorize` is registered only in this mode.
+The user is taken from the query names `mock_sub`, `mock_name`, `mock_email`,
+`mock_preferred_username`, and `mock_groups` (comma-separated).
+When a query name is omitted, Desk uses `DESK_OIDC_MOCK_SUB`,
+`DESK_OIDC_MOCK_NAME`, `DESK_OIDC_MOCK_EMAIL`,
+`DESK_OIDC_MOCK_PREFERRED_USERNAME`, or `DESK_OIDC_MOCK_GROUPS`.
+Omitted groups are an empty list. The login then returns 403.
+The mock still signs an `HS256` ID token and runs the same checks as a
+non-mock issuer. `create_app` raises if `RENDER` and `DESK_OIDC_MOCK` are
+both set.
 
 ## Out of scope
 
-- No OIDC routes, client, or session code in this change.
+- No RS256 or JWKS verification. Those tokens are rejected.
+- No OIDC access token as a replacement for `DESK_OPERATOR_TOKENS`.
 - No change to the Stripe send path.
 - No SCIM provisioning.
 - No payout-level permissions beyond `reviewer` and `admin`.

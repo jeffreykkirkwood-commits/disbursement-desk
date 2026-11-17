@@ -41,6 +41,33 @@ Bearer example:
 Send `Authorization: Bearer tok-ada`. Unknown tokens → **401**
 `OPERATOR_UNAUTHORIZED`. The demo cookie still selects the tenant database.
 
+## OIDC sign-in
+
+Leave `DESK_OIDC_ISSUER` unset and the mint above is unchanged.
+
+When it is set, Desk does not write `operator.json` for that process.
+A browser GET or HEAD with no `desk_operator` session redirects to
+`GET /auth/oidc/login`. A POST with no session returns **401**
+`OPERATOR_UNAUTHORIZED`. Desk does not redirect a POST, and it does not
+mint a demo operator on that POST.
+
+A Bearer token still replaces the session. An unknown Bearer token still
+returns **401** and does not fall through to the cookie.
+
+The admin group defaults to `desk-admin`. The reviewer group defaults to
+`desk-reviewer`. An account in neither group gets **403**
+`OPERATOR_FORBIDDEN`. It is not given `admin`.
+
+The session file lives in `DEMO_DIRECTORY/_operator_sessions`.
+It is not a row in `payments.sqlite3`. The `desk_operator` cookie is a
+random session id. It is not the `payments_demo` cookie.
+
+`DESK_OIDC_MOCK=1` is the in-process issuer used by tests. The process
+refuses to start when that flag is set together with `RENDER`.
+
+The variable list, the `HS256` check, and the choices Desk rejected are in
+[How Desk binds OIDC operators](operator-oidc-design.md).
+
 ## Deploy posture notes (this slice)
 
 - **Liveness:** `GET /health` — process up; does not touch demo storage.
@@ -52,6 +79,5 @@ Send `Authorization: Bearer tok-ada`. Unknown tokens → **401**
 
 ## Not in this slice
 
-OIDC login is design-only. See [How Desk would bind OIDC operators](operator-oidc-design.md).
-This slice does not add an identity provider. OpenAPI / versioned create-decide:
-see [docs/api-contract.md](api-contract.md).
+See the versioned create and decide contract in
+[docs/api-contract.md](api-contract.md).

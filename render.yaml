@@ -23,6 +23,8 @@ services:
         value: "3.12.8"
       - key: OPERATOR_BEARER_TOKENS
         sync: false
+      - key: DESK_OIDC_CLIENT_SECRET
+        sync: false
       - key: STRIPE_SECRET_KEY
         sync: false
       - key: STRIPE_WEBHOOK_SECRET
