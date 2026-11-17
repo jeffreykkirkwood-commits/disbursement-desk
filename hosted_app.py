@@ -14,6 +14,7 @@ from uuid import uuid4
 from flask import Flask, Response, g, jsonify, redirect, request, stream_with_context
 from werkzeug.exceptions import HTTPException
 from desk_common import APIError
+import api_contract
 import execution_replay
 import payouts
 import payout_rules
@@ -93,8 +94,9 @@ def create_app(directory=None, public_origin=None):
               endpoint=str(request.url_rule) if request.url_rule else '(unknown endpoint)')
         g.cookie = g.demo_id = None
         g.operator = None
-        # Health/readiness/metrics probes, assets and unknown routes must not allocate databases.
-        if request.endpoint in (None, 'health', 'ready', 'metrics_snapshot', 'desk_script', 'home'):
+        # Health/readiness/metrics/OpenAPI probes, assets and unknown routes must not allocate databases.
+        if request.endpoint in (None, 'health', 'ready', 'metrics_snapshot', 'openapi_document',
+                                'desk_script', 'home'):
             return
         # Reject foreign websites before looking up a browser session. The server log retains the rejection.
         if request.method == 'POST':
@@ -173,9 +175,13 @@ def create_app(directory=None, public_origin=None):
     # FEATURE 06 — Explain expected request problems
     # Turn an expected rule violation from the Desk's modules (desk_common.py) into a
     # JSON error with its status code (for example 422 = "your input is invalid").
+    # Include stable `code` when the raiser set one (api_contract.ERROR_CODES).
     @app.errorhandler(APIError)
     def expected_error(error):
-        return jsonify(error=error.message), error.status
+        payload = {'error': error.message}
+        if error.code:
+            payload['code'] = error.code
+        return jsonify(payload), error.status
 
     # FEATURE 07 — Explain web request problems
     # Preserve errors such as malformed JSON and oversized input as their proper client
@@ -190,7 +196,8 @@ def create_app(directory=None, public_origin=None):
     @app.errorhandler(Exception)
     def unexpected_error(error):
         event('internal_error', level=logging.ERROR, error_type=type(error).__name__)
-        return jsonify(error='Internal server error. Retry with the same idempotency key.'), 500
+        return jsonify(error='Internal server error. Retry with the same idempotency key.',
+                       code=api_contract.INTERNAL_ERROR), 500
 
     # FEATURE 10 — Check whether the server responds (liveness)
     # Return a small status message without creating a visitor database or submitting a
@@ -200,6 +207,12 @@ def create_app(directory=None, public_origin=None):
     def health():
         return jsonify(status='ok', mode='fictional payments only',
                        commit=os.environ.get('RENDER_GIT_COMMIT') or None)
+
+    # FEATURE 10c — Publish the versioned API contract (OpenAPI 3)
+    # Static document for /v1 create + decide. Does not mint a demo session.
+    @app.get('/openapi.json')
+    def openapi_document():
+        return jsonify(api_contract.openapi_document(origin))
 
     # FEATURE 10b — Check whether the process can accept traffic (readiness)
     # Probes the demo directory (writable) without minting a visitor session. A 503
@@ -284,22 +297,23 @@ def create_app(directory=None, public_origin=None):
     # Idempotency-Key header. Works only on this visitor's own demo database.
     # 201 = decision recorded; 200 = same key seen before, nothing changed;
     # 409 = move not allowed from the current status.
-    @app.post('/payouts/<payout_id>/<any(approve, hold, return, clear, block):action>')
-    def decide_payout(payout_id, action):
+    def _require_json_object(hint):
         if request.mimetype != 'application/json':
-            raise APIError(415, 'Use Content-Type: application/json.')
+            raise APIError(415, 'Use Content-Type: application/json.',
+                           code=api_contract.CONTENT_TYPE_REQUIRED)
         body = request.get_json(silent=True)
-        if body is None:
-            raise APIError(422, 'Send a JSON object (reason optional).')
-        if not isinstance(body, dict):
-            raise APIError(422, 'Send a JSON object (reason optional).')
+        if body is None or not isinstance(body, dict):
+            raise APIError(422, hint, code=api_contract.INVALID_JSON_BODY)
+        return body
+
+    def _run_decide(payout_id, action, body):
         if 'reviewer' in body:
             return jsonify(
                 error='Do not send reviewer; decisions bind to the signed-in operator.',
-                code='REVIEWER_NOT_ACCEPTED'), 422
+                code=api_contract.REVIEWER_NOT_ACCEPTED), 422
         if not g.operator.can_decide():
             return jsonify(error='This operator cannot decide payouts.',
-                           code='OPERATOR_FORBIDDEN'), 403
+                           code=api_contract.OPERATOR_FORBIDDEN), 403
         database = g.payments.database
         payout_events.sync(database)
         status, decision = payouts.decide(database, payout_id, action, g.operator.actor,
@@ -312,6 +326,21 @@ def create_app(directory=None, public_origin=None):
         payout_events.sync(database)
         return jsonify(payout=payouts.get_payout(database, payout_id), decision=decision,
                        operator=g.operator.public()), status
+
+    @app.post('/payouts/<payout_id>/<any(approve, hold, return, clear, block):action>')
+    def decide_payout(payout_id, action):
+        body = _require_json_object('Send a JSON object (reason optional).')
+        return _run_decide(payout_id, action, body)
+
+    # FEATURE 21b — Versioned decide (action in JSON body)
+    @app.post('/v1/payouts/<payout_id>/decisions')
+    def v1_decide_payout(payout_id):
+        body = _require_json_object('Send a JSON object with action (reason optional).')
+        action = body.get('action')
+        if action not in payouts.DECISIONS:
+            raise APIError(422, 'Decision must be approve, hold, return, clear or block.',
+                           code=api_contract.VALIDATION_ERROR)
+        return _run_decide(payout_id, action, body)
 
     # FEATURE 29 — List every reason a payout is in review (#32)
     # Behind the scenes JSON for the later "Why this is in review" panel.
@@ -368,13 +397,7 @@ def create_app(directory=None, public_origin=None):
                    if payout_id.startswith('PO-') and payout_id[3:].isdigit()]
         return f'PO-{max(numbers, default=0) + 1}'
 
-    @app.post('/payouts/simulate')
-    def simulate_payout():
-        if request.mimetype != 'application/json':
-            raise APIError(415, 'Use Content-Type: application/json.')
-        body = request.get_json()
-        if not isinstance(body, dict):
-            raise APIError(422, 'Send a JSON object with a payee name, DEMO- account and amount.')
+    def _run_create(body):
         database = g.payments.database
         # Require the header here so a missing key is 422 (not a silent create:{id} default).
         idempotency_key = payouts.clean_idempotency_key(request.headers.get('Idempotency-Key'))
@@ -399,6 +422,19 @@ def create_app(directory=None, public_origin=None):
                        replayed=bool(result.get('replayed')),
                        create_event=result.get('create_event'),
                        event=result['event']), status
+
+    @app.post('/payouts/simulate')
+    def simulate_payout():
+        body = _require_json_object(
+            'Send a JSON object with a payee name, DEMO- account and amount.')
+        return _run_create(body)
+
+    # FEATURE 25b — Versioned create (same body as simulate)
+    @app.post('/v1/payouts')
+    def v1_create_payout():
+        body = _require_json_object(
+            'Send a JSON object with a payee name, DEMO- account and amount.')
+        return _run_create(body)
 
     # FEATURE 23 — Stream payout created and status-changed events (#43)
     # Server-sent events for this visitor's demo only. A reconnect sends the

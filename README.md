@@ -22,6 +22,9 @@ Observability (structured logs + decide/create/503/stream counters): see
 Multi-worker stream-slot cap (`STREAM_SLOT_BACKEND=file` under
 `DEMO_DIRECTORY/_stream_slots`): see [docs/stream-slots.md](docs/stream-slots.md).
 
+Versioned create/decide (`/v1/payouts`, OpenAPI, stable error `code`): see
+[docs/api-contract.md](docs/api-contract.md). Document: `GET /openapi.json`.
+
 ## Run the app shell locally
 
 The app shell (payments-api-simulator #122, step 2) answers `/health` (liveness),

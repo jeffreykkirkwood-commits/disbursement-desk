@@ -76,7 +76,7 @@ class DeskErrorHttpTests(unittest.TestCase):
         reply = self.client.get('/payouts/PO-9999/review-reasons',
                                 base_url='https://demo.example')
         self.assertEqual(reply.status_code, 404)
-        self.assertEqual(reply.json, {'error': 'Payout not found.'})
+        self.assertEqual(reply.json, {'error': 'Payout not found.', 'code': 'NOT_FOUND'})
 
 
 if __name__ == '__main__':

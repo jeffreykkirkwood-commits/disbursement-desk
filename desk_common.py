@@ -7,11 +7,13 @@ from html import escape
 
 
 # FEATURE 01 — Carry the expected request error
-# Store the response number and readable message for the web error handler.
+# Store the response number, readable message, and optional stable code for the
+# web error handler (see api_contract.ERROR_CODES).
 class APIError(Exception):
-    def __init__(self, status, message):
+    def __init__(self, status, message, code=None):
         self.status = status
         self.message = message
+        self.code = code
 
 
 # FEATURE 02 — Make text safe for HTML

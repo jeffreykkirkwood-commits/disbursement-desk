@@ -345,7 +345,7 @@ class HostedSeedTests(unittest.TestCase):
     # the behind-the-scenes execution replay route (#56), and the behind-the-scenes
     # review-reasons GET. /dashboard is not a route here (the Lab dashboard stayed
     # behind). / and /desk/ have no control that points at simulate, execution-replay
-    # or review-reasons. The full non-static route set is pinned at 13 rules.
+    # or review-reasons. Route pin includes /v1 create+decide and /openapi.json.
     def test_no_new_routes(self):
         client = self.app.test_client()
         self.assertEqual(client.get('/dashboard', base_url='https://demo.example').status_code, 404)
@@ -362,11 +362,13 @@ class HostedSeedTests(unittest.TestCase):
                          {'/payouts/<payout_id>/<any(approve, hold, return, clear, block):action>',
                           '/payouts/<payout_id>/review-reasons',
                           '/payouts/reset', '/payouts/simulate', '/payouts/stream',
-                          '/payouts/execution-replay'})
+                          '/payouts/execution-replay',
+                          '/v1/payouts', '/v1/payouts/<payout_id>/decisions'})
         posts = {str(r) for r in rules if (r.methods - {'OPTIONS'}) == {'POST'}}
         self.assertEqual(posts, {'/payouts/<payout_id>/<any(approve, hold, return, clear, block):action>',
                                  '/payouts/reset', '/payouts/simulate',
-                                 '/payouts/execution-replay'})
+                                 '/payouts/execution-replay',
+                                 '/v1/payouts', '/v1/payouts/<payout_id>/decisions'})
         stream = next(r for r in rules if str(r) == '/payouts/stream')
         self.assertEqual(stream.methods - {'OPTIONS', 'HEAD'}, {'GET'})
         reasons = next(r for r in rules if str(r) == '/payouts/<payout_id>/review-reasons')
@@ -380,6 +382,7 @@ class HostedSeedTests(unittest.TestCase):
             ('/health', frozenset({'GET'})),
             ('/ready', frozenset({'GET'})),
             ('/metrics', frozenset({'GET'})),
+            ('/openapi.json', frozenset({'GET'})),
             ('/operator', frozenset({'GET'})),
             ('/demo-scenario', frozenset({'POST'})),
             ('/payouts/<payout_id>/<any(approve, hold, return, clear, block):action>', frozenset({'POST'})),
@@ -389,9 +392,11 @@ class HostedSeedTests(unittest.TestCase):
             ('/payouts/simulate', frozenset({'POST'})),
             ('/payouts/stream', frozenset({'GET'})),
             ('/reconciliation', frozenset({'POST'})),
+            ('/v1/payouts', frozenset({'POST'})),
+            ('/v1/payouts/<payout_id>/decisions', frozenset({'POST'})),
         }
         app_rules = [r for r in self.app.url_map.iter_rules() if r.endpoint != 'static']
-        self.assertEqual(len(app_rules), 16)
+        self.assertEqual(len(app_rules), 19)
         self.assertEqual({(str(r), frozenset(r.methods - {'HEAD', 'OPTIONS'})) for r in app_rules}, expected)
         self.assertEqual(client.get('/payouts', base_url='https://demo.example').status_code, 404)
         self.assertEqual(client.get('/payouts/reset', base_url='https://demo.example').status_code, 405)
