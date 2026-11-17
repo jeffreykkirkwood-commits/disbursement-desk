@@ -12,8 +12,7 @@ Pre-send exception and OFAC gates (mandatory before Sent): see [docs/pre-send-ga
 
 Operator identity (session-bound actor, reviewer vs admin, `/ready`): see
 [docs/operator-authz.md](docs/operator-authz.md). OIDC binding is design-only.
-See [docs/operator-oidc-design.md](docs/operator-oidc-design.md). OIDC design spike:
-[docs/operator-oidc-design.md](docs/operator-oidc-design.md).
+See [docs/operator-oidc-design.md](docs/operator-oidc-design.md).
 
 Turso / multi-visitor tenancy: see [docs/tenancy.md](docs/tenancy.md). A shared
 `TURSO_DATABASE_URL` across visitors is refused unless tenancy is configured.

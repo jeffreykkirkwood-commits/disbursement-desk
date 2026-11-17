@@ -4,8 +4,8 @@ This is a design for a later change. Desk does not speak OIDC today.
 Current behavior is in [operator-authz.md](operator-authz.md).
 
 The demo cookie `payments_demo` selects the tenant database.
-The operator is a separate fact. Today that fact is either a minted
-`operator.json` in the demo folder, or a row in `DESK_OPERATOR_TOKENS`.
+The operator is a separate fact. Today that fact is a minted
+`operator.json` in the demo folder, or an entry in `DESK_OPERATOR_TOKENS`.
 OIDC would supply the same `Operator` (`operator_id`, `display_name`, `role`)
 from an identity provider. Decide, reset, and the audit actor stay as they are.
 
@@ -32,11 +32,12 @@ Desk does not mint `operator.json` for that request.
 Desk does not default a signed-in user to `admin`.
 
 `operator_id` is the OIDC `sub`, trimmed.
-The demo id pattern (`2–64` characters from `a-z`, `0-9`, `.`, `_`, `-`)
-rejects many real subjects, including uppercase UUIDs and long ids.
+The demo id pattern is 2 to 64 characters from `a-z`, `0-9`, `.`, `_`, and `-`.
+That pattern rejects many real subjects, including uppercase UUIDs and long ids.
 The OIDC path does not use that pattern and does not slug the subject.
-Reject an empty `sub`, a `sub` longer than 128 characters, and a `sub`
-that contains a newline, `<`, or `>`.
+Reject an empty `sub`, a `sub` longer than 256 characters, and a `sub`
+that contains a newline, `<`, or `>`. The 256-character cap keeps the
+audit actor line bounded. SQLite does not enforce it today.
 `display_name` is the first non-empty claim among `name`, `email`,
 `preferred_username`, and `sub`, trimmed to 80 characters.
 
@@ -54,28 +55,33 @@ Proposed routes, not built here: `GET /auth/oidc/login` and
 4. The provider redirects to the callback with a code.
 5. Desk exchanges the code and checks the ID token.
    The signature must match the issuer JSON Web Key Set (JWKS).
-   `iss` must equal `DESK_OIDC_ISSUER`. `aud` must include the client id.
-   Desk rejects an expired token. Desk does not parse JWTs by hand.
-   The later slice uses a maintained OIDC client.
-6. Desk maps claims to an `Operator`. No Desk group yields `403`
-   `OPERATOR_FORBIDDEN`. Desk does not mint a demo operator in that case.
+   `iss` must equal `DESK_OIDC_ISSUER`. `aud` must be the client id, or a list that contains it.
+   Desk rejects an expired token. The later slice uses a maintained
+   OIDC client for that check.
+6. Desk maps claims to an `Operator`. If the claims match no Desk group,
+   Desk returns `403` `OPERATOR_FORBIDDEN` and does not mint a demo operator.
+   The group names are in Roles from claims below.
 7. Desk stores the operator in a server-side session and sets a new
    `HttpOnly` cookie, `desk_operator`. The cookie value is a random session
    id. It is not the ID token, and it is not `payments_demo`.
 8. `g.operator` is that session, unless a Bearer token replaced it.
 9. An expired session sends the browser through login again.
-   A POST with no session returns `401`. A POST never starts login and
-   never mints a principal. That matches today's rule that a POST cannot
-   open a new demo.
+   A POST with no OIDC session returns `401`. Desk does not redirect
+   a POST to the provider. Desk does not mint `operator.json` on that POST.
 
 The session record is `session_id`, `operator_id`, `display_name`, `role`,
 and `expires_at`. It does not hold the ID token or the client secret.
-It does not live in process memory, and it does not live in
-`payments.sqlite3`. That file is the tenant ledger.
-On the free Render deploy the demo directory is ephemeral, so a session
-file next to the demo dies on restart, the same way the sandbox does.
-A deploy that must keep sign-in across restarts stores the session in the
-durable tenant store from [tenancy.md](tenancy.md).
+It does not live in process memory. It does not live in `payments.sqlite3`.
+That file is the tenant ledger, and Reset demo rewrites it.
+Demo cleanup only deletes a 64-hex folder that contains `payments.sqlite3`.
+A directory named `DEMO_DIRECTORY/_operator_sessions` is outside that rule,
+as `DEMO_DIRECTORY/_stream_slots` is ([stream-slots.md](stream-slots.md)).
+The free Render disk is ephemeral, so `_operator_sessions` dies on restart,
+as the sandbox does.
+A single-tenant production deploy that must keep sign-in across restarts
+stores the same record in its durable database, still outside any
+visitor `payments.sqlite3`. See [tenancy.md](tenancy.md) and
+[deploy-posture.md](deploy-posture.md).
 
 ## Roles from claims
 

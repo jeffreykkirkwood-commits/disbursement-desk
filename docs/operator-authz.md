@@ -52,6 +52,6 @@ Send `Authorization: Bearer tok-ada`. Unknown tokens → **401**
 
 ## Not in this slice
 
-SSO/OIDC login UI is out of scope here. Design spike:
-[operator-oidc-design.md](operator-oidc-design.md). OpenAPI / versioned
-create-decide: see [docs/api-contract.md](api-contract.md).
+OIDC login is design-only. See [How Desk would bind OIDC operators](operator-oidc-design.md).
+This slice does not add an identity provider. OpenAPI / versioned create-decide:
+see [docs/api-contract.md](api-contract.md).
