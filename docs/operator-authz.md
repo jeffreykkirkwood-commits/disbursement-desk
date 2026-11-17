@@ -47,8 +47,8 @@ Send `Authorization: Bearer tok-ada`. Unknown tokens → **401**
 - **Readiness:** `GET /ready` — demo directory is writable; **503** when not.
 - Put real operator tokens only in the host secret store (Render env / secret
   group). Never commit tokens.
-- Stream-slot caps remain **per process**. Multi-worker deploys need a shared
-  slot store before raising Gunicorn workers; see `payout_events` stream cap.
+- Stream-slot caps are shared across workers via the file backend when
+  `DEMO_DIRECTORY` is shared; see [docs/stream-slots.md](stream-slots.md).
 
 ## Not in this slice
 

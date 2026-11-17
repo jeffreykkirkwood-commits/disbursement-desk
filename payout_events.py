@@ -6,6 +6,7 @@
 # file does not import that unmerged code.
 """Per-visitor payout created and status-changed events, served as SSE."""
 import json
+import os
 import storage
 import threading
 import time
@@ -17,11 +18,11 @@ import payouts
 # FEATURE 01 — Name the two event types and the short connection hold
 # "created" is a payout that just appeared in this visitor's database.
 # "status-changed" is a later status move on a payout already seen. The stream
-# holds a Gunicorn thread, and this service runs one worker with four threads,
-# so each connection closes after HOLD_SECONDS and EventSource reconnects
-# with Last-Event-ID. A comment heartbeat each poll keeps proxies from
-# buffering a quiet stream and notices a client disconnect so FEATURE 08
-# can free the slot.
+# holds a Gunicorn thread. Connections close after HOLD_SECONDS so EventSource
+# reconnects with Last-Event-ID. A comment heartbeat each poll keeps proxies
+# from buffering a quiet stream and notices a client disconnect so FEATURE 08
+# can free the slot. With STREAM_SLOT_BACKEND=file the open-stream cap is
+# shared across workers on the same DEMO_DIRECTORY.
 CREATED = 'created'
 STATUS_CHANGED = 'status-changed'
 HOLD_SECONDS = 20
@@ -35,6 +36,10 @@ _locks = {}
 _locks_guard = threading.Lock()
 _stream_lock = threading.Lock()
 _stream_count = 0
+# Optional shared store (file backend) configured by hosted_app.create_app.
+# When None, acquire/release use the in-process counter under _stream_lock
+# (formal verify-stream-slots model + single-worker default).
+_stream_store = None
 
 
 def _lock(database):
@@ -197,23 +202,47 @@ def stream(database, last_id=0, hold_seconds=None, poll_seconds=None, clock=time
 
 
 # FEATURE 08 — Cap concurrent stream connections so /health stays reachable (#83)
-# Production runs one Gunicorn worker with four threads. Each open /payouts/stream
-# connection holds one of those threads. This process allows at most MAX_STREAMS
-# (2) at a time so /health and the rest of the app still have a thread. A failed
-# acquire is the route's cue to return 503 with Retry-After. release_stream() is
-# idempotent per successful acquire: the route wraps the generator in try/finally
-# so a normal close, an error, or a client disconnect all free the slot. Do not
-# change the Render start command or thread count to fix this.
+# Each open /payouts/stream connection holds a Gunicorn thread. At most
+# MAX_STREAMS (2) may be open so /health keeps a free thread. A failed acquire
+# is the route's cue to return 503 with Retry-After. release_stream(token) is
+# idempotent per successful acquire: the route wraps the generator in
+# try/finally so a normal close, an error, or a client disconnect frees the
+# slot. With STREAM_SLOT_BACKEND=file (hosted default), the cap is shared by
+# every worker on the instance via flock under DEMO_DIRECTORY/_stream_slots.
+def configure_stream_slots(directory=None, backend=None):
+    """Install (or clear) the stream-slot store used by acquire/release.
+
+    hosted_app.create_app passes DEMO_DIRECTORY so every worker shares the
+    file-backed cap. Pass directory=None to restore the in-process counter
+    (tests / formal verify-stream-slots fallback).
+    """
+    global _stream_store
+    if directory is None:
+        _stream_store = None
+        return
+    import stream_slots
+    env = None
+    if backend is not None:
+        env = {**os.environ, stream_slots.BACKEND_ENV: backend}
+    _stream_store = stream_slots.build_store(
+        directory, MAX_STREAMS, HOLD_SECONDS, env=env, memory_lock=_stream_lock)
+
+
 def acquire_stream():
+    if _stream_store is not None:
+        return _stream_store.acquire()
     global _stream_count
     with _stream_lock:
         if _stream_count >= MAX_STREAMS:
-            return False
+            return None
         _stream_count += 1
-        return True
+        return f'memory:{_stream_count}'
 
 
-def release_stream():
+def release_stream(token=None):
+    if _stream_store is not None:
+        _stream_store.release(token)
+        return
     global _stream_count
     with _stream_lock:
         if _stream_count > 0:
@@ -221,6 +250,9 @@ def release_stream():
 
 
 def reset_stream_slots():
+    if _stream_store is not None:
+        _stream_store.reset()
+        return
     global _stream_count
     with _stream_lock:
         _stream_count = 0

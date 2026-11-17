@@ -19,6 +19,9 @@ Turso / multi-visitor tenancy: see [docs/tenancy.md](docs/tenancy.md). A shared
 Observability (structured logs + decide/create/503/stream counters): see
 [docs/observability.md](docs/observability.md). Snapshot: `GET /metrics`.
 
+Multi-worker stream-slot cap (`STREAM_SLOT_BACKEND=file` under
+`DEMO_DIRECTORY/_stream_slots`): see [docs/stream-slots.md](docs/stream-slots.md).
+
 Versioned create/decide (`/v1/payouts`, OpenAPI, stable error `code`): see
 [docs/api-contract.md](docs/api-contract.md). Document: `GET /openapi.json`.
 
