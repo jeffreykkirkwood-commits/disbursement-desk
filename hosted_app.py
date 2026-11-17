@@ -9,6 +9,7 @@ import os
 import sqlite3
 import storage
 import time
+import urllib.parse
 from pathlib import Path
 from uuid import uuid4
 from flask import Flask, Response, g, jsonify, redirect, request, stream_with_context
@@ -25,6 +26,7 @@ from demo_sessions import DemoStore, DemoCapacityError
 from event_log import event, request_context, make_logger
 import metrics
 import operators
+import operator_oidc
 import deploy_posture
 
 
@@ -58,6 +60,7 @@ def create_app(directory=None, public_origin=None):
     ENDPOINTS_WITHOUT_DEMO_DB = frozenset({
         None, 'health', 'ready', 'metrics_snapshot', 'openapi_document',
         'desk_script', 'home', 'stripe_webhook',
+        'oidc_login', 'oidc_callback', 'oidc_mock_authorize',
     })
     # Render supplies its public HTTPS URL. An explicit origin supports custom domains.
     # Do not trust forwarded headers or a caller's Host header to authorize submissions.
@@ -66,6 +69,13 @@ def create_app(directory=None, public_origin=None):
     if os.environ.get('RENDER') and not origin.startswith('https://'):
         raise RuntimeError('Hosted demos require an HTTPS public origin.')
     directory = Path(directory or os.environ.get('DEMO_DIRECTORY', '/tmp/payments-demos'))
+    try:
+        oidc_config = operator_oidc.load_config(os.environ)
+    except operator_oidc.OidcConfigError as error:
+        oidc_config = error
+    if (isinstance(oidc_config, operator_oidc.OidcConfig) and oidc_config.mock
+            and os.environ.get('RENDER')):
+        raise RuntimeError('DESK_OIDC_MOCK must not be set on Render.')
     # On Render, /tmp (and unset DEMO_DIRECTORY) is wiped on every deploy/restart.
     # Prefer Turso tenancy or a paid disk — see docs/deploy-posture.md.
     deploy_posture.warn_ephemeral_demo_directory(directory)
@@ -73,6 +83,9 @@ def create_app(directory=None, public_origin=None):
     server_logger = make_logger(directory / '_server_logs')
     demos = DemoStore(directory, DeskDemo, secure_cookie=origin.startswith('https://'))
     app.extensions['demos'] = demos
+    oidc_sessions = operator_oidc.SessionStore(directory)
+    app.extensions['oidc'] = oidc_config
+    app.extensions['oidc_sessions'] = oidc_sessions
     # Shared stream-slot cap across Gunicorn workers on this DEMO_DIRECTORY
     # (STREAM_SLOT_BACKEND=file by default; memory for single-process tests).
     payout_events.configure_stream_slots(directory)
@@ -104,6 +117,7 @@ def create_app(directory=None, public_origin=None):
               endpoint=str(request.url_rule) if request.url_rule else '(unknown endpoint)')
         g.cookie = g.demo_id = None
         g.operator = None
+        g.operator_cookie = None
         if request.endpoint == 'stripe_webhook':
             request.max_content_length = WEBHOOK_MAX_CONTENT_LENGTH
         if request.endpoint in ENDPOINTS_WITHOUT_DEMO_DB:
@@ -114,8 +128,15 @@ def create_app(directory=None, public_origin=None):
                     (request.headers.get('Origin') and request.headers['Origin'] != origin)):
                 return jsonify(error='Cross-site submissions are not allowed.'), 403
         # GET/HEAD may start a demo; a POST can only use an existing session.
+        # A broken OIDC configuration must not mint operator.json.
+        if isinstance(oidc_config, operator_oidc.OidcConfigError):
+            return jsonify(error=oidc_config.message), 503
         try:
-            session = demos.resolve(request.headers.get('Cookie'), create=request.method in ('GET', 'HEAD'))
+            session = demos.resolve(
+                request.headers.get('Cookie'),
+                create=request.method in ('GET', 'HEAD'),
+                mint_operator=oidc_config is None,
+            )
         except DemoCapacityError as error:
             g.metric_503_reason = 'demo_capacity'
             return jsonify(error=str(error)), 503
@@ -124,13 +145,25 @@ def create_app(directory=None, public_origin=None):
                            code='DEMO_SESSION_CHANGED'), 409
         g.demo_id, g.payments, logger, g.cookie, session_operator = session
         g.leased = True
-        # Optional Bearer token replaces the demo-minted principal (production-shaped
-        # API clients). Missing/unknown tokens are refused before payout logic runs.
+        # Optional Bearer token replaces the session principal (production-shaped
+        # API clients). An unknown token is refused and does not fall through.
         try:
             bearer_operator = operators.resolve_bearer(request.headers.get('Authorization'))
         except (PermissionError, ValueError) as error:
             return jsonify(error=str(error), code='OPERATOR_UNAUTHORIZED'), 401
-        g.operator = bearer_operator or session_operator
+        if bearer_operator is not None:
+            g.operator = bearer_operator
+        elif oidc_config is not None:
+            g.operator = oidc_sessions.operator_from_cookie(
+                request.headers.get('Cookie'), time.time())
+            if g.operator is None:
+                if request.method in ('GET', 'HEAD'):
+                    nxt = urllib.parse.quote(operator_oidc.safe_next(request.path), safe='/')
+                    return redirect(f'/auth/oidc/login?next={nxt}')
+                return jsonify(error='Operator sign-in required.',
+                               code='OPERATOR_UNAUTHORIZED'), 401
+        else:
+            g.operator = session_operator
         request_context.set((logger, g.request_id))
         event('request_received', method=request.method, endpoint=str(request.url_rule),
               operator_id=g.operator.operator_id, operator_role=g.operator.role)
@@ -150,8 +183,12 @@ def create_app(directory=None, public_origin=None):
                                  'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin'})
         if g.demo_id:
             response.headers['X-Demo-ID'] = g.demo_id
-        if g.cookie:
-            response.headers['Set-Cookie'] = g.cookie
+        cookies = [value for value in (g.cookie, g.get('operator_cookie')) if value]
+        if cookies:
+            while 'Set-Cookie' in response.headers:
+                response.headers.pop('Set-Cookie')
+            for value in cookies:
+                response.headers.add('Set-Cookie', value)
         endpoint = str(request.url_rule) if request.url_rule else '(unknown endpoint)'
         if response.status_code >= 400:
             payload = response.get_json(silent=True) or {}
@@ -281,6 +318,56 @@ def create_app(directory=None, public_origin=None):
     @app.get('/operator')
     def current_operator():
         return jsonify(operator=g.operator.public())
+
+    # FEATURE 19c — OIDC browser login (authorization code + PKCE)
+    # Idle unless DESK_OIDC_ISSUER is set. The desk_operator cookie is a random
+    # session id. The ID token and the client secret are not stored.
+    def _oidc_ready():
+        if isinstance(oidc_config, operator_oidc.OidcConfigError):
+            return None, (jsonify(error=oidc_config.message), 503)
+        if not isinstance(oidc_config, operator_oidc.OidcConfig):
+            return None, (jsonify(error='OIDC is not configured.'), 404)
+        return oidc_config, None
+
+    @app.get('/auth/oidc/login')
+    def oidc_login():
+        config, failure = _oidc_ready()
+        if failure is not None:
+            return failure
+        try:
+            _pending, url = operator_oidc.start_login(
+                config, oidc_sessions, request.args.get('next'))
+        except operator_oidc.OidcAuthError as error:
+            return jsonify(error=error.message, code=error.code), error.status
+        return redirect(url)
+
+    @app.get('/auth/oidc/callback')
+    def oidc_callback():
+        config, failure = _oidc_ready()
+        if failure is not None:
+            return failure
+        if request.args.get('error'):
+            oidc_sessions.take('pending', request.args.get('state') or '', time.time())
+            return jsonify(error='The identity provider refused sign-in.',
+                           code='OPERATOR_UNAUTHORIZED'), 401
+        try:
+            _operator, session, nxt = operator_oidc.finish_login(
+                config, oidc_sessions, request.args.get('code'), request.args.get('state'))
+        except operator_oidc.OidcAuthError as error:
+            return jsonify(error=error.message, code=error.code), error.status
+        g.operator_cookie = operator_oidc.cookie_header(
+            session, secure=origin.startswith('https://'), now=time.time())
+        return redirect(nxt)
+
+    if isinstance(oidc_config, operator_oidc.OidcConfig) and oidc_config.mock:
+        @app.get('/auth/oidc/mock/authorize')
+        def oidc_mock_authorize():
+            try:
+                location = operator_oidc.mock_authorize(
+                    oidc_config, oidc_sessions, request.args)
+            except operator_oidc.OidcAuthError as error:
+                return jsonify(error=error.message, code=error.code), error.status
+            return redirect(location)
 
     # FEATURE 20 — Deliver the Desk filter script
     # Serve this one named JavaScript file (Exceptions / All switch) without a demo database.
