@@ -395,11 +395,12 @@ class HostedSeedTests(unittest.TestCase):
             ('/payouts/stream', frozenset({'GET'})),
             ('/reconciliation', frozenset({'POST'})),
             ('/stripe/webhook', frozenset({'POST'})),
+            ('/internal/render-events', frozenset({'GET', 'POST', 'PUT', 'PATCH', 'DELETE'})),
             ('/v1/payouts', frozenset({'POST'})),
             ('/v1/payouts/<payout_id>/decisions', frozenset({'POST'})),
         }
         app_rules = [r for r in self.app.url_map.iter_rules() if r.endpoint != 'static']
-        self.assertEqual(len(app_rules), 22)
+        self.assertEqual(len(app_rules), 23)
         self.assertEqual({(str(r), frozenset(r.methods - {'HEAD', 'OPTIONS'})) for r in app_rules}, expected)
         self.assertEqual(client.get('/payouts', base_url='https://demo.example').status_code, 404)
         self.assertEqual(client.get('/payouts/reset', base_url='https://demo.example').status_code, 405)

@@ -12,7 +12,7 @@ import time
 import urllib.parse
 from pathlib import Path
 from uuid import uuid4
-from flask import Flask, Response, g, jsonify, redirect, request, stream_with_context
+from flask import Flask, Response, abort, g, jsonify, redirect, request, stream_with_context
 from werkzeug.exceptions import HTTPException
 from desk_common import APIError
 import api_contract
@@ -28,6 +28,7 @@ import metrics
 import operators
 import operator_oidc
 import deploy_posture
+import render_events
 
 
 # FEATURE 00 — Open one visitor demo with its Desk payouts
@@ -59,7 +60,7 @@ def create_app(directory=None, public_origin=None):
     WEBHOOK_MAX_CONTENT_LENGTH = 65536
     ENDPOINTS_WITHOUT_DEMO_DB = frozenset({
         None, 'health', 'ready', 'metrics_snapshot', 'openapi_document',
-        'desk_script', 'home', 'stripe_webhook',
+        'desk_script', 'home', 'stripe_webhook', 'render_deploy_events',
         'oidc_login', 'oidc_callback', 'oidc_mock_authorize',
     })
     # Render supplies its public HTTPS URL. An explicit origin supports custom domains.
@@ -118,7 +119,7 @@ def create_app(directory=None, public_origin=None):
         g.cookie = g.demo_id = None
         g.operator = None
         g.operator_cookie = None
-        if request.endpoint == 'stripe_webhook':
+        if request.endpoint in ('stripe_webhook', 'render_deploy_events'):
             request.max_content_length = WEBHOOK_MAX_CONTENT_LENGTH
         if request.endpoint in ENDPOINTS_WITHOUT_DEMO_DB:
             return
@@ -645,5 +646,24 @@ def create_app(directory=None, public_origin=None):
         if result == 'pending':
             return jsonify(error='Payout is not submitted yet.'), 503
         return jsonify(received=True), 200
+
+    @app.route('/internal/render-events',
+               methods=['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+               provide_automatic_options=False)
+    def render_deploy_events():
+        secret = render_events.configured_secret()
+        if not render_events.header_matches(
+                request.headers.get(render_events.HEADER), secret):
+            abort(404)
+        if request.method != 'POST':
+            abort(405)
+        try:
+            notice = render_events.notice_from_payload(request.get_data(cache=False))
+        except ValueError:
+            return jsonify(error='Invalid render event.'), 400
+        event('render_deploy_event', **notice)
+        metrics.inc(metrics.RENDER_DEPLOY_EVENT_TOTAL,
+                    event_type=notice['event_type'], status=notice.get('status'))
+        return Response(status=204)
 
     return app
