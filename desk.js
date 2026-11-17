@@ -24,7 +24,10 @@
   let filter = 'exceptions';
   let selected = null;
   let pending = null; // {id, action, key} while the dialog is open
+  let pendingCreate = null; // {key} while the create dialog is open
   let aiOff = false;
+  const createDialog = document.getElementById('create');
+  const createForm = document.getElementById('create-form');
 
   function writeHash() {
     const q = new URLSearchParams();
@@ -155,6 +158,73 @@
   }
 
   if (dialog) dialog.addEventListener('close', () => { pending = null; });
+  if (createDialog) createDialog.addEventListener('close', () => { pendingCreate = null; });
+
+  function setCreateBusy(busy) {
+    const ok = document.getElementById('cr-ok');
+    const cancel = document.getElementById('cr-cancel');
+    if (ok) ok.disabled = busy;
+    if (cancel) cancel.disabled = busy;
+    if (createForm) {
+      [...createForm.querySelectorAll('input,select')].forEach(el => { el.disabled = busy; });
+    }
+  }
+
+  function openCreate() {
+    if (!createDialog || !createForm) return;
+    pendingCreate = {key: newKey()};
+    createForm.reset();
+    const rail = document.getElementById('cr-rail');
+    if (rail) rail.value = 'ACH';
+    document.getElementById('cr-error').hidden = true;
+    setCreateBusy(false);
+    createDialog.showModal();
+    const payee = document.getElementById('cr-payee');
+    if (payee) payee.focus();
+  }
+
+  function dollarsToCents(raw) {
+    const cleaned = String(raw || '').trim().replace(/\$/g, '').replace(/,/g, '');
+    if (!/^\d+(\.\d{1,2})?$/.test(cleaned)) return null;
+    const [whole, frac = ''] = cleaned.split('.');
+    return parseInt(whole, 10) * 100 + parseInt((frac + '00').slice(0, 2), 10);
+  }
+
+  async function submitCreate(event) {
+    if (event) event.preventDefault();
+    if (!pendingCreate || !createForm) return;
+    const payee_name = document.getElementById('cr-payee').value.trim();
+    const payee_account = document.getElementById('cr-account').value.trim();
+    const amount_cents = dollarsToCents(document.getElementById('cr-amount').value);
+    const rail = document.getElementById('cr-rail').value;
+    const payout_id = document.getElementById('cr-id').value.trim();
+    if (!payee_name || !payee_account || amount_cents == null || amount_cents <= 0) {
+      document.getElementById('cr-error').hidden = false;
+      return;
+    }
+    const body = {payee_name, payee_account, amount_cents, rail};
+    if (payout_id) body.payout_id = payout_id;
+    setCreateBusy(true);
+    const demo = document.querySelector('meta[name="demo-id"]');
+    try {
+      // Versioned create. Do not copy the response body onto the page — reload All.
+      const reply = await fetch('/v1/payouts', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'Idempotency-Key': pendingCreate.key,
+                  'X-Demo-ID': demo ? demo.content : ''},
+        body: JSON.stringify(body),
+      });
+      if (!reply.ok) {
+        if (await sessionCode(reply) === 'DEMO_SESSION_CHANGED' && recoverSession()) return;
+        throw new Error('not created');
+      }
+      try { sessionStorage.removeItem('desk-session-reloaded'); } catch (err) {}
+      location.replace(location.pathname + location.search + '#f=all');
+    } catch (error) {
+      setCreateBusy(false);
+      document.getElementById('cr-error').hidden = false;
+    }
+  }
 
   // Reset is immediate: the approved mock and slice 4 spec have no confirm dialog.
   // A failed reset leaves the page as it is and shows the approved line next to
@@ -185,8 +255,12 @@
     location.replace(location.pathname + location.search);
   }
 
+  if (createForm) createForm.addEventListener('submit', submitCreate);
+
   document.addEventListener('click', e => {
     if (e.target.closest('#reset')) { resetDemo(); return; }
+    if (e.target.closest('#create-open')) { openCreate(); return; }
+    if (e.target.closest('#cr-cancel')) { if (createDialog) createDialog.close(); return; }
     if (e.target.closest('#cancel')) { dialog.close(); return; }
     if (e.target.closest('#ok')) { confirmAction(); return; }
     const act = e.target.closest('.panel [data-act]');
@@ -202,10 +276,11 @@
 
   // Escape closes the payout detail the same way Back does: hide the panel,
   // clear the hash, and return focus to the row that opened it. Leave Escape
-  // to the confirm dialog while that dialog is open.
+  // to the confirm or create dialog while that dialog is open.
   document.addEventListener('keydown', e => {
     if (e.key !== 'Escape') return;
     if (dialog && dialog.open) return;
+    if (createDialog && createDialog.open) return;
     if (!selected) return;
     e.preventDefault();
     close(true);

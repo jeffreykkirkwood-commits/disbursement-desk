@@ -147,7 +147,9 @@ class DeskTests(DeskBase):
         with closing(sqlite3.connect(str(self.database()))) as db, db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM payout_events').fetchone()[0], 0)
         html = self.get().get_data(as_text=True)
-        self.assertNotIn('<form', html)
+        # Create dialog owns the only form; GETs still write nothing (asserted above).
+        self.assertEqual(html.count('<form'), 1)
+        self.assertIn('<form id="create-form">', html)
 
     # Scenario — the filter script is served without starting a demo
     def test_script_does_not_create_demo(self):
@@ -397,17 +399,36 @@ class DeskActionTests(DeskBase):
             self.assertNotIn('data-act=', panels[pid])
             self.assertIn('This payout is final. No actions available.', panels[pid])
 
-    # Scenario — one confirm dialog: Cancel, a confirm button, and the Q2 A failure line, hidden
+    # Scenario — confirm dialog: Cancel, a confirm button, and the Q2 A failure line, hidden
     def test_confirm_dialog_markup(self):
         html = self.get().get_data(as_text=True)
-        self.assertEqual(html.count('<dialog'), 1)
+        self.assertEqual(html.count('<dialog'), 2)
         self.assertIn('<dialog id="confirm" aria-labelledby="ch">', html)
         self.assertIn('<p><strong id="c-payee"></strong> · <span id="c-amount"></span> · <span id="c-id"></span></p>', html)
         self.assertIn('<p id="c-error" class="err-inline" role="alert" hidden>'
                       'That didn’t save. Nothing has changed. Try again.</p>', html)
         self.assertIn('<button type="button" class="btn" id="cancel">Cancel</button>', html)
+        confirm = html.split('<dialog id="confirm"', 1)[1].split('<dialog id="create"', 1)[0]
         for word in ('<select', '<textarea', 'reason', 'Reason', 'note'):
-            self.assertNotIn(word, html.split('<dialog')[1])
+            self.assertNotIn(word, confirm)
+
+    # Scenario — create dialog: labeled fields, Idempotency-Key client path, failure line hidden
+    def test_create_dialog_markup(self):
+        html = self.get().get_data(as_text=True)
+        self.assertIn('id="create-open"', html)
+        self.assertIn('<dialog id="create" aria-labelledby="cr-h">', html)
+        self.assertIn('id="cr-payee"', html)
+        self.assertIn('id="cr-account"', html)
+        self.assertIn('id="cr-amount"', html)
+        self.assertIn('id="cr-rail"', html)
+        self.assertIn('<p id="cr-error" class="err-inline" role="alert" hidden>'
+                      'That didn’t create. Nothing has changed. Try again.</p>', html)
+        script = self.client.get('/desk.js').get_data(as_text=True)
+        self.assertIn("fetch('/v1/payouts'", script)
+        self.assertIn("'Idempotency-Key': pendingCreate.key", script)
+        self.assertIn('pendingCreate = {key: newKey()}', script)
+        self.assertNotIn("fetch('/payouts/simulate'", script)
+        self.assertIn("'#f=all'", script)
 
     # Scenario — after an operator Hold: Held, "Held by operator", still in Exceptions, Hold disabled
     def test_after_hold(self):
@@ -676,9 +697,10 @@ class DeskResetTests(DeskBase):
         self.assertIn('dialog.open', script)
         self.assertIn('close(true)', script)
         self.assertIn('writeHash()', script)
-        # Leave Escape to the confirm dialog while it is open; do not add a third fetch.
+        # Leave Escape to confirm/create dialogs while open; create adds a third fetch.
         self.assertIn('if (dialog && dialog.open) return;', script)
-        self.assertEqual(script.count('fetch('), 2)
+        self.assertIn('if (createDialog && createDialog.open) return;', script)
+        self.assertEqual(script.count('fetch('), 3)
 
     # Scenario — the failed-reset line is the exact approved sentence, next to Reset demo
     def test_failed_reset_wording_is_exact(self):
@@ -831,10 +853,11 @@ class DeskNoteTests(DeskBase):
         self.assertIn("q.set('ai', 'off')", script)
         self.assertIn('.note[data-note="fallback"]', script)
         self.assertIn('.note[data-note="rules"]', script)
-        # The only fetches are the existing decision and reset routes; no model endpoint.
-        self.assertEqual(script.count('fetch('), 2)
+        # Fetches are decide, reset, and create simulate — no model endpoint.
+        self.assertEqual(script.count('fetch('), 3)
         self.assertIn("fetch('/payouts/' + encodeURIComponent(pending.id)", script)
         self.assertIn("fetch('/payouts/reset'", script)
+        self.assertIn("fetch('/v1/payouts'", script)
         self.assertNotIn('workers.ai', script.lower())
         self.assertNotIn('openai', script.lower())
         self.assertNotIn('AI-drafted, review required', script)
