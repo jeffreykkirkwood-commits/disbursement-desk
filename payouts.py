@@ -111,6 +111,11 @@ def check_transition(current, target):
 # bank_details_changed_at and earlier payouts) with explain_flag() below, and stores the
 # rule code and sentence. The live automation path (issue #44, payout_rules.py) uses the
 # same explain_flag() when a payout is created or the seed loads.
+#
+# P0 mandatory pre-send gates: every code in MANDATORY_PRE_SEND_RULES must be evaluated
+# by explain_flag() before a payout can auto-settle. Any hit stops automation at FLAGGED.
+# Skipping a rule (or settling despite its flag) is a release blocker — see
+# docs/pre-send-gates.md and test_pre_send_gates.py.
 AMOUNT_OVER_3X_AVG = 'AMOUNT_OVER_3X_AVG'
 BANK_CHANGED_7D = 'BANK_CHANGED_7D'
 DUPLICATE_24H = 'DUPLICATE_24H'
@@ -123,6 +128,8 @@ FLAG_TEXT = {  # generic wording per rule; explain_flag() writes the exact sente
     NEW_PAYEE_OVER_1000: 'No paid payout to this payee yet; amount is over $1,000',
     POSSIBLE_SANCTIONS_MATCH: 'Possible sanctions match',
 }
+# Mandatory exception / sanctions codes that must fire before send (docs/pre-send-gates.md).
+MANDATORY_PRE_SEND_RULES = frozenset(FLAG_TEXT)
 USUAL_MULTIPLIER = 3
 BANK_CHANGE_WINDOW = timedelta(days=7)
 DUPLICATE_WINDOW = timedelta(hours=24)

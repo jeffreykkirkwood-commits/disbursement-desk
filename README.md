@@ -8,6 +8,8 @@ The Desk's code arrives in later pull requests, with its git history kept.
 
 Synthetic data only. No secrets in this repo.
 
+Pre-send exception and OFAC gates (mandatory before Sent): see [docs/pre-send-gates.md](docs/pre-send-gates.md).
+
 ## Run the app shell locally
 
 The app shell (payments-api-simulator #122, step 2) answers `/health`.

@@ -45,6 +45,16 @@ def main() -> None:
             "a constant True would let Approve settle a match without Clear"
         )
 
+    # Pre-send screen path must audit via record_transition (post-#16), not a raw INSERT.
+    if "record_transition" not in decide:
+        raise SystemExit(
+            "FAIL: decide() must use record_transition for screen/decision audit rows"
+        )
+    if not re.search(r"\bSCREEN\b", decide) and "'screen'" not in decide and '"screen"' not in decide:
+        raise SystemExit(
+            "FAIL: decide() must log a screen action when pre-send OFAC holds"
+        )
+
     # _settle re-screens unless Clear allowed the send, and holds on match.
     if "allow_sanctions_clear" not in settle:
         raise SystemExit("FAIL: _settle() missing allow_sanctions_clear parameter")
@@ -62,6 +72,10 @@ def main() -> None:
     if not re.search(r"not allow_sanctions_clear", settle):
         raise SystemExit(
             "FAIL: _settle() must gate ofac.screen behind `not allow_sanctions_clear`"
+        )
+    if "record_transition" not in settle:
+        raise SystemExit(
+            "FAIL: _settle() must audit a settle-screen hold via record_transition"
         )
 
     # explain_flag must include OFAC so route_one never treats a match as clean.
@@ -87,10 +101,17 @@ def main() -> None:
         raise SystemExit(
             "FAIL: route_one() must choose FLAGGED vs APPROVED/PAID from flag_code"
         )
+    # Post-#16: settle re-screen hold must surface as FLAGGED, not a route PAID event.
+    if "if held:" not in route_one and "if held :" not in route_one:
+        raise SystemExit(
+            "FAIL: route_one() must handle _settle hold return (if held:) so a "
+            "late OFAC match does not log a clean route-to-PAID"
+        )
 
     print(
         "OK: decide/_settle/explain_flag/route_one keep OFAC settle gates "
-        "(Approve refusal, Clear-only allow_sanctions_clear, settle re-screen, route via explain_flag)"
+        "(Approve refusal, Clear-only allow_sanctions_clear, settle re-screen, "
+        "route via explain_flag, settle-hold audit)"
     )
 
 
