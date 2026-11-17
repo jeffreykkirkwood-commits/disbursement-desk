@@ -62,12 +62,16 @@ def create_app(directory=None, public_origin=None):
     server_logger = make_logger(directory / '_server_logs')
     demos = DemoStore(directory, DeskDemo, secure_cookie=origin.startswith('https://'))
     app.extensions['demos'] = demos
+    # Shared stream-slot cap across Gunicorn workers on this DEMO_DIRECTORY
+    # (STREAM_SLOT_BACKEND=file by default; memory for single-process tests).
+    payout_events.configure_stream_slots(directory)
 
     # FEATURE 02 — Release resources on shutdown
     # Close log files and cached demo log handlers so restarting does not leave their
     # handles open. This does not reset saved data.
     def close():
         demos.close()
+        payout_events.configure_stream_slots(None)
         for handler in server_logger.handlers[:]:
             handler.close()
             server_logger.removeHandler(handler)
@@ -403,17 +407,17 @@ def create_app(directory=None, public_origin=None):
     # four threads stay available; EventSource reconnects. The Desk page does
     # not subscribe yet, so nothing on screen changes.
     # FEATURE 24 — Cap concurrent streams so they cannot block /health (#83)
-    # At most two streams may be open in this process. A third request gets
-    # 503 with Retry-After and a short plain body, so two of the four
-    # Gunicorn threads stay free for /health and other work. The slot is
-    # acquired before the response starts and released in a finally block
-    # when the generator ends, errors, or the client disconnects. This does
-    # not change the Render start command or thread count.
+    # At most two streams may be open across workers sharing DEMO_DIRECTORY.
+    # A third request gets 503 with Retry-After and a short plain body so
+    # /health keeps capacity. The slot token is acquired before the response
+    # starts and released in a finally block when the generator ends, errors,
+    # or the client disconnects.
     @app.get('/payouts/stream')
     def payout_stream():
         last_id = payout_events.parse_last_id(
             request.headers.get('Last-Event-ID') or request.args.get('lastEventId'))
-        if not payout_events.acquire_stream():
+        slot_token = payout_events.acquire_stream()
+        if not slot_token:
             metrics.inc(metrics.STREAM_REFUSED_TOTAL, reason='slot_cap')
             g.metric_503_reason = 'stream_cap'
             return Response(
@@ -428,7 +432,7 @@ def create_app(directory=None, public_origin=None):
             nonlocal released
             if not released:
                 released = True
-                payout_events.release_stream()
+                payout_events.release_stream(slot_token)
 
         def body():
             try:

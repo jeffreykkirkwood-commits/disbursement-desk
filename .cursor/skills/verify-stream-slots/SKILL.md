@@ -1,6 +1,6 @@
 ---
 name: verify-stream-slots
-description: "Formally check disbursement-desk payout stream slot cap never exceeds MAX_STREAMS under concurrent acquire/release (#83). Use when changing payout_events acquire_stream, release_stream, _stream_lock, or hosted_app payout_stream."
+description: "Formally check disbursement-desk payout stream slot cap never exceeds MAX_STREAMS under concurrent acquire/release (#83). Use when changing payout_events acquire_stream, release_stream, _stream_lock, stream_slots.py, or hosted_app payout_stream."
 ---
 
 # Verify stream slots

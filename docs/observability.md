@@ -30,8 +30,9 @@ aggregators (Datadog / CloudWatch / etc. that scrape JSON stdout).
 - Counters are **per Gunicorn worker**. With one worker (current Desk posture)
   `/metrics` is the whole service. Multi-worker needs a shared backend or
   scrape-all-instances before alerting on absolute counts.
-- Stream slot caps remain per-process; refuse metrics will under-count across
-  workers until a shared slot store lands (deploy-posture follow-up).
+- Stream **slot cap** is shared across workers via the file backend
+  (`docs/stream-slots.md`). Refuse/open counters on `/metrics` are still
+  per-process, so sum across workers when alerting.
 - Suggested alerts: spike in `desk_http_503_total{reason=stream_cap|demo_capacity}`,
   sustained 5xx via log `http_response`, OFAC hold rate from decide/create
   labels / flag events (product alert, not wired here).
