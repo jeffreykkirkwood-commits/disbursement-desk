@@ -10,7 +10,8 @@
 // only, then reloads on Exceptions with no payout open. If reset does not save,
 // nothing on screen changes, and one approved line appears next to Reset demo.
 // There is no confirm step for Reset (the approved mock and slice 4 spec have none).
-// The API body is never shown.
+// The API body is never shown. A failed create shows a fixed sentence for a
+// known error code and never copies the response text onto the page.
 // URL hash for reproducible screenshots: #f=all opens on All, #id=PO-1042 opens a
 // payout, #id=PO-1043&confirm=hold also opens that dialog, #id=PO-1042&ai=off shows
 // the approved AI-unavailable fallback on the stored note.
@@ -25,6 +26,8 @@
   let selected = null;
   let pending = null; // {id, action, key} while the dialog is open
   let pendingCreate = null; // {key} while the create dialog is open
+  let deciding = false;
+  let creating = false;
   let aiOff = false;
   const createDialog = document.getElementById('create');
   const createForm = document.getElementById('create-form');
@@ -95,6 +98,7 @@
   // One key per opened dialog: pressing the confirm button again after a failure retries
   // the same decision, so it can never be saved twice.
   function ask(action) {
+    if (deciding) return;
     const panel = [...panels].find(p => p.dataset.id === selected);
     const button = panel && panel.querySelector('[data-act="' + action + '"]');
     if (!button || button.disabled) return;
@@ -113,8 +117,20 @@
   }
 
   function setBusy(busy) {
-    document.getElementById('ok').disabled = busy;
-    document.getElementById('cancel').disabled = busy;
+    const ok = document.getElementById('ok');
+    const cancel = document.getElementById('cancel');
+    if (!ok || !cancel) return;
+    ok.disabled = busy;
+    cancel.disabled = busy;
+    ok.setAttribute('aria-busy', busy ? 'true' : 'false');
+    if (dialog) dialog.setAttribute('aria-busy', busy ? 'true' : 'false');
+    if (busy) {
+      if (!ok.dataset.idleLabel) ok.dataset.idleLabel = ok.textContent;
+      ok.textContent = 'Saving…';
+    } else if (ok.dataset.idleLabel) {
+      ok.textContent = ok.dataset.idleLabel;
+      delete ok.dataset.idleLabel;
+    }
   }
 
   // After a deploy or restart the demo folder on the server is gone, and a POST
@@ -139,7 +155,8 @@
   }
 
   async function confirmAction() {
-    if (!pending) return;
+    if (!pending || deciding) return;
+    deciding = true;
     setBusy(true);
     const demo = document.querySelector('meta[name="demo-id"]');
     try {
@@ -155,6 +172,7 @@
         throw new Error('not saved');
       }
     } catch (error) {
+      deciding = false;
       setBusy(false);
       document.getElementById('c-error').hidden = false;
       return;
@@ -164,28 +182,77 @@
     location.reload();
   }
 
-  if (dialog) dialog.addEventListener('close', () => { pending = null; });
-  if (createDialog) createDialog.addEventListener('close', () => { pendingCreate = null; });
+  if (dialog) {
+    dialog.addEventListener('close', () => { pending = null; });
+    dialog.addEventListener('cancel', event => { if (deciding) event.preventDefault(); });
+  }
+  if (createDialog) {
+    createDialog.addEventListener('close', () => { pendingCreate = null; });
+    createDialog.addEventListener('cancel', event => { if (creating) event.preventDefault(); });
+  }
 
   function setCreateBusy(busy) {
     const ok = document.getElementById('cr-ok');
     const cancel = document.getElementById('cr-cancel');
-    if (ok) ok.disabled = busy;
+    if (ok) {
+      ok.disabled = busy;
+      ok.setAttribute('aria-busy', busy ? 'true' : 'false');
+      if (busy) {
+        if (!ok.dataset.idleLabel) ok.dataset.idleLabel = ok.textContent;
+        ok.textContent = 'Creating…';
+      } else if (ok.dataset.idleLabel) {
+        ok.textContent = ok.dataset.idleLabel;
+        delete ok.dataset.idleLabel;
+      }
+    }
     if (cancel) cancel.disabled = busy;
     if (createForm) {
       [...createForm.querySelectorAll('input,select')].forEach(el => { el.disabled = busy; });
     }
   }
 
+  const createErrorEl = document.getElementById('cr-error');
+  const createErrorDefault = createErrorEl ? createErrorEl.textContent : '';
+  const CREATE_LOCAL = 'Enter a payee name, a DEMO- account, and an amount greater than zero. Nothing was sent.';
+  // Fixed sentences for stable API codes. The response text is never copied here.
+  const CREATE_CODE_TEXT = {
+    VALIDATION_ERROR: 'Check the payee name, DEMO- account, amount, and rail. Nothing was created.',
+    CONFLICT: 'A payout with this id already exists. Nothing new was created.',
+    IDEMPOTENCY_KEY_REUSED: 'This create key was already used for a different payout. Close the dialog and start again.',
+    IDEMPOTENCY_KEY_REQUIRED: 'The create request was missing its key. Close the dialog and start again.',
+    RAIL_OVER_LIMIT: 'That amount is over this rail’s limit. Lower the amount or pick another rail.',
+    RAIL_WINDOW_CLOSED: 'That rail’s send window is closed. Pick another rail or wait for the next window.',
+    OPERATOR_FORBIDDEN: 'This operator cannot create payouts.',
+    OPERATOR_UNAUTHORIZED: 'Sign in again, then try the create once more.',
+    CONTENT_TYPE_REQUIRED: 'The create request was rejected. Nothing was created.',
+    INVALID_JSON_BODY: 'The create request was rejected. Nothing was created.',
+    NOT_FOUND: 'That payout was not found. Nothing was created.',
+    INTERNAL_ERROR: 'The desk could not finish the create. Nothing was saved. Try again.',
+  };
+
+  function showCreateError(code) {
+    if (!createErrorEl) return;
+    let sentence = createErrorDefault;
+    if (code === 'local') sentence = CREATE_LOCAL;
+    else if (Object.prototype.hasOwnProperty.call(CREATE_CODE_TEXT, code)) {
+      sentence = CREATE_CODE_TEXT[code] + ' (' + code + ')';
+    }
+    createErrorEl.textContent = sentence;
+    createErrorEl.hidden = false;
+  }
+
   function openCreate() {
-    if (!createDialog || !createForm) return;
+    if (!createDialog || !createForm || creating) return;
     pendingCreate = {key: newKey(), payoutId: newPayoutId()};
     createForm.reset();
     const rail = document.getElementById('cr-rail');
     if (rail) rail.value = 'ACH';
     const idField = document.getElementById('cr-id');
     if (idField) idField.placeholder = pendingCreate.payoutId;
-    document.getElementById('cr-error').hidden = true;
+    if (createErrorEl) {
+      createErrorEl.textContent = createErrorDefault;
+      createErrorEl.hidden = true;
+    }
     setCreateBusy(false);
     createDialog.showModal();
     const payee = document.getElementById('cr-payee');
@@ -201,7 +268,7 @@
 
   async function submitCreate(event) {
     if (event) event.preventDefault();
-    if (!pendingCreate || !createForm) return;
+    if (!pendingCreate || !createForm || creating) return;
     const payee_name = document.getElementById('cr-payee').value.trim();
     const payee_account = document.getElementById('cr-account').value.trim();
     const amount_cents = dollarsToCents(document.getElementById('cr-amount').value);
@@ -209,14 +276,15 @@
     const typedId = document.getElementById('cr-id').value.trim();
     const payout_id = typedId || pendingCreate.payoutId;
     if (!payee_name || !payee_account || amount_cents == null || amount_cents <= 0 || !payout_id) {
-      document.getElementById('cr-error').hidden = false;
+      showCreateError('local');
       return;
     }
     const body = {payee_name, payee_account, amount_cents, rail, payout_id};
+    creating = true;
     setCreateBusy(true);
     const demo = document.querySelector('meta[name="demo-id"]');
     try {
-      // Versioned create. Do not copy the response body onto the page — reload All.
+      // Versioned create. Read only the stable code. Reload All on success.
       const reply = await fetch('/v1/payouts', {
         method: 'POST',
         headers: {'Content-Type': 'application/json', 'Idempotency-Key': pendingCreate.key,
@@ -224,14 +292,21 @@
         body: JSON.stringify(body),
       });
       if (!reply.ok) {
-        if (await sessionCode(reply) === 'DEMO_SESSION_CHANGED' && recoverSession()) return;
-        throw new Error('not created');
+        const code = await sessionCode(reply);
+        if (code === 'DEMO_SESSION_CHANGED' && recoverSession()) return;
+        creating = false;
+        setCreateBusy(false);
+        showCreateError(code);
+        return;
       }
       try { sessionStorage.removeItem('desk-session-reloaded'); } catch (err) {}
+      // A hash-only replace does not reload, so the new payout would stay off screen.
       location.replace(location.pathname + location.search + '#f=all');
+      location.reload();
     } catch (error) {
+      creating = false;
       setCreateBusy(false);
-      document.getElementById('cr-error').hidden = false;
+      showCreateError('');
     }
   }
 
