@@ -37,6 +37,10 @@ Concurrent decide exclusivity (stress + formal `Inv_AtMostOneSettle`): see
 Desk detail Activity (who/what/when from `payout_events`): see
 [docs/desk-audit.md](docs/desk-audit.md).
 
+Stripe Connect real-money phase is **gated** (checklist only until entry
+criteria hold): [docs/stripe-connect-go-live.md](docs/stripe-connect-go-live.md).
+No Connect send-path in this repo until that gate opens.
+
 ## Run the app shell locally
 
 The app shell (payments-api-simulator #122, step 2) answers `/health` (liveness),
