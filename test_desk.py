@@ -426,7 +426,8 @@ class DeskActionTests(DeskBase):
         script = self.client.get('/desk.js').get_data(as_text=True)
         self.assertIn("fetch('/v1/payouts'", script)
         self.assertIn("'Idempotency-Key': pendingCreate.key", script)
-        self.assertIn('pendingCreate = {key: newKey()}', script)
+        self.assertIn('pendingCreate = {key: newKey(), payoutId: newPayoutId()}', script)
+        self.assertIn('typedId || pendingCreate.payoutId', script)
         self.assertNotIn("fetch('/payouts/simulate'", script)
         self.assertIn("'#f=all'", script)
 
