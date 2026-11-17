@@ -64,8 +64,12 @@ class DeployPostureTests(unittest.TestCase):
         self.assertIn('healthCheckPath: /health', text)
         self.assertIn('name: disbursement-desk', text)
         self.assertIn('plan: free', text)
+        docs = Path('docs/deploy-posture.md').read_text(encoding='utf-8')
+        readme = Path('README.md').read_text(encoding='utf-8')
         for key in deploy_posture.SECRET_ENV_KEYS:
-            self.assertIn(f'key: {key}', text)
+            self.assertIn(f'key: {key}\n        sync: false', text)
+            self.assertIn(key, docs)
+        self.assertIn('RENDER_EVENTS_SECRET', readme)
         self.assertNotIn('\ndisk:', text)  # free plan cannot attach a disk
 
 

@@ -36,8 +36,9 @@ Free web services have **no persistent disk**. Everything under
 spin-down.
 
 On boot, when `RENDER` is set and the demo directory is under `/tmp` (or
-`/var/tmp`), the app emits a structured log event
-`deploy_posture_ephemeral_demo_directory` so aggregators can alert.
+`/var/tmp`), the app emits one structured log event,
+`deploy_posture_ephemeral_demo_directory`. Alert on that event name. It means
+this demo directory will be removed on deploy, restart, or spin-down.
 
 **Durable options (pick one):**
 
@@ -71,11 +72,62 @@ Dashboard values after first create:
 | `DESK_OIDC_CLIENT_SECRET` | OIDC client secret. Omit `DESK_OIDC_ISSUER` to keep demo mint. |
 | `STRIPE_SECRET_KEY` | Connect / Stripe SDK (test mode) |
 | `STRIPE_WEBHOOK_SECRET` | Webhook signature check |
+| `RENDER_EVENTS_SECRET` | Shared secret for `POST /internal/render-events` |
 | `OFAC_HTTP_URL` / `OFAC_HTTP_TOKEN` | Live OFAC vendor |
 | `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | Durable SQLite |
 | `PUBLIC_ORIGIN` | Explicit HTTPS origin (else `RENDER_EXTERNAL_URL`) |
 
 Code inventory of secret keys: `deploy_posture.SECRET_ENV_KEYS`.
+
+## Deploy failure notifications
+
+Use the Render Dashboard for a failed deploy or an unhealthy service. No Desk
+secret is required.
+
+1. Open the workspace home in the Render Dashboard.
+2. Open **Integrations**, then **Notifications**.
+3. Set **Notification Destination** to Email, Slack, or both.
+4. Set **Default Service Notifications** to **Only failure notifications**.
+
+That level sends a notice when a build or deploy fails, and when a running
+service becomes unhealthy. Connect Slack on that page before you choose Slack.
+Per-service overrides are on the service **Settings** page, under
+**Notifications**.
+
+Metric and log signals are in [observability.md](observability.md).
+
+## Inbound deploy events
+
+`POST /internal/render-events` records a deploy notification from a caller you
+control. Send the thin JSON object Render uses for webhooks. Include `type`
+and `timestamp`. Include `data.id`, `data.serviceId`, and `data.serviceName`
+when you have them. Include `data.status` for events that report a result,
+such as `deploy_ended`.
+
+Render's webhook product signs requests with `webhook-signature`. This route
+checks `X-Render-Events-Secret` only. Pointing a Render webhook at this URL
+makes Render retry, then disable that webhook.
+
+Set `RENDER_EVENTS_SECRET` in the Dashboard. The Blueprint marks it
+`sync: false`. When the variable is unset or blank, every method on this path
+returns 404. The body matches an unknown path. The process does not count the
+call, and it does not write `render_deploy_event`.
+
+When the variable is set, send that value in `X-Render-Events-Secret`. Leading
+and trailing whitespace on the variable and on the header is ignored. A missing
+or wrong header is also 404. A matching header on a method other than POST
+returns 405.
+
+A matching POST with a JSON object returns 204. The process writes
+`render_deploy_event` and increments `desk_render_deploy_event_total`. The log
+line can include `event_type`, `status`, `service_id`, `service_name`, and
+`render_event_id`. The secret stays out of the log. The raw body stays out of
+the log. An unknown `type` is counted as `event_type` `other`. `status` is
+counted only for `succeeded`, `failed`, or `canceled`. A body that is not a
+JSON object returns 400 and does not count.
+
+Each accepted POST increments the counter once. A retry is another increment.
+The counter is process-local, same as the other Desk counters.
 
 ## Free-tier spin-down
 

@@ -14,6 +14,7 @@ counters** for decide, create, HTTP 503, stream slots, and OFAC holds.
 | `desk_stream_open_total` | Stream slot acquired |
 | `desk_stream_refused_total` | Stream slot refused (label: `reason=slot_cap`) |
 | `desk_ofac_hold_total` | New OFAC hold (label: `source=create` or `source=screen`) |
+| `desk_render_deploy_event_total` | Accepted `POST /internal/render-events` (labels: `event_type`, and `status` when it is `succeeded`, `failed`, or `canceled`) |
 
 `reason` values for 503 include `demo_capacity`, `desk_load`, `stream_cap`, and
 `http_503` (fallback).
@@ -32,6 +33,7 @@ aggregators (Datadog / CloudWatch / etc. that scrape JSON stdout).
 
 - `GET /metrics` — JSON snapshot for this process. Does **not** mint a demo.
 - `GET /health` — liveness only (unchanged).
+- `POST /internal/render-events`. Accepted deploy notices only. The gate is in [deploy-posture.md](deploy-posture.md).
 
 ## Deploy notes
 
@@ -41,7 +43,35 @@ aggregators (Datadog / CloudWatch / etc. that scrape JSON stdout).
 - Stream **slot cap** is shared across workers via the file backend
   (`docs/stream-slots.md`). Refuse/open counters on `/metrics` are still
   per-process, so sum across workers when alerting.
-- Suggested alerts: spike in `desk_http_503_total{reason=stream_cap|demo_capacity}`,
-  sustained 5xx via log `http_response`, and any increase in `desk_ofac_hold_total`.
-  Sum `source=create` and `source=screen`, and sum workers, before paging on
-  the absolute value.
+
+## Turn on Render failure notifications
+
+Use the Render Dashboard when a deploy fails or a service becomes unhealthy.
+This path needs no Desk secret.
+
+1. Open the workspace home.
+2. Open **Integrations**, then **Notifications**.
+3. Set **Notification Destination** to Email, Slack, or both.
+4. Set **Default Service Notifications** to **Only failure notifications**.
+
+**Only failure notifications** covers a failed build or deploy, and a running
+service that becomes unhealthy. Connect Slack on that same page before you
+choose Slack. To override one service, open that service's **Settings** page
+and find **Notifications**.
+
+## Signals to page on
+
+Page when one of these moves. Sum Gunicorn workers before you compare an
+absolute count. With the current one-worker start command, `/metrics` is the
+whole service.
+
+- `desk_http_503_total` increases. Treat `reason` `stream_cap` and
+  `demo_capacity` as capacity problems.
+- `desk_ofac_hold_total` increases. Add `source=create` and `source=screen`.
+- A log line has `event` `http_response` and `http_status` of 500 or higher.
+- A log line has `event` `deploy_posture_ephemeral_demo_directory`. The demo
+  directory is ephemeral. See [deploy-posture.md](deploy-posture.md).
+- `desk_render_deploy_event_total` increases with `event_type` `deploy_ended`
+  and `status` `failed`, or with `event_type` `server_failed`. The counter
+  moves only for an accepted `POST /internal/render-events`. The gate is in
+  [deploy-posture.md](deploy-posture.md).
