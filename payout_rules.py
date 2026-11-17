@@ -159,6 +159,8 @@ def create(database, payout_id, payee_name, payee_account, amount_cents, rail,
                 422, 'Bank-details change time must be an ISO 8601 datetime with a timezone offset.',
                 code=api_contract.VALIDATION_ERROR)
     aba.validate(routing_number)
+    import rails
+    rails.enforce_send(rail, amount_cents, submitted_at=now)
     payout_id, payee_name = payout_id.strip(), payee_name.strip()
     payee_account = payee_account.strip()
     key = payouts.clean_idempotency_key(
