@@ -21,6 +21,7 @@ import payout_events
 from desk import render_desk
 from demo_sessions import DemoStore, DemoCapacityError
 from event_log import event, request_context, make_logger
+import operators
 
 
 # FEATURE 00 — Open one visitor demo with its Desk payouts
@@ -86,8 +87,9 @@ def create_app(directory=None, public_origin=None):
         event('http_request_received', method=request.method,
               endpoint=str(request.url_rule) if request.url_rule else '(unknown endpoint)')
         g.cookie = g.demo_id = None
-        # Health probes, assets and unknown routes must not allocate databases.
-        if request.endpoint in (None, 'health', 'desk_script', 'home'):
+        g.operator = None
+        # Health/readiness probes, assets and unknown routes must not allocate databases.
+        if request.endpoint in (None, 'health', 'ready', 'desk_script', 'home'):
             return
         # Reject foreign websites before looking up a browser session. The server log retains the rejection.
         if request.method == 'POST':
@@ -102,10 +104,18 @@ def create_app(directory=None, public_origin=None):
         if not session:
             return jsonify(error='Demo session missing. Reload the dashboard before submitting.',
                            code='DEMO_SESSION_CHANGED'), 409
-        g.demo_id, g.payments, logger, g.cookie = session
+        g.demo_id, g.payments, logger, g.cookie, session_operator = session
         g.leased = True
+        # Optional Bearer token replaces the demo-minted principal (production-shaped
+        # API clients). Missing/unknown tokens are refused before payout logic runs.
+        try:
+            bearer_operator = operators.resolve_bearer(request.headers.get('Authorization'))
+        except (PermissionError, ValueError) as error:
+            return jsonify(error=str(error), code='OPERATOR_UNAUTHORIZED'), 401
+        g.operator = bearer_operator or session_operator
         request_context.set((logger, g.request_id))
-        event('request_received', method=request.method, endpoint=str(request.url_rule))
+        event('request_received', method=request.method, endpoint=str(request.url_rule),
+              operator_id=g.operator.operator_id, operator_role=g.operator.role)
         if request.method == 'POST':
             expected = request.headers.get('X-Demo-ID')
             if expected and expected != g.demo_id:
@@ -172,12 +182,29 @@ def create_app(directory=None, public_origin=None):
         event('internal_error', level=logging.ERROR, error_type=type(error).__name__)
         return jsonify(error='Internal server error. Retry with the same idempotency key.'), 500
 
-    # FEATURE 10 — Check whether the server responds
+    # FEATURE 10 — Check whether the server responds (liveness)
     # Return a small status message without creating a visitor database or submitting a
-    # payment.
+    # payment. Orchestrators use this to know the process is up; prefer /ready for
+    # traffic admission.
     @app.get('/health')
     def health():
         return jsonify(status='ok', mode='fictional payments only',
+                       commit=os.environ.get('RENDER_GIT_COMMIT') or None)
+
+    # FEATURE 10b — Check whether the process can accept traffic (readiness)
+    # Probes the demo directory (writable) without minting a visitor session. A 503
+    # means the load balancer should stop sending traffic until storage recovers.
+    @app.get('/ready')
+    def ready():
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            probe = directory / f'.ready-{uuid4().hex}'
+            probe.write_text('ok', encoding='utf-8')
+            probe.unlink(missing_ok=True)
+        except OSError as error:
+            event('readiness_failed', level=logging.ERROR, error_type=type(error).__name__)
+            return jsonify(status='not_ready', reason='demo storage is not writable'), 503
+        return jsonify(status='ready', mode='fictional payments only',
                        commit=os.environ.get('RENDER_GIT_COMMIT') or None)
 
     # FEATURE 09 — Open the Desk
@@ -198,8 +225,15 @@ def create_app(directory=None, public_origin=None):
             queue = payouts.current_queue(g.payments.database)
         except (sqlite3.Error, OSError, KeyError) as error:  # unreadable or unexpected data
             event('desk_load_failed', level=logging.ERROR, error_type=type(error).__name__)
-            return render_desk(None, g.demo_id or 'local-test'), 503
-        return render_desk(queue, g.demo_id or 'local-test')
+            return render_desk(None, g.demo_id or 'local-test', operator=g.operator), 503
+        return render_desk(queue, g.demo_id or 'local-test', operator=g.operator)
+
+    # FEATURE 19b — Report the signed-in operator for this demo session
+    # Read-only JSON. Actor identity for decide/reset comes from this principal (or a
+    # Bearer token), never from a free-text reviewer field.
+    @app.get('/operator')
+    def current_operator():
+        return jsonify(operator=g.operator.public())
 
     # FEATURE 20 — Deliver the Desk filter script
     # Serve this one named JavaScript file (Exceptions / All switch) without a demo database.
@@ -226,26 +260,37 @@ def create_app(directory=None, public_origin=None):
         return jsonify(report)
 
     # FEATURE 21 — Approve, hold, return, clear or block one payout (Desk back end, issues #35 and #111)
-    # JSON body: reviewer (required) and reason (optional; Hold and Return are
-    # confirm-only). Needs an Idempotency-Key header. Works only on this visitor's own
-    # demo database. 201 = decision recorded; 200 = same key seen before, nothing changed;
-    # 409 = move not allowed from the current status. No screen calls this yet.
+    # JSON body: reason optional (Hold and Return are confirm-only). Do not send
+    # reviewer — the authenticated operator is the audit actor. Needs an
+    # Idempotency-Key header. Works only on this visitor's own demo database.
+    # 201 = decision recorded; 200 = same key seen before, nothing changed;
+    # 409 = move not allowed from the current status.
     @app.post('/payouts/<payout_id>/<any(approve, hold, return, clear, block):action>')
     def decide_payout(payout_id, action):
         if request.mimetype != 'application/json':
             raise APIError(415, 'Use Content-Type: application/json.')
-        body = request.get_json()
+        body = request.get_json(silent=True)
+        if body is None:
+            raise APIError(422, 'Send a JSON object (reason optional).')
         if not isinstance(body, dict):
-            raise APIError(422, 'Send a JSON object with a reviewer name.')
+            raise APIError(422, 'Send a JSON object (reason optional).')
+        if 'reviewer' in body:
+            return jsonify(
+                error='Do not send reviewer; decisions bind to the signed-in operator.',
+                code='REVIEWER_NOT_ACCEPTED'), 422
+        if not g.operator.can_decide():
+            return jsonify(error='This operator cannot decide payouts.',
+                           code='OPERATOR_FORBIDDEN'), 403
         database = g.payments.database
         payout_events.sync(database)
-        status, decision = payouts.decide(database, payout_id, action, body.get('reviewer'),
+        status, decision = payouts.decide(database, payout_id, action, g.operator.actor,
                                           request.headers.get('Idempotency-Key'), body.get('reason'))
         event('payout_decision_replayed' if status == 200 else 'payout_decision_saved',
               payout_id=payout_id, action=action, from_status=decision['from_status'],
-              to_status=decision['to_status'])
+              to_status=decision['to_status'], operator_id=g.operator.operator_id)
         payout_events.sync(database)
-        return jsonify(payout=payouts.get_payout(database, payout_id), decision=decision), status
+        return jsonify(payout=payouts.get_payout(database, payout_id), decision=decision,
+                       operator=g.operator.public()), status
 
     # FEATURE 29 — List every reason a payout is in review (#32)
     # Behind the scenes JSON for the later "Why this is in review" panel.
@@ -261,14 +306,17 @@ def create_app(directory=None, public_origin=None):
     # FEATURE 22 — Reset this visitor's Desk demo to the starting set (#32 slice 4)
     # Calls payouts.reset() on this visitor's own database only. That restores the
     # synthetic seed and clears this demo's action log; it never touches anyone else.
-    # 200 means the starting set was written back. No request body is required.
+    # Requires the admin role. 200 means the starting set was written back.
     @app.post('/payouts/reset')
     def reset_payouts():
+        if not g.operator.can_reset():
+            return jsonify(error='Only an admin operator can reset the demo.',
+                           code='OPERATOR_FORBIDDEN'), 403
         database = g.payments.database
         restored = payouts.reset(database)
-        event('payouts_reset', restored=restored)
+        event('payouts_reset', restored=restored, operator_id=g.operator.operator_id)
         payout_events.after_reset(database)
-        return jsonify(restored=restored)
+        return jsonify(restored=restored, operator=g.operator.public())
 
     # FEATURE 26 — Replay the bundled synthetic payment-outcome events (#56)
     # Behind the scenes only: a POST that uses this visitor's existing demo

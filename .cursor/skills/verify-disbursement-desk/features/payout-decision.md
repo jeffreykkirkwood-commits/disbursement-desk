@@ -23,7 +23,7 @@ Preconditions:
 - Target payout is still actionable (e.g. `PO-1042` on a fresh seed).
 
 - **Open and confirm Hold.** Run `python3 .cursor/skills/verify-disbursement-desk/scripts/verify_desk.py browser --run-id "$RUN_ID" --path /desk --open-payout PO-1042 --click-action hold --confirm --out "$EVIDENCE/payout-decision/hold-po-1042"`. After reload, the row for `PO-1042` shows status word **Held**.
-- **HTTP decide.** Mint a cookie with `--with-cookie`, then `http --method POST --path /payouts/PO-1043/hold --json-body '{"reviewer":"Verify Reviewer"}' --idempotency-key verify-hold-1 --expect-status 201`. Re-fetch `/desk` and confirm Held.
+- **HTTP decide.** Mint a cookie with `--with-cookie`, then `http --method POST --path /payouts/PO-1043/hold --json-body '{}' --idempotency-key verify-hold-1 --expect-status 201`. Actor comes from the signed-in operator (`GET /operator`), not a free-text reviewer. Re-fetch `/desk` and confirm Held.
 
 ## Gotchas
 

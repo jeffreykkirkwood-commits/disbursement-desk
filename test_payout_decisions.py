@@ -343,25 +343,29 @@ class HostedDecisionTests(unittest.TestCase):
         return client
 
     def post(self, client, path, body=None, key='k1', **kwargs):
-        return client.post(path, json={'reviewer': 'Test Reviewer'} if body is None else body, base_url=SITE,
+        return client.post(path, json={} if body is None else body, base_url=SITE,
                            headers={'Idempotency-Key': key, 'Origin': SITE}, **kwargs)
 
     # FEATURE 09 — Scenario — the routes record decisions, replay retries, refuse bad moves
     def test_routes(self):
         client = self.client()
+        actor = client.get('/operator', base_url=SITE).json['operator']['actor']
         held = self.post(client, '/payouts/PO-1043/hold')
         self.assertEqual(held.status_code, 201)
         self.assertEqual(held.json['payout']['status'], 'HELD')
-        self.assertEqual(held.json['decision']['actor'], 'Test Reviewer')
+        self.assertEqual(held.json['decision']['actor'], actor)
         self.assertIsNone(held.json['decision']['reason'])
         retry = self.post(client, '/payouts/PO-1043/hold')
         self.assertEqual((retry.status_code, retry.json), (200, held.json))
-        sent = self.post(client, '/payouts/PO-1043/approve', {'reviewer': 'Test Reviewer', 'reason': 'ok'}, 'k2')
+        sent = self.post(client, '/payouts/PO-1043/approve', {'reason': 'ok'}, 'k2')
         self.assertEqual((sent.status_code, sent.json['payout']['status']), (201, 'PAID'))
         refused = self.post(client, '/payouts/PO-1043/return', key='k3')
         self.assertEqual(refused.status_code, 409)
         self.assertIn('PAID', refused.json['error'])
-        self.assertEqual(self.post(client, '/payouts/PO-1043/hold', {}, 'k4').status_code, 422)
+        # Free-text reviewer is refused; empty body is accepted (actor from session).
+        self.assertEqual(self.post(client, '/payouts/PO-1042/hold',
+                                   {'reviewer': 'X'}, 'k4').status_code, 422)
+        self.assertEqual(self.post(client, '/payouts/PO-1042/hold', {}, 'k4b').status_code, 201)
         self.assertEqual(self.post(client, '/payouts/PO-1043/hold', key='').status_code, 422)
         self.assertEqual(self.post(client, '/payouts/PO-1043/hold', [], 'k5').status_code, 422)
         self.assertEqual(self.post(client, '/payouts/PO-9999/hold', key='k6').status_code, 404)
@@ -389,7 +393,7 @@ class HostedDecisionTests(unittest.TestCase):
         stranger = self.app.test_client()
         self.assertEqual(self.post(stranger, '/payouts/PO-1042/approve').status_code, 409)
         client = self.client()
-        foreign = client.post('/payouts/PO-1042/approve', json={'reviewer': 'X'}, base_url=SITE,
+        foreign = client.post('/payouts/PO-1042/approve', json={}, base_url=SITE,
                               headers={'Idempotency-Key': 'k', 'Origin': 'https://evil.example'})
         self.assertEqual(foreign.status_code, 403)
         for db in Path(self.temp.name).rglob('payments.sqlite3'):

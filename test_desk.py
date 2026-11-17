@@ -124,7 +124,9 @@ class DeskTests(DeskBase):
     # The root address still redirects to the Desk.
     def test_header_has_tag_and_no_lab_link(self):
         desk = self.get().get_data(as_text=True)
-        self.assertIn('<div class="right"><span class="tag">Example data · fake money</span></div>', desk)
+        self.assertIn('<span class="tag">Example data · fake money</span>', desk)
+        self.assertIn('class="tag op"', desk)
+        self.assertIn('Desk operator · admin', desk)
         self.assertNotIn('Payments Lab', desk)
         self.assertNotIn('lab-link', desk)
         self.assertEqual(self.get('/').headers['Location'], '/desk')
@@ -445,7 +447,8 @@ class DeskActionTests(DeskBase):
         script = self.get('/desk.js').get_data(as_text=True)
         self.assertIn("fetch('/payouts/' + encodeURIComponent(pending.id) + '/' + pending.action", script)
         self.assertIn("'Idempotency-Key': pending.key", script)
-        self.assertIn("JSON.stringify({reviewer: 'Desk operator'})", script)
+        self.assertIn('JSON.stringify({})', script)
+        self.assertNotIn("'reviewer'", script)
         self.assertNotIn('reason', script)
 
     # Scenario — a Desk POST after the demo folder is gone (instance replace) is session missing
@@ -460,7 +463,7 @@ class DeskActionTests(DeskBase):
                 handler.close()
                 cached[1].removeHandler(handler)
         shutil.rmtree(folder)
-        reply = self.client.post('/payouts/PO-1043/approve', json={'reviewer': 'Desk operator'},
+        reply = self.client.post('/payouts/PO-1043/approve', json={},
                                  base_url='https://demo.example',
                                  headers={'Idempotency-Key': 'k-restart',
                                           'Origin': 'https://demo.example',
@@ -488,7 +491,7 @@ class DeskActionTests(DeskBase):
         page = self.get()
         demo = page.headers['X-Demo-ID']
         def post(pid, action, key):
-            return self.client.post(f'/payouts/{pid}/{action}', json={'reviewer': 'Desk operator'},
+            return self.client.post(f'/payouts/{pid}/{action}', json={},
                                     base_url='https://demo.example',
                                     headers={'Idempotency-Key': key, 'Origin': 'https://demo.example',
                                              'X-Demo-ID': demo})
@@ -513,7 +516,7 @@ class DeskResetTests(DeskBase):
         client = client or self.client
         page = client.get('/desk', base_url='https://demo.example')
         demo = page.headers['X-Demo-ID']
-        return client.post(f'/payouts/{payout_id}/{action}', json={'reviewer': 'Desk operator'},
+        return client.post(f'/payouts/{payout_id}/{action}', json={},
                            base_url='https://demo.example',
                            headers={'Idempotency-Key': key, 'Origin': 'https://demo.example',
                                     'X-Demo-ID': demo})

@@ -11,6 +11,7 @@ from http.cookies import SimpleCookie, CookieError
 from pathlib import Path
 from threading import RLock
 from event_log import make_logger
+import operators
 
 COOKIE_NAME = "payments_demo"
 
@@ -111,6 +112,9 @@ class DemoStore:
                 payments = self.payments_factory(folder / "payments.sqlite3", max_payments=self.max_payments)
                 self.loaded[demo_id] = (payments, make_logger(folder / "logs"))
             payments, logger = self.loaded[demo_id]
+            # Mint a server-side operator for this demo on first use. Clients never
+            # choose the audit actor; decide/reset read this principal instead.
+            operator = operators.ensure_for_demo(folder, demo_id)
             (folder / '.last-used').touch()
             self.active[demo_id] = self.active.get(demo_id, 0) + 1
             # Cookie lasts as long as the demo's idle expiry (DEMO_IDLE_SECONDS, default 1 day).
@@ -119,7 +123,7 @@ class DemoStore:
             value = f"{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={self.idle_seconds}"
             if self.secure_cookie:
                 value += "; Secure"
-            return demo_id, payments, logger, value
+            return demo_id, payments, logger, value, operator
 
     # FEATURE 08 — Close cached log writers
     # Release open handlers without deleting the stored demo folders.

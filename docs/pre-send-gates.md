@@ -30,4 +30,4 @@ All five are evaluated together in `explain_flag()`; multiple codes may be store
 
 ## Not in this gate set
 
-Rail cutoffs/limits, live vendor OFAC, authenticated operator identity, and Stripe Connect money movement are later phases (P1–P3). Concurrent decide exclusivity under load is covered by product tests here; a fuller formal model remains optional (P2).
+Rail cutoffs/limits, live vendor OFAC, and Stripe Connect money movement are later phases (P2–P3). Authenticated operator identity (session-bound actor, not free-text reviewer) is P1 — see [operator-authz.md](operator-authz.md). Concurrent decide exclusivity under load is covered by product tests here; a fuller formal model remains optional (P2).
