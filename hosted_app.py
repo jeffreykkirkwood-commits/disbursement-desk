@@ -128,9 +128,9 @@ def create_app(directory=None, public_origin=None):
                     (request.headers.get('Origin') and request.headers['Origin'] != origin)):
                 return jsonify(error='Cross-site submissions are not allowed.'), 403
         # GET/HEAD may start a demo; a POST can only use an existing session.
-        # A broken OIDC configuration must not mint operator.json.
-        if isinstance(oidc_config, operator_oidc.OidcConfigError):
-            return jsonify(error=oidc_config.message), 503
+        # Issuer set (OidcConfig or OidcConfigError) never mints operator.json.
+        oidc_broken = isinstance(oidc_config, operator_oidc.OidcConfigError)
+        oidc_ready = isinstance(oidc_config, operator_oidc.OidcConfig)
         try:
             session = demos.resolve(
                 request.headers.get('Cookie'),
@@ -145,15 +145,21 @@ def create_app(directory=None, public_origin=None):
                            code='DEMO_SESSION_CHANGED'), 409
         g.demo_id, g.payments, logger, g.cookie, session_operator = session
         g.leased = True
-        # Optional Bearer token replaces the session principal (production-shaped
-        # API clients). An unknown token is refused and does not fall through.
+        # Bearer replaces any browser principal first. An unknown token is 401
+        # and does not fall through. A half-configured issuer still serves bearers.
         try:
             bearer_operator = operators.resolve_bearer(request.headers.get('Authorization'))
         except (PermissionError, ValueError) as error:
             return jsonify(error=str(error), code='OPERATOR_UNAUTHORIZED'), 401
         if bearer_operator is not None:
             g.operator = bearer_operator
-        elif oidc_config is not None:
+        elif oidc_broken:
+            if request.method in ('GET', 'HEAD'):
+                return jsonify(error=oidc_config.message,
+                               code='OPERATOR_UNAUTHORIZED'), 503
+            return jsonify(error='Operator sign-in required.',
+                           code='OPERATOR_UNAUTHORIZED'), 401
+        elif oidc_ready:
             g.operator = oidc_sessions.operator_from_cookie(
                 request.headers.get('Cookie'), time.time())
             if g.operator is None:

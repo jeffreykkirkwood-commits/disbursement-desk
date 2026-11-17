@@ -413,17 +413,77 @@ class OidcHttpTests(unittest.TestCase):
             app.extensions['close']()
             self._restore_env(saved)
 
-    def test_incomplete_issuer_does_not_mint(self):
-        saved = self._without_oidc_env({operator_oidc.ENV_ISSUER: ISSUER})
-        app = create_app(self.temp.name + '-bad', SITE)
+    def test_incomplete_issuer_does_not_mint_and_bearer_still_works(self):
+        tokens = json.dumps({
+            'tok-admin': {'id': 'op-token', 'name': 'Token Admin', 'role': 'admin'},
+        })
+        saved = self._without_oidc_env({
+            operator_oidc.ENV_ISSUER: ISSUER,
+            operators.ENV_TOKENS: tokens,
+        })
+        folder = self.temp.name + '-bad'
+        app = create_app(folder, SITE)
         try:
-            reply = app.test_client().get('/desk', base_url=SITE)
+            client = app.test_client()
+            reply = client.get('/desk', base_url=SITE)
             self.assertEqual(reply.status_code, 503)
-            self.assertEqual(list(Path(self.temp.name + '-bad').rglob('payments.sqlite3')), [])
-            self.assertEqual(list(Path(self.temp.name + '-bad').rglob('operator.json')), [])
+            self.assertEqual(reply.json['code'], 'OPERATOR_UNAUTHORIZED')
+            self.assertEqual(list(Path(folder).rglob('operator.json')), [])
+            reset = client.post('/payouts/reset', base_url=SITE, headers={'Origin': SITE})
+            self.assertEqual(reset.status_code, 401)
+            held = client.post(
+                '/payouts/PO-1043/hold', json={}, base_url=SITE,
+                headers={'Idempotency-Key': 'tok-hold', 'Origin': SITE,
+                         'Authorization': 'Bearer tok-admin'})
+            self.assertEqual(held.status_code, 201)
+            self.assertEqual(held.json['decision']['actor'], 'Token Admin <op-token>')
         finally:
             app.extensions['close']()
             self._restore_env(saved)
+
+    def test_leftover_operator_json_is_ignored(self):
+        saved = self._without_oidc_env()
+        app = create_app(self.temp.name + '-left', SITE)
+        try:
+            client = app.test_client()
+            minted = client.get('/desk', base_url=SITE)
+            self.assertEqual(minted.status_code, 200)
+            self.assertTrue(list(Path(self.temp.name + '-left').rglob('operator.json')))
+        finally:
+            app.extensions['close']()
+            self._restore_env(saved)
+        with mock.patch.dict(os.environ, oidc_env(), clear=False):
+            app = create_app(self.temp.name + '-left', SITE)
+            try:
+                desk = app.test_client().get('/desk', base_url=SITE)
+                self.assertEqual(desk.status_code, 302)
+                self.assertTrue(desk.headers['Location'].startswith('/auth/oidc/login'))
+            finally:
+                app.extensions['close']()
+
+    def test_demo_expiry_does_not_delete_operator_sessions(self):
+        import time
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with mock.patch.dict(os.environ, {'DEMO_IDLE_SECONDS': '60', **oidc_env()},
+                                 clear=False):
+                store = DemoStore(root, DeskDemo)
+                try:
+                    demo_id, _, _, _, operator = store.resolve('', create=True)
+                    self.assertIsNone(operator)
+                    store.release(demo_id)
+                    sessions = operator_oidc.SessionStore(root)
+                    op = operators.Operator('keep-me', 'Keep', 'admin')
+                    record = sessions.save_session(op, time.time())
+                    old = time.time() - 120
+                    os.utime(root / demo_id / '.last-used', (old, old))
+                    store.resolve('', create=True)
+                    self.assertFalse((root / demo_id).exists())
+                    self.assertTrue(
+                        (root / '_operator_sessions' / 'sessions' /
+                         f'{record.session_id}.json').is_file())
+                finally:
+                    store.close()
 
     def test_mock_mode_refuses_to_boot_on_render(self):
         with mock.patch.dict(os.environ, {'RENDER': 'true'}, clear=False):

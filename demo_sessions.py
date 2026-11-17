@@ -12,6 +12,7 @@ from pathlib import Path
 from threading import RLock
 from event_log import make_logger
 import operators
+import operator_oidc
 
 COOKIE_NAME = "payments_demo"
 
@@ -114,8 +115,12 @@ class DemoStore:
             payments, logger = self.loaded[demo_id]
             # Mint a server-side operator for this demo on first use. Clients never
             # choose the audit actor; decide/reset read this principal instead.
-            # OIDC passes mint_operator=False so this folder does not gain operator.json.
-            operator = operators.ensure_for_demo(folder, demo_id) if mint_operator else None
+            # A set DESK_OIDC_ISSUER never writes operator.json (every caller).
+            issuer_set = bool((os.environ.get(operator_oidc.ENV_ISSUER) or '').strip())
+            if issuer_set or not mint_operator:
+                operator = None
+            else:
+                operator = operators.ensure_for_demo(folder, demo_id)
             (folder / '.last-used').touch()
             self.active[demo_id] = self.active.get(demo_id, 0) + 1
             # Cookie lasts as long as the demo's idle expiry (DEMO_IDLE_SECONDS, default 1 day).
