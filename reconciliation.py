@@ -58,10 +58,11 @@ RECON_PAYOUT_IDS = frozenset(RECON_TARGETS)
 
 # Compare payouts that settlement should know about: sent or in flight, not
 # NOT_STARTED (nothing was sent), not backfilled SETTLED rows with no ref,
-# not hidden replay targets, and not demo-sourced settles (execution_ref
-# starting with 'demo:', from option B Approve). Those demo settles are
-# not in the hand-written settlement file, so leaving them out keeps the
-# six intended cases on both a seeded demo and a used one.
+# not hidden replay targets, not demo-sourced settles (execution_ref
+# starting with 'demo:', from option B Approve), and not Stripe Transfer
+# ids (execution_ref starting with 'tr_'). Those rows are not in the
+# hand-written settlement file. Leaving them out keeps the six intended
+# cases. The signed webhook is the writer for a Transfer's SETTLED or FAILED.
 COMPARABLE = frozenset({payouts.SUBMITTED, payouts.UNKNOWN, payouts.SETTLED, payouts.FAILED})
 
 MATCHED = 'matched'
@@ -143,10 +144,11 @@ def _in_scope(payout):
     if payout_id in _hidden_other_ids():
         return False
     # Option B demo settles use a demo: ref and are not in the settlement
-    # file. Exclude them the same way hidden PO-REPLAY-* targets are, so a
-    # used demo (including the #61 scenario's Approved PO-1042) still shows
-    # the six intended cases instead of an extra missing_from_settlement.
-    if (payout.get('execution_ref') or '').startswith('demo:'):
+    # file. Stripe Transfer ids use a tr_ ref. Exclude both, so a used demo
+    # (including the #61 scenario's Approved PO-1042) still shows the six
+    # intended cases instead of an extra missing_from_settlement.
+    ref = payout.get('execution_ref') or ''
+    if ref.startswith('demo:') or ref.startswith('tr_'):
         return False
     status = payout['execution_status']
     if status not in COMPARABLE:

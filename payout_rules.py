@@ -12,6 +12,7 @@ import aba
 import api_contract
 import payout_notes
 import payouts
+import stripe_connect
 from desk_common import APIError
 
 # FEATURE 01 — Name the automation actor and the log action
@@ -60,24 +61,40 @@ def route_one(db, payout_id, now=None):
         step = target
     at = (now or datetime.now(timezone.utc)).isoformat()
     review, outcome = payouts.review_and_outcome(step)
-    db.execute(
-        'UPDATE payouts SET status = ?, review_status = ?, execution_status = ?, '
-        'flag_code = ?, flag_text = ?, note_text = ?, '
-        'note_source = ?, note_fallback = ?, updated_at = ? WHERE payout_id = ?',
-        (step, review, outcome, payout['flag_code'], payout['flag_text'], payout['note_text'],
-         payout['note_source'], int(payout['note_fallback']), at, payout_id))
+    if stripe_connect.stripe_enabled() and step == payouts.PAID:
+        db.execute(
+            'UPDATE payouts SET status = ?, review_status = ?, execution_status = ?, '
+            'flag_code = ?, flag_text = ?, note_text = ?, '
+            'note_source = ?, note_fallback = ?, updated_at = ? WHERE payout_id = ?',
+            (payouts.APPROVED, payouts.APPROVED, payouts.NOT_STARTED,
+             payout['flag_code'], payout['flag_text'], payout['note_text'],
+             payout['note_source'], int(payout['note_fallback']), at, payout_id))
+    else:
+        db.execute(
+            'UPDATE payouts SET status = ?, review_status = ?, execution_status = ?, '
+            'flag_code = ?, flag_text = ?, note_text = ?, '
+            'note_source = ?, note_fallback = ?, updated_at = ? WHERE payout_id = ?',
+            (step, review, outcome, payout['flag_code'], payout['flag_text'], payout['note_text'],
+             payout['note_source'], int(payout['note_fallback']), at, payout_id))
+    held = None
     if step == payouts.PAID:
-        # The settle step writes PAID/SETTLED details; route_one already moved status
-        # through APPROVED to PAID, and settle fills the execution event if needed.
         held = payouts._settle(db, payout_id, at, actor=ACTOR,
                                idempotency_key=f'settle-screen:route:{payout_id}')
         if held:
-            # Rare: explain_flag was clean but settle re-screen held. Audit is the screen row.
-            return dict(changed=True, payout_id=payout_id, status=payouts.FLAGGED, event=held)
+            if held.get('action') == payouts.SCREEN:
+                return dict(changed=True, payout_id=payout_id, status=payouts.FLAGGED, event=held)
+    evidence = None
+    if held and held.get('kind') == 'stripe_submit':
+        evidence = {
+            'stripe_transfer_id': held['transfer_id'],
+            'stripe_destination': held['destination'],
+            'stripe_idempotency_key': held['idempotency_key'],
+            'stripe_livemode': False,
+        }
     key = f'route:{payout_id}'
     event = payouts.record_transition(
         db, payout_id, ACTION, current, step, ACTOR, key,
-        reason=payout['flag_text'], at=at)
+        reason=payout['flag_text'], at=at, evidence=evidence)
     return dict(changed=True, payout_id=payout_id, status=step, event=event)
 
 
@@ -203,7 +220,7 @@ def create(database, payout_id, payee_name, payee_account, amount_cents, rail,
                    note_text=None, note_source=None, note_fallback=None,
                    created_at=at, updated_at=at,
                    review_status=review, execution_status=outcome, execution_ref=None,
-                   execution_updated_at=None)
+                   execution_updated_at=None, stripe_connected_account_id=None)
         db.execute(
             f'INSERT INTO payouts ({", ".join(payouts.COLUMNS)}) VALUES '
             f'({", ".join("?" * len(payouts.COLUMNS))})',

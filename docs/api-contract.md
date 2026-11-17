@@ -37,6 +37,12 @@ Legacy Desk UI routes (`/payouts/simulate`, `/payouts/<id>/<action>`, …) stay.
 | `INTERNAL_ERROR` | 500 |
 | `RAIL_OVER_LIMIT` | 422 |
 | `RAIL_WINDOW_CLOSED` | 409 |
+| `STRIPE_SEND_BLOCKED` | 409 or 502 |
+
+`STRIPE_SEND_BLOCKED` means the payout was not sent. A missing test-mode
+config, a live key, or a missing destination is 409. A Stripe API error is
+502. `POST /stripe/webhook` is not in the OpenAPI document. A bad signature
+is 400. A live-mode event or a field mismatch is 422 with this code.
 
 ## Semantics
 

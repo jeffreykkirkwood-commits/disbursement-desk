@@ -16,6 +16,7 @@ import api_contract
 import ofac
 import payout_notes
 import rails
+import stripe_connect
 from desk_common import APIError
 
 # FEATURE 01 — Name every payout status
@@ -37,8 +38,9 @@ NOT_STARTED, SUBMITTED, UNKNOWN, SETTLED, FAILED = (
     'NOT_STARTED', 'SUBMITTED', 'UNKNOWN', 'SETTLED', 'FAILED')
 EXECUTION_STATUSES = (NOT_STARTED, SUBMITTED, UNKNOWN, SETTLED, FAILED)
 REVIEW_STATUSES = (PENDING, FLAGGED, APPROVED, HELD, RETURNED)
-DEMO, REPLAY, RECONCILIATION = 'demo', 'replay', 'reconciliation'
-EXECUTION_SOURCES = (DEMO, REPLAY, RECONCILIATION)
+DEMO, REPLAY, RECONCILIATION, STRIPE = 'demo', 'replay', 'reconciliation', 'stripe'
+EXECUTION_SOURCES = (DEMO, REPLAY, RECONCILIATION, STRIPE)
+_EXECUTION_SOURCE_CHECK = ', '.join(repr(source) for source in EXECUTION_SOURCES)
 RULES_VERSION = 'desk-rules-1'
 EXECUTION_TRANSITIONS = {
     NOT_STARTED: frozenset({SUBMITTED}),
@@ -181,7 +183,8 @@ SCHEMA = (
         review_status TEXT CHECK(review_status IS NULL OR review_status IN ('PENDING', 'FLAGGED', 'APPROVED', 'HELD', 'RETURNED')),
         execution_status TEXT NOT NULL DEFAULT 'NOT_STARTED' CHECK(execution_status IN ('NOT_STARTED', 'SUBMITTED', 'UNKNOWN', 'SETTLED', 'FAILED')),
         execution_ref TEXT,
-        execution_updated_at TEXT
+        execution_updated_at TEXT,
+        stripe_connected_account_id TEXT
     )''',
     '''CREATE TABLE IF NOT EXISTS payout_events (
         event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -201,7 +204,7 @@ SCHEMA = (
         execution_status TEXT NOT NULL CHECK(execution_status IN ('NOT_STARTED', 'SUBMITTED', 'UNKNOWN', 'SETTLED', 'FAILED')),
         execution_ref TEXT,
         at TEXT NOT NULL,
-        source TEXT NOT NULL CHECK(source IN ('demo', 'replay', 'reconciliation'))
+        source TEXT NOT NULL CHECK(source IN (''' + _EXECUTION_SOURCE_CHECK + '''))
     )''',
     '''CREATE TABLE IF NOT EXISTS reconciliation_runs (
         run_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -225,7 +228,7 @@ SCHEMA = (
 COLUMNS = ('payout_id', 'payee_name', 'payee_account', 'account_name', 'amount_cents', 'currency',
            'rail', 'status', 'flag_code', 'flag_text', 'payee_usual_cents', 'bank_details_changed_at', 'note_text', 'note_source', 'note_fallback',
            'created_at', 'updated_at', 'review_status', 'execution_status', 'execution_ref',
-           'execution_updated_at')
+           'execution_updated_at', 'stripe_connected_account_id')
 
 # FEATURE 07 — Fix the fictional starting set
 # Every name and DEMO- account below is invented. The current queue mirrors the approved
@@ -264,7 +267,7 @@ def _row(payout_id, payee, account, cents, rail, status, when, usual=None, chang
                 flag_text=None, payee_usual_cents=usual, bank_details_changed_at=changed,
                 note_text=None, note_source=None, note_fallback=None, created_at=when, updated_at=when,
                 review_status=review, execution_status=outcome, execution_ref=None,
-                execution_updated_at=None)
+                execution_updated_at=None, stripe_connected_account_id=None)
 
 
 # FEATURE 07b — Work out why a payout is flagged, from its data
@@ -369,7 +372,8 @@ ADDED_COLUMNS = (('payee_usual_cents', 'INTEGER CHECK(payee_usual_cents IS NULL 
                   "TEXT NOT NULL DEFAULT 'NOT_STARTED' CHECK(execution_status IN "
                   "('NOT_STARTED', 'SUBMITTED', 'UNKNOWN', 'SETTLED', 'FAILED'))"),
                  ('execution_ref', 'TEXT'),
-                 ('execution_updated_at', 'TEXT'))
+                 ('execution_updated_at', 'TEXT'),
+                 ('stripe_connected_account_id', 'TEXT'))
 
 
 def _upgrade(db):
@@ -385,7 +389,8 @@ def _upgrade(db):
         changed = True
     row = db.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='execution_events'").fetchone()
-    if row and "'demo'" not in (row[0] or ''):
+    sql = (row[0] or '') if row else ''
+    if row and ("'demo'" not in sql or "'stripe'" not in sql):
         db.execute('ALTER TABLE execution_events RENAME TO execution_events_old')
         db.execute(SCHEMA[2])
         db.execute('INSERT INTO execution_events SELECT * FROM execution_events_old')
@@ -642,9 +647,9 @@ def record_transition(db, payout_id, action, from_status, to_status, actor, idem
 # result (200); the same key with different details is refused (409). Illegal moves are
 # refused with a clear 409 and change nothing. Works only on the one viewer database it
 # is given. Approve (#55 option B) records review_status APPROVED and the evidence, then
-# the demo settle step in the same save writes execution_status SETTLED, an execution
-# event, execution_ref and execution_updated_at, and status PAID, so the queue, stream
-# and Sent word still see PAID. Approve itself does not write PAID.
+# the settle step in the same save writes status PAID, an execution event,
+# execution_ref and execution_updated_at. The queue, stream and Sent word still
+# see PAID. Approve itself does not write PAID.
 def decide(database, payout_id, action, actor, idempotency_key, reason=None, now=None):
     actor, reason, idempotency_key = _clean(action, actor, reason, idempotency_key)
     with storage.connect(str(database), timeout=10) as db:
@@ -695,15 +700,14 @@ def decide(database, payout_id, action, actor, idempotency_key, reason=None, now
         for target in DECISIONS[action]:
             check_transition(step, target)
             step = target
+        held = None
         if action in (APPROVE, CLEAR):
-            # Record the review only; the settle step writes PAID and SETTLED.
             db.execute(
                 'UPDATE payouts SET review_status = ?, updated_at = ? WHERE payout_id = ?',
                 (APPROVED, at, payout_id))
             held = _settle(db, payout_id, at, allow_sanctions_clear=(action == CLEAR),
                            actor=actor, idempotency_key=f'settle-screen:{idempotency_key}')
-            if held:
-                # Settle re-screen held the payout; the screen row is the audit trail.
+            if held and held.get('action') == SCREEN:
                 return 201, held
         else:
             review, outcome = review_and_outcome(step)
@@ -712,6 +716,11 @@ def decide(database, payout_id, action, actor, idempotency_key, reason=None, now
                 'WHERE payout_id = ?',
                 (step, review, outcome, at, payout_id))
         evidence = _decision_evidence(payout, actor, reason, at)
+        if held and held.get('kind') == 'stripe_submit':
+            evidence['stripe_transfer_id'] = held['transfer_id']
+            evidence['stripe_destination'] = held['destination']
+            evidence['stripe_idempotency_key'] = held['idempotency_key']
+            evidence['stripe_livemode'] = False
         return 201, record_transition(
             db, payout_id, action, current, step, actor, idempotency_key,
             reason=reason, at=at, evidence=evidence)
@@ -761,16 +770,8 @@ def _apply_sanctions_hold(db, payout, match, at):
          at, payout['payout_id']))
 
 
-def _settle(db, payout_id, at, allow_sanctions_clear=False, actor='automation',
-            idempotency_key=None):
-    """Option B demo settle: check NOT_STARTED → SUBMITTED → SETTLED, then store SETTLED.
-
-    Writes status PAID, execution_status SETTLED, execution_ref, execution_updated_at,
-    and one execution_events row. Approve and clean automation call this; they do not
-    write PAID themselves. A second call with the same payout is a no-op.
-    When a sanctions re-screen holds the payout, appends a screen audit row and returns
-    that event; otherwise returns None.
-    """
+def _settle_demo(db, payout_id, at, allow_sanctions_clear=False, actor='automation',
+                 idempotency_key=None):
     row = db.execute(
         f'SELECT {", ".join(COLUMNS)} FROM payouts WHERE payout_id = ?', (payout_id,)).fetchone()
     if not row:
@@ -818,6 +819,144 @@ def _settle(db, payout_id, at, allow_sanctions_clear=False, actor='automation',
         'VALUES (?, ?, ?, ?, ?, ?)',
         (event_id, payout_id, SETTLED, ref, at, DEMO))
     return None
+
+
+def _demo_id(db):
+    path = None
+    for item in db.execute('PRAGMA database_list'):
+        if item[1] == 'main':
+            path = item[2]
+            break
+    return storage.tenant_from_path(path)
+
+
+def _settle(db, payout_id, at, allow_sanctions_clear=False, actor='automation',
+            idempotency_key=None):
+    if not stripe_connect.stripe_enabled():
+        return _settle_demo(
+            db, payout_id, at, allow_sanctions_clear=allow_sanctions_clear,
+            actor=actor, idempotency_key=idempotency_key)
+    row = db.execute(
+        f'SELECT {", ".join(COLUMNS)} FROM payouts WHERE payout_id = ?', (payout_id,)).fetchone()
+    if not row:
+        raise APIError(404, 'Payout not found.', code=api_contract.NOT_FOUND)
+    payout = dict(zip(COLUMNS, row))
+    ref = payout.get('execution_ref') or ''
+    if payout['execution_status'] in (SUBMITTED, SETTLED, FAILED) and ref.startswith('tr_'):
+        return None
+    if not allow_sanctions_clear:
+        match = ofac.screen(payout['payee_name'])
+        if match:
+            from_status = payout['status']
+            _apply_sanctions_hold(db, payout, match, at)
+            key = idempotency_key or f'settle-screen:{payout_id}:{at}'
+            return record_transition(
+                db, payout_id, SCREEN, from_status, FLAGGED, actor, key,
+                reason=ofac.flag_sentence(match), at=at)
+    if payout['review_status'] != APPROVED:
+        raise APIError(409, 'Only an Approved payout can be settled.')
+    rails.enforce_send(payout['rail'], payout['amount_cents'], submitted_at=at)
+    demo_id = _demo_id(db)
+    if stripe_connect.send_mode(demo_id=demo_id) != 'stripe':
+        return _settle_demo(
+            db, payout_id, at, allow_sanctions_clear=allow_sanctions_clear,
+            actor=actor, idempotency_key=idempotency_key)
+    return _submit_stripe_transfer(db, payout, payout_id, at, demo_id)
+
+
+def _submit_stripe_transfer(db, payout, payout_id, at, demo_id):
+    if payout['execution_status'] == UNKNOWN:
+        check_execution_transition(UNKNOWN, SUBMITTED)
+    if payout['execution_status'] == SUBMITTED:
+        raise APIError(409, 'A SUBMITTED payment outcome cannot move to SUBMITTED.',
+                       code=api_contract.CONFLICT)
+    if payout['execution_status'] in (SETTLED, FAILED):
+        return None
+    if payout['execution_status'] != NOT_STARTED:
+        check_execution_transition(payout['execution_status'], SUBMITTED)
+    destination = stripe_connect.destination_for(
+        payout['payee_account'], column=payout.get('stripe_connected_account_id'))
+    idem = stripe_connect.transfer_idempotency_key(demo_id, payout_id)
+    record = stripe_connect.create_transfer(
+        payout_id=payout_id, amount_cents=payout['amount_cents'], currency='usd',
+        destination=destination, demo_id=demo_id, idempotency_key=idem)
+    check_execution_transition(NOT_STARTED, SUBMITTED)
+    stored_dest = payout.get('stripe_connected_account_id') or destination
+    db.execute(
+        'UPDATE payouts SET status = ?, review_status = ?, execution_status = ?, '
+        'execution_ref = ?, execution_updated_at = ?, stripe_connected_account_id = ?, '
+        'updated_at = ? WHERE payout_id = ?',
+        (PAID, APPROVED, SUBMITTED, record['transfer_id'], at, stored_dest, at, payout_id))
+    event_id = f'stripe-submit:{payout_id}'
+    if not db.execute('SELECT 1 FROM execution_events WHERE event_id = ?', (event_id,)).fetchone():
+        db.execute(
+            'INSERT INTO execution_events (event_id, payout_id, execution_status, execution_ref, at, source) '
+            'VALUES (?, ?, ?, ?, ?, ?)',
+            (event_id, payout_id, SUBMITTED, record['transfer_id'], at, STRIPE))
+    return {
+        'kind': 'stripe_submit',
+        'transfer_id': record['transfer_id'],
+        'destination': destination,
+        'idempotency_key': idem,
+        'livemode': False,
+    }
+
+
+def apply_stripe_event(database, command, now=None):
+    if not isinstance(command, dict) or command.get('outcome') not in (SETTLED, FAILED):
+        return 'ignored'
+    if command.get('livemode'):
+        raise APIError(422, 'Stripe send is blocked.', code=api_contract.STRIPE_SEND_BLOCKED)
+    payout_id = command.get('payout_id')
+    event_id = command.get('stripe_event_id')
+    transfer_id = command.get('transfer_id') or ''
+    if not payout_id or not event_id or not str(transfer_id).startswith('tr_'):
+        return 'ignored'
+    outcome = command['outcome']
+    at = (now or datetime.now(timezone.utc)).isoformat()
+    with storage.connect(str(database), timeout=10) as db:
+        db.execute('PRAGMA foreign_keys = ON')
+        db.execute('BEGIN IMMEDIATE')
+        for statement in SCHEMA:
+            db.execute(statement)
+        _upgrade(db)
+        row = db.execute(
+            f'SELECT {", ".join(COLUMNS)} FROM payouts WHERE payout_id = ?',
+            (payout_id,)).fetchone()
+        if not row:
+            return 'ignored'
+        payout = dict(zip(COLUMNS, row))
+        if payout['status'] == RETURNED:
+            return 'ignored'
+        if command.get('amount_cents') != payout['amount_cents'] or command.get('currency') != 'usd':
+            raise APIError(422, 'Stripe send is blocked.', code=api_contract.STRIPE_SEND_BLOCKED)
+        ref = payout.get('execution_ref') or ''
+        if ref and ref != transfer_id:
+            raise APIError(422, 'Stripe send is blocked.', code=api_contract.STRIPE_SEND_BLOCKED)
+        column = payout.get('stripe_connected_account_id')
+        if column and column != (command.get('destination') or ''):
+            raise APIError(422, 'Stripe send is blocked.', code=api_contract.STRIPE_SEND_BLOCKED)
+        if payout['execution_status'] == NOT_STARTED:
+            return 'pending'
+        if db.execute(
+                'SELECT 1 FROM execution_events WHERE event_id = ?', (event_id,)).fetchone():
+            return 'ignored'
+        if payout['execution_status'] == outcome:
+            return 'ignored'
+        try:
+            check_execution_transition(payout['execution_status'], outcome)
+        except APIError:
+            return 'ignored'
+        stored_ref = ref or transfer_id
+        db.execute(
+            'UPDATE payouts SET execution_status = ?, execution_ref = ?, execution_updated_at = ? '
+            'WHERE payout_id = ?',
+            (outcome, stored_ref, at, payout_id))
+        db.execute(
+            'INSERT INTO execution_events (event_id, payout_id, execution_status, execution_ref, at, source) '
+            'VALUES (?, ?, ?, ?, ?, ?)',
+            (event_id, payout_id, outcome, stored_ref, at, STRIPE))
+        return 'applied'
 
 
 def list_events(database, payout_id=None):
