@@ -1,9 +1,9 @@
 # Automated checks for the #30 connection factory: local SQLite when Turso is
 # unset, and the libSQL client when both TURSO_DATABASE_URL and
-# TURSO_AUTH_TOKEN are set. Adapter tests use libsql on a local file. The
-# Turso-url path is mocked; these tests make no network calls and do not
-# use real credentials.
-"""Exercise storage.connect() backend selection and the libsql adapter."""
+# TURSO_AUTH_TOKEN are set with a safe tenancy mode. Adapter tests use
+# libsql on a local file. The Turso-url path is mocked; these tests make no
+# network calls and do not use real credentials.
+"""Exercise storage.connect() backend selection, tenancy, and the libsql adapter."""
 import os
 import sqlite3
 import sys
@@ -18,7 +18,8 @@ import storage
 def _env(**extra):
     env = {key: value for key, value in os.environ.items()
            if key not in (storage.DATABASE_URL, storage.AUTH_TOKEN,
-                          storage.TEST_BACKEND)}
+                          storage.TEST_BACKEND, storage.TENANT_MODE,
+                          storage.ALLOW_SHARED)}
     env.update(extra)
     return mock.patch.dict(os.environ, env, clear=True)
 
@@ -84,13 +85,15 @@ class StorageFactoryTests(unittest.TestCase):
                         db.close()
                     libsql.connect.assert_not_called()
 
-    # FEATURE 03 — Scenario — both variables select the mocked libSQL client
-    def test_uses_libsql_when_both_variables_are_set(self):
+    # FEATURE 03 — Scenario — shared Turso requires an explicit single-tenant allow
+    def test_uses_libsql_when_shared_turso_is_explicitly_allowed(self):
         libsql = mock.Mock()
         remote = mock.Mock()
         libsql.connect.return_value = remote
         url = 'libsql://example.turso.io'
-        with _env(**{storage.DATABASE_URL: url, storage.AUTH_TOKEN: 'test-token'}):
+        with _env(**{storage.DATABASE_URL: url, storage.AUTH_TOKEN: 'test-token',
+                     storage.TENANT_MODE: storage.MODE_SHARED,
+                     storage.ALLOW_SHARED: '1'}):
             self.assertTrue(storage.turso_configured())
             with mock.patch.dict(sys.modules, {'libsql': libsql}):
                 db = storage.connect(self.path, timeout=10)
@@ -102,6 +105,40 @@ class StorageFactoryTests(unittest.TestCase):
             self.assertTrue(self.path.is_file())
         finally:
             db.close()
+
+    # FEATURE 03b — Scenario — bare Turso URL is refused (no silent shared DB)
+    def test_refuses_shared_turso_without_tenancy_mode(self):
+        libsql = mock.Mock()
+        with _env(**{storage.DATABASE_URL: 'libsql://example.turso.io',
+                     storage.AUTH_TOKEN: 'test-token'}):
+            with mock.patch.dict(sys.modules, {'libsql': libsql}):
+                with self.assertRaises(storage.StorageConfigError) as raised:
+                    storage.connect(self.path)
+        self.assertIn('tenancy is not configured', str(raised.exception))
+        libsql.connect.assert_not_called()
+
+    # FEATURE 03c — Scenario — template mode isolates visitors by tenant URL
+    def test_per_tenant_turso_urls_differ_by_demo_folder(self):
+        libsql = mock.Mock()
+        libsql.connect.return_value = mock.Mock()
+        root = Path(self.temp.name)
+        first = root / ('a' * 64) / 'payments.sqlite3'
+        second = root / ('b' * 64) / 'payments.sqlite3'
+        template = 'libsql://desk-{tenant}.turso.io'
+        with _env(**{storage.DATABASE_URL: template, storage.AUTH_TOKEN: 'test-token',
+                     storage.TENANT_MODE: storage.MODE_TEMPLATE}):
+            with mock.patch.dict(sys.modules, {'libsql': libsql}):
+                one = storage.connect(first)
+                two = storage.connect(second)
+                try:
+                    self.assertEqual(
+                        [call.kwargs['database'] for call in libsql.connect.call_args_list],
+                        [f'libsql://desk-{"a" * 64}.turso.io',
+                         f'libsql://desk-{"b" * 64}.turso.io'])
+                finally:
+                    one.close()
+                    two.close()
+        self.assertNotEqual(storage.tenant_from_path(first), storage.tenant_from_path(second))
 
     # FEATURE 04 — Scenario — the test backend opens libsql on the local file
     def test_libsql_local_backend_uses_local_file(self):
