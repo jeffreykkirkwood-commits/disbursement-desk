@@ -1,0 +1,31 @@
+- banner: Disbursement Desk Example data · fake money
+- main:
+  - region "Outgoing payouts":
+    - heading "Outgoing payouts" [level=1]
+    - group "Filter":
+      - button "Exceptions 4"
+      - button "All 10" [pressed]
+    - list:
+      - listitem:
+        - button "Acme Supplies $4,850.00 PO-1042 · Amount is 6× this payee’s usual payout ($790 avg) Needs review"
+      - listitem:
+        - button "Bluebird Bakery $312.40 PO-1043 · Payee bank details changed 2 days ago Needs review"
+      - listitem:
+        - button "Northwind Freight $1,200.00 PO-1044 · Same payee and amount as yesterday (possible duplicate) Needs review"
+      - listitem:
+        - button "Harbor Hardware $2,075.50 PO-1038 · Amount is 4× this payee’s usual payout ($520 avg) Held"
+      - listitem:
+        - button "Maple Tutoring LLC $450.00 PO-1037 · Payee bank details changed 1 day ago Returned"
+      - listitem:
+        - button "Quartz Copy Shop $215.00 PO-1036 · ACH Sent"
+      - listitem:
+        - button "Northwind Freight $1,200.00 PO-1039 · ACH Sent"
+      - listitem:
+        - button "Cedar Cleaning Co. $640.00 PO-1040 · ACH Sent"
+      - listitem:
+        - button "Pine Street Print $98.15 PO-1041 · RTP Sent"
+      - listitem:
+        - button "Willow Lane Florist $187.25 PO-1045 · RTP Sent"
+    - paragraph:
+      - text: Your changes stay in this browser only.
+      - button "Reset demo"

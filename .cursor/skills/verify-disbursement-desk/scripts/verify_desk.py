@@ -292,24 +292,35 @@ def cmd_browser(args: argparse.Namespace) -> None:
         (out_dir / 'aria.txt').write_text(aria if isinstance(aria, str) else str(aria))
         page.screenshot(path=str(out_dir / 'screenshot.png'), full_page=True)
         title = page.title()
-        brand = page.locator('.brand').inner_text() if page.locator('.brand').count() else ''
+        # .brand includes an aria-hidden "D" mark; normalize whitespace for asserts.
+        brand_raw = page.locator('.brand').inner_text() if page.locator('.brand').count() else ''
+        brand = ' '.join(brand_raw.split())
         tag = page.locator('.tag').inner_text() if page.locator('.tag').count() else ''
         exceptions_pressed = page.locator('.chip[data-f="exceptions"]').get_attribute('aria-pressed')
         all_pressed = page.locator('.chip[data-f="all"]').get_attribute('aria-pressed')
         visible_rows = page.locator('#list li[data-ex]:not([hidden]) .row').count()
         payout_ids = page.locator('#list .row').evaluate_all(
             'els => els.map(e => e.getAttribute("data-id"))')
+        open_id = args.open_payout
+        open_current = None
+        detail_visible = None
+        if open_id:
+            open_current = page.locator(f'.row[data-id="{open_id}"]').get_attribute('aria-current')
+            detail_visible = page.locator(f'.panel[data-id="{open_id}"]:not([hidden])').count() > 0
         browser.close()
     summary = {
         'ok': True,
         'title': title,
-        'brand': brand.strip(),
+        'brand': brand,
         'tag': tag.strip(),
         'exceptions_pressed': exceptions_pressed,
         'all_pressed': all_pressed,
         'visible_rows': visible_rows,
         'payout_ids_sample': payout_ids[:5],
         'payout_id_count': len(payout_ids),
+        'open_payout': open_id,
+        'open_aria_current': open_current,
+        'detail_visible': detail_visible,
         'out': str(out_dir),
     }
     (out_dir / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
@@ -324,6 +335,12 @@ def cmd_browser(args: argparse.Namespace) -> None:
         raise SystemExit('expected Exceptions filter pressed')
     if args.expect_filter == 'all' and all_pressed != 'true':
         raise SystemExit('expected All filter pressed')
+    if args.expect_open_payout:
+        want = args.expect_open_payout
+        if open_current != 'true':
+            raise SystemExit(f'expected aria-current=true on {want}, got {open_current!r}')
+        if not detail_visible:
+            raise SystemExit(f'expected visible detail panel for {want}')
 
 
 def cmd_cleanup(args: argparse.Namespace) -> None:
@@ -397,6 +414,8 @@ def build_parser() -> argparse.ArgumentParser:
     browser.add_argument('--expect-brand', default='Disbursement Desk')
     browser.add_argument('--expect-min-rows', type=int, default=None)
     browser.add_argument('--expect-filter', choices=['exceptions', 'all'], default=None)
+    browser.add_argument('--expect-open-payout', default=None,
+                         help='require this payout id open (aria-current + visible panel)')
     browser.set_defaults(func=cmd_browser)
 
     cleanup = sub.add_parser('cleanup', help='stop the instance started for this RUN_ID')

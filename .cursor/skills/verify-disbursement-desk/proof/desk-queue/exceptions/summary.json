@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "title": "Disbursement Desk \u00b7 Example data",
+  "brand": "D Disbursement Desk",
+  "tag": "Example data \u00b7 fake money",
+  "exceptions_pressed": "true",
+  "all_pressed": "false",
+  "visible_rows": 4,
+  "payout_ids_sample": [
+    "PO-1042",
+    "PO-1043",
+    "PO-1044",
+    "PO-1038",
+    "PO-1037"
+  ],
+  "payout_id_count": 10,
+  "open_payout": null,
+  "open_aria_current": null,
+  "detail_visible": null,
+  "out": "/tmp/disbursement-desk-verify-artifacts/prove-desk-queue-1794874474-3705/exceptions"
+}

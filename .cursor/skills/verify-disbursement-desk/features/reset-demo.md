@@ -5,7 +5,7 @@ Reset demo restores this visitor's synthetic starting payouts and clears their a
 ## Sub-features
 
 - `reset-click` posts to `/payouts/reset` from the footer link.
-- `reset-restore` returns the seeded queue (40 fictional payouts) after reload.
+- `reset-restore` restores the full seed in this visitor's DB (~40 rows) and reloads the Desk queue subset (Exceptions 4 / All 10 on a fresh seed).
 - `reset-error` keeps the page unchanged and shows the approved error line if reset fails.
 
 ## How to get to it (user POV)
@@ -27,3 +27,4 @@ Preconditions:
 - Reset has no confirm dialog; the click is immediate.
 - A POST without a cookie cannot create a session — mint via `/desk` first.
 - Reset only affects this visitor's demo directory, never other runs.
+- Assert restore via Desk chips / `PO-*` ids (and optional HTTP `restored`), not by counting 40 list rows — the Desk hides history/replay/recon ids.
