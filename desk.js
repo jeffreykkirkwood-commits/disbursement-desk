@@ -133,11 +133,12 @@
     setBusy(true);
     const demo = document.querySelector('meta[name="demo-id"]');
     try {
+      // Actor comes from the signed-in operator on the server — never send reviewer.
       const reply = await fetch('/payouts/' + encodeURIComponent(pending.id) + '/' + pending.action, {
         method: 'POST',
         headers: {'Content-Type': 'application/json', 'Idempotency-Key': pending.key,
                   'X-Demo-ID': demo ? demo.content : ''},
-        body: JSON.stringify({reviewer: 'Desk operator'}),
+        body: JSON.stringify({}),
       });
       if (!reply.ok) {
         if (await sessionCode(reply) === 'DEMO_SESSION_CHANGED' && recoverSession()) return;

@@ -75,9 +75,9 @@ class StreamBase(unittest.TestCase):
             headers['Last-Event-ID'] = str(last_id)
         return self.get('/payouts/stream', client, **headers)
 
-    def decide(self, payout_id, action, key, reviewer='Test Reviewer', client=None):
+    def decide(self, payout_id, action, key, client=None):
         return (client or self.client).post(
-            f'/payouts/{payout_id}/{action}', json={'reviewer': reviewer},
+            f'/payouts/{payout_id}/{action}', json={},
             base_url='https://demo.example',
             headers={'Idempotency-Key': key, 'Origin': 'https://demo.example'})
 

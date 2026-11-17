@@ -262,7 +262,7 @@ class OfacDeskTests(unittest.TestCase):
 
     def decide(self, payout_id, action):
         return self.client.post(f'/payouts/{payout_id}/{action}',
-                                json={'reviewer': 'Desk operator'},
+                                json={},
                                 base_url='https://demo.example',
                                 headers={'Origin': 'https://demo.example',
                                          'Idempotency-Key': f'desk-{action}-{payout_id}'})
