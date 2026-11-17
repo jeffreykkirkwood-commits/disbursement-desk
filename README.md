@@ -19,6 +19,9 @@ Turso / multi-visitor tenancy: see [docs/tenancy.md](docs/tenancy.md). A shared
 Observability (structured logs + decide/create/503/stream counters): see
 [docs/observability.md](docs/observability.md). Snapshot: `GET /metrics`.
 
+Multi-worker stream-slot cap (`STREAM_SLOT_BACKEND=file` under
+`DEMO_DIRECTORY/_stream_slots`): see [docs/stream-slots.md](docs/stream-slots.md).
+
 ## Run the app shell locally
 
 The app shell (payments-api-simulator #122, step 2) answers `/health` (liveness),
