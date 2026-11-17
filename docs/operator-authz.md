@@ -52,5 +52,6 @@ Send `Authorization: Bearer tok-ada`. Unknown tokens → **401**
 
 ## Not in this slice
 
-SSO/OIDC login UI is out of scope here. OpenAPI / versioned create-decide:
-see [docs/api-contract.md](api-contract.md).
+SSO/OIDC login UI is out of scope here. Design spike:
+[operator-oidc-design.md](operator-oidc-design.md). OpenAPI / versioned
+create-decide: see [docs/api-contract.md](api-contract.md).
