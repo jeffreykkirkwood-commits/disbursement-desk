@@ -25,7 +25,7 @@ Re-verify these on any change to `decide`, `_settle`, `route_one`, or OFAC scree
 Checked items are enforced by the test-mode send path. Unchecked items still block a live pilot:
 
 - [ ] Connected account type chosen (Express vs Custom); KYC ownership documented
-- [ ] Platform vs connected-account fund flow decided (destination charges vs separate charges + transfers)
+- [x] Platform → connected-account fund flow: test-mode **Transfers** from platform balance (not destination charges)
 - [x] Desk `Idempotency-Key` maps 1:1 to Stripe `Transfer` / `PaymentIntent` / `Payout` ids in `payout_events` evidence
 - [x] OFAC **Clear** is a hard precondition in code **before** any Stripe money-movement API call
 - [x] Failure / retry: Stripe webhooks update `execution_status` without inventing Desk `status`
