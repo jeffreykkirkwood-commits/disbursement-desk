@@ -25,6 +25,7 @@ from demo_sessions import DemoStore, DemoCapacityError
 from event_log import event, request_context, make_logger
 import metrics
 import operators
+import deploy_posture
 
 
 # FEATURE 00 — Open one visitor demo with its Desk payouts
@@ -65,6 +66,9 @@ def create_app(directory=None, public_origin=None):
     if os.environ.get('RENDER') and not origin.startswith('https://'):
         raise RuntimeError('Hosted demos require an HTTPS public origin.')
     directory = Path(directory or os.environ.get('DEMO_DIRECTORY', '/tmp/payments-demos'))
+    # On Render, /tmp (and unset DEMO_DIRECTORY) is wiped on every deploy/restart.
+    # Prefer Turso tenancy or a paid disk — see docs/deploy-posture.md.
+    deploy_posture.warn_ephemeral_demo_directory(directory)
     # Server diagnostics cover requests without a visitor session. Never expose these to visitors.
     server_logger = make_logger(directory / '_server_logs')
     demos = DemoStore(directory, DeskDemo, secure_cookie=origin.startswith('https://'))

@@ -1,0 +1,39 @@
+# Disbursement Desk — Render Blueprint (P1 deploy posture).
+# Matches the existing free web service (ohio). Does not attach a disk: free
+# plans cannot use persistent disks. For durable demos use Turso tenancy
+# (docs/tenancy.md) or upgrade and add the disk block in docs/deploy-posture.md.
+# Secrets use sync: false — set values in the Dashboard / secret store only.
+services:
+  - type: web
+    name: disbursement-desk
+    runtime: python
+    plan: free
+    region: ohio
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 4 'hosted_app:create_app()'
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: DEMO_DIRECTORY
+        value: /tmp/payments-demos
+      - key: STREAM_SLOT_BACKEND
+        value: file
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      - key: OPERATOR_BEARER_TOKENS
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: OFAC_HTTP_URL
+        sync: false
+      - key: OFAC_HTTP_TOKEN
+        sync: false
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: PUBLIC_ORIGIN
+        sync: false
