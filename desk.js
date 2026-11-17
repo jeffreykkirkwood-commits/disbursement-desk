@@ -85,6 +85,13 @@
     return 'desk-' + Date.now() + '-' + Math.random().toString(16).slice(2);
   }
 
+  // Create fingerprint includes payout_id. Mint a stable id with the key so a
+  // retry with a blank optional field cannot allocate a different PO- and 409.
+  function newPayoutId() {
+    if (window.crypto && crypto.randomUUID) return ('PO-' + crypto.randomUUID()).slice(0, 40);
+    return ('PO-' + Date.now().toString(16) + Math.random().toString(16).slice(2)).slice(0, 40);
+  }
+
   // One key per opened dialog: pressing the confirm button again after a failure retries
   // the same decision, so it can never be saved twice.
   function ask(action) {
@@ -172,10 +179,12 @@
 
   function openCreate() {
     if (!createDialog || !createForm) return;
-    pendingCreate = {key: newKey()};
+    pendingCreate = {key: newKey(), payoutId: newPayoutId()};
     createForm.reset();
     const rail = document.getElementById('cr-rail');
     if (rail) rail.value = 'ACH';
+    const idField = document.getElementById('cr-id');
+    if (idField) idField.placeholder = pendingCreate.payoutId;
     document.getElementById('cr-error').hidden = true;
     setCreateBusy(false);
     createDialog.showModal();
@@ -197,13 +206,13 @@
     const payee_account = document.getElementById('cr-account').value.trim();
     const amount_cents = dollarsToCents(document.getElementById('cr-amount').value);
     const rail = document.getElementById('cr-rail').value;
-    const payout_id = document.getElementById('cr-id').value.trim();
-    if (!payee_name || !payee_account || amount_cents == null || amount_cents <= 0) {
+    const typedId = document.getElementById('cr-id').value.trim();
+    const payout_id = typedId || pendingCreate.payoutId;
+    if (!payee_name || !payee_account || amount_cents == null || amount_cents <= 0 || !payout_id) {
       document.getElementById('cr-error').hidden = false;
       return;
     }
-    const body = {payee_name, payee_account, amount_cents, rail};
-    if (payout_id) body.payout_id = payout_id;
+    const body = {payee_name, payee_account, amount_cents, rail, payout_id};
     setCreateBusy(true);
     const demo = document.querySelector('meta[name="demo-id"]');
     try {
