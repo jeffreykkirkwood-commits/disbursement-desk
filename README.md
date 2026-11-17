@@ -91,3 +91,13 @@ STORAGE_TEST_BACKEND=libsql-local .venv/bin/python -m unittest
 ```
 
 To see a moved file's history from the Lab, run for example `git log --follow -- storage.py`.
+
+## Pre-push guard (contributors)
+
+The repo ships a git hook, [`.githooks/pre-push`](.githooks/pre-push), that stops three risky pushes before they leave your computer: a push to `main`, a force push, and deleting a remote branch. Turn it on once per clone, from the repository root:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+Check it with `git config core.hooksPath` (it prints `.githooks`). `tests/test_pre_push_hook.py` runs the hook against sample pushes in a throwaway repository.
