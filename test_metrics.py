@@ -1,10 +1,11 @@
-# Automated checks for Desk process-local metrics (decide/create/503/stream).
+# Automated checks for Desk process-local metrics (decide/create/503/stream/OFAC).
 """Exercise metrics counters and the /metrics snapshot route."""
 import tempfile
 import unittest
 from unittest import mock
 
 import metrics
+import ofac
 import payout_events
 from hosted_app import create_app
 
@@ -48,11 +49,27 @@ class MetricsHttpTests(unittest.TestCase):
         self.assertEqual(reply.status_code, 200)
         return reply
 
+    def post(self, path, body=None, key='k1'):
+        return self.client.post(
+            path, json={} if body is None else body, base_url=SITE,
+            headers={'Idempotency-Key': key, 'Origin': SITE})
+
+    def ofac_value(self, source):
+        rows = [row for row in self.metrics_snap()[metrics.OFAC_HOLD_TOTAL]
+                if row['labels'].get('source') == source]
+        return rows[0]['value'] if rows else 0
+
+    def metrics_snap(self):
+        reply = self.client.get('/metrics', base_url=SITE)
+        self.assertEqual(reply.status_code, 200)
+        return reply.get_json()['metrics']
+
     def test_metrics_route_skips_demo_allocation(self):
         reply = self.client.get('/metrics', base_url=SITE)
         self.assertEqual(reply.status_code, 200)
         self.assertEqual(reply.get_json()['status'], 'ok')
         self.assertIn(metrics.DECIDE_TOTAL, reply.get_json()['metrics'])
+        self.assertEqual(reply.get_json()['metrics'][metrics.OFAC_HOLD_TOTAL], [])
         self.assertNotIn('Set-Cookie', reply.headers)
         self.assertEqual(list(__import__('pathlib').Path(self.temp.name).rglob('payments.sqlite3')), [])
 
@@ -94,6 +111,69 @@ class MetricsHttpTests(unittest.TestCase):
         self.assertEqual(snap[metrics.STREAM_REFUSED_TOTAL][0]['value'], 1)
         reasons = {row['labels'].get('reason') for row in snap[metrics.HTTP_503_TOTAL]}
         self.assertIn('stream_cap', reasons)
+
+    def test_ordinary_approve_and_hold_do_not_count_as_ofac_hold(self):
+        self.open_desk()
+        approved = self.post('/payouts/PO-1042/approve', key='m-approve')
+        self.assertEqual(approved.status_code, 201)
+        self.assertEqual(approved.get_json()['payout']['status'], 'PAID')
+        held = self.post('/payouts/PO-1044/hold', key='m-hold-op')
+        self.assertEqual(held.status_code, 201)
+        self.assertEqual(held.get_json()['payout']['status'], 'HELD')
+        flagged = self.post(
+            '/payouts/simulate',
+            {'payee_name': 'Metrics New Payee', 'payee_account': 'DEMO-MET-900',
+             'amount_cents': 150000, 'rail': 'ACH'},
+            key='m-flag')
+        self.assertEqual(flagged.status_code, 201)
+        self.assertEqual(flagged.get_json()['payout']['status'], 'FLAGGED')
+        self.assertNotIn('POSSIBLE_SANCTIONS_MATCH', flagged.get_json()['payout']['flag_code'])
+        self.assertEqual(self.metrics_snap()[metrics.OFAC_HOLD_TOTAL], [])
+
+    def test_ofac_hold_counter_bumps_on_create_and_screen_only(self):
+        self.open_desk()
+        created = self.post(
+            '/payouts/simulate',
+            {'payee_name': ofac.DEMO_PAYEE_NAME, 'payee_account': ofac.DEMO_PAYEE_ACCOUNT,
+             'amount_cents': ofac.DEMO_AMOUNT_CENTS, 'rail': 'ACH', 'payout_id': 'PO-4100'},
+            key='m-ofac')
+        self.assertEqual(created.status_code, 201)
+        payout = created.get_json()['payout']
+        self.assertEqual(payout['status'], 'FLAGGED')
+        self.assertIn('POSSIBLE_SANCTIONS_MATCH', payout['flag_code'])
+        self.assertEqual(self.ofac_value('create'), 1)
+        self.assertEqual(self.ofac_value('screen'), 0)
+        replay = self.post(
+            '/payouts/simulate',
+            {'payee_name': ofac.DEMO_PAYEE_NAME, 'payee_account': ofac.DEMO_PAYEE_ACCOUNT,
+             'amount_cents': ofac.DEMO_AMOUNT_CENTS, 'rail': 'ACH', 'payout_id': 'PO-4100'},
+            key='m-ofac')
+        self.assertEqual(replay.status_code, 200)
+        self.assertEqual(self.ofac_value('create'), 1)
+        cleared = self.post('/payouts/PO-4100/clear', key='m-clear')
+        self.assertEqual(cleared.status_code, 201)
+        self.assertEqual(cleared.get_json()['payout']['status'], 'PAID')
+        self.assertEqual(self.ofac_value('create'), 1)
+        self.assertEqual(self.ofac_value('screen'), 0)
+        match = ofac.screen(ofac.DEMO_PAYEE_NAME)
+        self.assertIsNotNone(match)
+        with mock.patch('payouts.ofac.screen', return_value=match):
+            screened = self.post('/payouts/PO-1043/approve', key='m-screen')
+        self.assertEqual(screened.status_code, 201)
+        self.assertEqual(screened.get_json()['decision']['action'], 'screen')
+        self.assertEqual(screened.get_json()['payout']['status'], 'FLAGGED')
+        self.assertIn('POSSIBLE_SANCTIONS_MATCH', screened.get_json()['payout']['flag_code'])
+        self.assertEqual(self.ofac_value('screen'), 1)
+        self.assertEqual(self.ofac_value('create'), 1)
+        versioned = self.post(
+            '/v1/payouts',
+            {'payee_name': ofac.DEMO_PAYEE_NAME, 'payee_account': ofac.DEMO_PAYEE_ACCOUNT,
+             'amount_cents': ofac.DEMO_AMOUNT_CENTS, 'rail': 'ACH', 'payout_id': 'PO-4101'},
+            key='m-ofac-v1')
+        self.assertEqual(versioned.status_code, 201)
+        self.assertEqual(versioned.get_json()['payout']['status'], 'FLAGGED')
+        self.assertEqual(self.ofac_value('create'), 2)
+        self.assertEqual(self.ofac_value('screen'), 1)
 
 
 if __name__ == '__main__':

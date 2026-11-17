@@ -321,6 +321,15 @@ def create_app(directory=None, public_origin=None):
             raise APIError(422, hint, code=api_contract.INVALID_JSON_BODY)
         return body
 
+    def _record_ofac_hold(replayed, action, held_flag_code=None):
+        """Count one new OFAC hold. A replay does not count again."""
+        if replayed:
+            return
+        if action == payouts.SCREEN:
+            metrics.inc(metrics.OFAC_HOLD_TOTAL, source='screen')
+        elif payouts.POSSIBLE_SANCTIONS_MATCH in payouts.split_flag_codes(held_flag_code):
+            metrics.inc(metrics.OFAC_HOLD_TOTAL, source='create')
+
     def _run_decide(payout_id, action, body):
         if 'reviewer' in body:
             return jsonify(
@@ -338,6 +347,7 @@ def create_app(directory=None, public_origin=None):
               to_status=decision['to_status'], operator_id=g.operator.operator_id)
         metrics.inc(metrics.DECIDE_TOTAL, action=action, http_status=status,
                     replayed=(status == 200))
+        _record_ofac_hold(status == 200, decision.get('action'))
         payout_events.sync(database)
         return jsonify(payout=payouts.get_payout(database, payout_id), decision=decision,
                        operator=g.operator.public()), status
@@ -428,11 +438,15 @@ def create_app(directory=None, public_origin=None):
         status = 200 if result.get('replayed') else 201
         event('payout_simulated_replayed' if status == 200 else 'payout_simulated',
               payout_id=payout_id, status=result['status'])
+        payout = payouts.get_payout(database, payout_id)
+        route_event = result.get('event') or {}
+        held_flag = payout.get('flag_code') if result.get('status') == payouts.FLAGGED else None
         metrics.inc(metrics.CREATE_TOTAL, http_status=status,
                     payout_status=result['status'],
                     replayed=bool(result.get('replayed')))
+        _record_ofac_hold(bool(result.get('replayed')), route_event.get('action'), held_flag)
         payout_events.sync(database)
-        return jsonify(payout=payouts.get_payout(database, payout_id),
+        return jsonify(payout=payout,
                        status=result['status'], changed=result['changed'],
                        replayed=bool(result.get('replayed')),
                        create_event=result.get('create_event'),

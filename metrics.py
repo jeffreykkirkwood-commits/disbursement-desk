@@ -1,8 +1,8 @@
 # START HERE — In-process Desk metrics (P1 observability).
-# Counters for decide / create / HTTP 503 / stream open+refuse. Values are
-# process-local (one Gunicorn worker). Structured metric_recorded log lines
-# are meant for an aggregator; /metrics exposes a JSON snapshot for probes.
-"""Process-local counters for Desk decide, create, 503, and stream traffic."""
+# Counters for decide / create / HTTP 503 / stream open+refuse / OFAC hold.
+# Values are process-local (one Gunicorn worker). Structured metric_recorded
+# log lines are meant for an aggregator; /metrics exposes a JSON snapshot.
+"""Process-local counters for Desk decide, create, 503, stream, and OFAC holds."""
 from __future__ import annotations
 
 from collections import Counter
@@ -16,10 +16,11 @@ CREATE_TOTAL = 'desk_create_total'
 HTTP_503_TOTAL = 'desk_http_503_total'
 STREAM_OPEN_TOTAL = 'desk_stream_open_total'
 STREAM_REFUSED_TOTAL = 'desk_stream_refused_total'
+OFAC_HOLD_TOTAL = 'desk_ofac_hold_total'
 
 _KNOWN = frozenset({
     DECIDE_TOTAL, CREATE_TOTAL, HTTP_503_TOTAL,
-    STREAM_OPEN_TOTAL, STREAM_REFUSED_TOTAL,
+    STREAM_OPEN_TOTAL, STREAM_REFUSED_TOTAL, OFAC_HOLD_TOTAL,
 })
 
 _lock = Lock()
