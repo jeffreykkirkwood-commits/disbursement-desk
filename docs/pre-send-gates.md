@@ -17,7 +17,7 @@ Code source of truth: `payouts.MANDATORY_PRE_SEND_RULES`, `payouts.explain_flag`
 | `BANK_CHANGED_7D` | Bank details changed within 7 days of create | Stops at `FLAGGED` | Approve / Hold / Return |
 | `DUPLICATE_24H` | Same payee + amount within 24 hours | Stops at `FLAGGED` | Approve / Hold / Return |
 | `NEW_PAYEE_OVER_1000` | No prior SETTLED payout for payee; amount &gt; $1,000 | Stops at `FLAGGED` | Approve / Hold / Return |
-| `POSSIBLE_SANCTIONS_MATCH` | `ofac.screen(payee_name)` matches local SDN snapshot | Stops at `FLAGGED` | **Clear** or **Block** only (Approve refused) |
+| `POSSIBLE_SANCTIONS_MATCH` | `ofac.screen(payee_name)` matches (local snapshot or HTTP vendor; vendor outage fails closed) | Stops at `FLAGGED` | **Clear** or **Block** only (Approve refused) |
 
 All five are evaluated together in `explain_flag()`; multiple codes may be stored on one payout.
 
@@ -30,4 +30,4 @@ All five are evaluated together in `explain_flag()`; multiple codes may be store
 
 ## Not in this gate set
 
-Rail cutoffs/limits, live vendor OFAC, and Stripe Connect money movement are later phases (P2–P3). Authenticated operator identity (session-bound actor, not free-text reviewer) is P1 — see [operator-authz.md](operator-authz.md). Concurrent decide exclusivity under load is covered by product tests here; a fuller formal model remains optional (P2).
+Rail cutoffs/limits and Stripe Connect money movement are later phases (P2–P3). Live OFAC vendor path: [ofac-vendor.md](ofac-vendor.md). Authenticated operator identity is P1 — see [operator-authz.md](operator-authz.md). Concurrent decide exclusivity under load is covered by product tests here; a fuller formal model remains optional (P2).

@@ -25,6 +25,9 @@ Multi-worker stream-slot cap (`STREAM_SLOT_BACKEND=file` under
 Versioned create/decide (`/v1/payouts`, OpenAPI, stable error `code`): see
 [docs/api-contract.md](docs/api-contract.md). Document: `GET /openapi.json`.
 
+Optional live OFAC HTTP vendor (`OFAC_PROVIDER=http`, same Clear/Block UX): see
+[docs/ofac-vendor.md](docs/ofac-vendor.md).
+
 ## Run the app shell locally
 
 The app shell (payments-api-simulator #122, step 2) answers `/health` (liveness),
