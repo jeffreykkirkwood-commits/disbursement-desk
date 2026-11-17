@@ -10,6 +10,9 @@ Synthetic data only. No secrets in this repo.
 
 Pre-send exception and OFAC gates (mandatory before Sent): see [docs/pre-send-gates.md](docs/pre-send-gates.md).
 
+Turso / multi-visitor tenancy: see [docs/tenancy.md](docs/tenancy.md). A shared
+`TURSO_DATABASE_URL` across visitors is refused unless tenancy is configured.
+
 ## Run the app shell locally
 
 The app shell (payments-api-simulator #122, step 2) answers `/health`.
