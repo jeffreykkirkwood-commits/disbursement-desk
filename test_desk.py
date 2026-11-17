@@ -227,6 +227,26 @@ class DeskDetailTests(DeskBase):
             self.assertIn('<p class="done">This payout is final. No actions available.</p>', panel)
             self.assertNotIn('class="btn', panel)
 
+    # Scenario — seed panels show an empty Activity section (no payout_events yet)
+    def test_activity_empty_on_seed(self):
+        panel = self.panels()['PO-1042']
+        self.assertIn('<section class="audit" aria-label="Activity">', panel)
+        self.assertIn('<h3>Activity</h3>', panel)
+        self.assertIn('No activity yet.', panel)
+        self.assertNotIn('class="audit-list"', panel)
+
+    # Scenario — after Hold, Activity shows who/what/when with Desk status words
+    def test_activity_lists_hold_decision(self):
+        self.get()
+        payouts.decide(self.database(), 'PO-1042', payouts.HOLD, 'Ada Reviewer',
+                       'desk-audit-hold-1', reason='Checking bank change')
+        panel = self.panels()['PO-1042']
+        self.assertIn('<ol class="audit-list">', panel)
+        self.assertIn('Ada Reviewer', panel)
+        self.assertIn('Held · Needs review → Held', panel)
+        self.assertIn('Checking bank change', panel)
+        self.assertNotIn('No activity yet.', panel)
+
     # Scenario — the review panel replaces the RULES NOTE card; stored note text is not shown
     def test_stored_note_is_not_rendered_in_the_detail(self):
         self.get()

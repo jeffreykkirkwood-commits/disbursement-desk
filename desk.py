@@ -28,6 +28,19 @@ FINAL_STATUSES = frozenset({'PAID', 'RETURNED'})
 FINAL_MESSAGE = 'This payout is final. No actions available.'
 ACTION_FAILED = 'That didn’t save. Nothing has changed. Try again.'
 RESET_FAILED = 'That didn’t reset. Nothing has changed. Try again.'
+# Viewer words for payout_events.action (who/what/when on the detail panel).
+ACTION_WORDS = {
+    'approve': 'Approved',
+    'hold': 'Held',
+    'return': 'Returned',
+    'clear': 'Cleared',
+    'block': 'Blocked',
+    'screen': 'Held for sanctions screen',
+    'create': 'Created',
+    'route': 'Routed',
+}
+AUDIT_EMPTY = 'No activity yet.'
+AUDIT_HEADING = 'Activity'
 
 # FEATURE 01b — The three confirm dialogs, word for word from #40
 # action: (button, heading, body, confirm-button classes). Return's confirm is red.
@@ -184,6 +197,59 @@ def _row(payout):
             f'<span class="pill {css}">{word}</span></button></li>')
 
 
+def status_word(code):
+    """Plain Desk word for a stored status code (fallback: the code itself)."""
+    if code in STATUS_WORDS:
+        return STATUS_WORDS[code][0]
+    return code or '—'
+
+
+def action_word(code):
+    """Plain Desk word for a payout_events.action code."""
+    return ACTION_WORDS.get(code, code or 'Updated')
+
+
+def audit_when(at):
+    """Show a compact UTC timestamp; blank when missing."""
+    if not isinstance(at, str) or not at.strip():
+        return ''
+    raw = at.strip()
+    if 'T' in raw:
+        date, _, rest = raw.partition('T')
+        clock = rest[:8] if len(rest) >= 8 else rest.rstrip('Z')
+        return f'{date} {clock} UTC'.strip()
+    return raw
+
+
+def audit_line(event):
+    """One Activity row: when · who · what (from → to), plus reason when present."""
+    when = audit_when(event.get('at'))
+    actor = text(event.get('actor') or 'Unknown')
+    what = text(action_word(event.get('action')))
+    frm = text(status_word(event.get('from_status')))
+    to = text(status_word(event.get('to_status')))
+    move = f'{frm} → {to}' if frm != to else frm
+    head = f'<span class="audit-when">{text(when)}</span>' if when else ''
+    line = (f'<li><p class="audit-main">{head}<span class="audit-actor">{actor}</span>'
+            f'<span class="audit-what">{what} · {move}</span></p>')
+    reason = event.get('reason')
+    if isinstance(reason, str) and reason.strip():
+        line += f'<p class="audit-reason">{text(reason.strip())}</p>'
+    return line + '</li>'
+
+
+def _audit_panel(events):
+    """Activity list for one payout (oldest first). Empty when no events yet."""
+    parts = [f'<section class="audit" aria-label="{AUDIT_HEADING}">',
+             f'<h3>{AUDIT_HEADING}</h3>']
+    if not events:
+        parts.append(f'<p class="audit-empty">{text(AUDIT_EMPTY)}</p>')
+    else:
+        parts.append('<ol class="audit-list">' + ''.join(audit_line(e) for e in events) + '</ol>')
+    parts.append('</section>')
+    return ''.join(parts)
+
+
 # FEATURE 02b — Build one payout's detail, its review reasons and its action buttons
 # Payee, amount, payout id, account, rail, status, then one "Why this is in review"
 # panel that lists every stored rule reason. The yellow "Why flagged" box and the
@@ -191,8 +257,9 @@ def _row(payout):
 # reasons under "Why this was in review" and say they are final. Needs review
 # and Held payouts get Approve / Hold / Return (slice 3); Hold is disabled when
 # the payout is already Held. A possible sanctions match gets Clear / Block.
+# Activity (who/what/when from payout_events) sits under the review block.
 # The panel carries the payee and amount so the dialog can repeat them.
-def _detail(payout):
+def _detail(payout, events=()):
     word, css = STATUS_WORDS[payout['status']]
     pid = text(payout['payout_id'])
     parts = [f'<div class="panel" data-id="{pid}" data-payee="{text(payout["payee_name"])}" '
@@ -208,6 +275,7 @@ def _detail(payout):
         parts.append(_review_panel(payout, items))
     else:
         parts.append(f'<p class="review-clean">{text(payout_notes.CLEAN_NOTE)}</p>')
+    parts.append(_audit_panel(events))
     if payout['status'] in FINAL_STATUSES:
         parts.append(f'<p class="done">{FINAL_MESSAGE}</p>')
     else:
@@ -231,7 +299,8 @@ def _detail(payout):
 # queue is the current-queue payouts (payouts.current_queue), or None when it could not be
 # read, which shows the approved load-error sentence instead of the list (Q2 option A).
 # The list is part of the first paint, so there is no loading message.
-def render_desk(queue, demo_id='local-test', operator=None):
+def render_desk(queue, demo_id='local-test', operator=None, events_by_id=None):
+    events_by_id = events_by_id or {}
     if queue is None:
         exceptions = total = details = ''
         items = f'<li class="err" role="alert">{LOAD_ERROR}</li>'
@@ -240,7 +309,7 @@ def render_desk(queue, demo_id='local-test', operator=None):
         exceptions, total = f' <b>{ex_count}</b>', f' <b>{len(queue)}</b>'
         items = ''.join(_row(p) for p in queue)
         items += f'<li class="empty" data-empty{"" if ex_count == 0 else " hidden"}>{EMPTY_EXCEPTIONS}</li>'
-        details = ''.join(_detail(p) for p in queue)
+        details = ''.join(_detail(p, events_by_id.get(p['payout_id'], ())) for p in queue)
     operator_name = text(getattr(operator, 'display_name', None) or 'Desk operator')
     operator_role = text(getattr(operator, 'role', None) or 'admin')
     operator_id = text(getattr(operator, 'operator_id', None) or 'local-test')
@@ -303,6 +372,16 @@ dl{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:14px 0;font-s
 .review-phone{margin:4px 0 0;font-size:15px;overflow-wrap:anywhere}
 .review-foot{margin:10px 0 0;padding-top:8px;border-top:1px solid #ead7a8;font-size:13px;color:var(--muted)}
 .review-clean{font-size:15px;color:var(--muted);margin:12px 0}
+.audit{margin:14px 0 0;padding-top:12px;border-top:1px solid var(--line)}
+.audit h3{font-size:15px;font-weight:700;margin:0 0 8px}
+.audit-empty{font-size:14px;color:var(--muted);margin:0}
+.audit-list{list-style:none;margin:0;padding:0}
+.audit-list li+li{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
+.audit-main{margin:0;font-size:14px;display:flex;flex-direction:column;gap:2px}
+.audit-when{color:var(--muted);font-size:13px}
+.audit-actor{font-weight:650}
+.audit-what{color:var(--ink)}
+.audit-reason{margin:4px 0 0;font-size:13px;color:var(--muted);overflow-wrap:anywhere}
 .note{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:12px 0}
 .note[hidden]{display:none}
 .note-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-weight:700;font-size:14px;margin-bottom:4px}

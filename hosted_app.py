@@ -254,11 +254,16 @@ def create_app(directory=None, public_origin=None):
     def desk():
         try:
             queue = payouts.current_queue(g.payments.database)
+            # One read of the action log, grouped for the detail Activity panels.
+            events_by_id = {}
+            for row in payouts.list_events(g.payments.database):
+                events_by_id.setdefault(row['payout_id'], []).append(row)
         except (sqlite3.Error, OSError, KeyError) as error:  # unreadable or unexpected data
             event('desk_load_failed', level=logging.ERROR, error_type=type(error).__name__)
             g.metric_503_reason = 'desk_load'
             return render_desk(None, g.demo_id or 'local-test', operator=g.operator), 503
-        return render_desk(queue, g.demo_id or 'local-test', operator=g.operator)
+        return render_desk(queue, g.demo_id or 'local-test', operator=g.operator,
+                           events_by_id=events_by_id)
 
     # FEATURE 19b — Report the signed-in operator for this demo session
     # Read-only JSON. Actor identity for decide/reset comes from this principal (or a
