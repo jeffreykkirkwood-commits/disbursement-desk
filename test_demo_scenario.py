@@ -268,7 +268,11 @@ class HostedDemoScenarioTests(unittest.TestCase):
         self.assertIn('s-review', html)  # the status style is still in the page
         self.assertIn('PO-1042', html)
         self.assertNotIn('demo-scenario', html)
-        self.assertNotIn('Scenario Reviewer', html)
+        # Activity surfaces the scripted actor; there is still no Desk control to run
+        # the scenario (no form/button for /demo-scenario).
+        self.assertIn('Scenario Reviewer', html)
+        self.assertIn('Activity', html)
+        self.assertNotIn('name="demo-scenario"', html)
         self.assertNotIn('PO-REPLAY-', html)
         self.assertNotIn('PO-RECON-', html)
         self.assertNotIn('settlement_demo', html)

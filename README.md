@@ -34,6 +34,9 @@ see [docs/rail-enforcement.md](docs/rail-enforcement.md).
 Concurrent decide exclusivity (stress + formal `Inv_AtMostOneSettle`): see
 [docs/decide-exclusivity.md](docs/decide-exclusivity.md).
 
+Desk detail Activity (who/what/when from `payout_events`): see
+[docs/desk-audit.md](docs/desk-audit.md).
+
 ## Run the app shell locally
 
 The app shell (payments-api-simulator #122, step 2) answers `/health` (liveness),
