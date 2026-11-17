@@ -1,13 +1,15 @@
-# START HERE — OFAC SDN screening against a dated local snapshot (#111).
-# No network, no API key, and no paid dependencies. A payee is screened at
-# creation and again before a payout is sent. A possible name or alias match
-# holds the payout on the Desk for a person to clear or block. The snapshot is
-# a trimmed public subset, not the complete list; the date and source are stored
-# with the file and shown on the flag.
-"""Screen a payee name against a dated local OFAC SDN snapshot."""
+# START HERE — OFAC SDN screening (#111) with an optional live vendor (P2).
+# Default provider is the dated local snapshot (no network). OFAC_PROVIDER=http
+# POSTs the payee name to OFAC_HTTP_URL. Create, decide, and settle all call
+# screen(); Clear / Block UX is unchanged. Vendor outage fails closed by
+# returning a provider-error match so settle cannot skip screening.
+"""Screen a payee name against a local OFAC SDN snapshot or HTTP vendor."""
 import json
+import os
 import re
 import unicodedata
+import urllib.error
+import urllib.request
 from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
@@ -26,6 +28,15 @@ SHORT_NAME_LIMIT = 5
 DEMO_PAYEE_NAME = 'Banco Nacional de Cuba'
 DEMO_PAYEE_ACCOUNT = 'DEMO-OFAC-011'
 DEMO_AMOUNT_CENTS = 50000  # $500.00; under the $1,000 new-payee rule so only this flag fires
+
+PROVIDER_ENV = 'OFAC_PROVIDER'
+PROVIDER_LOCAL = 'local'
+PROVIDER_HTTP = 'http'
+PROVIDERS = frozenset({PROVIDER_LOCAL, PROVIDER_HTTP})
+HTTP_URL_ENV = 'OFAC_HTTP_URL'
+HTTP_TIMEOUT_ENV = 'OFAC_HTTP_TIMEOUT_SECONDS'
+DEFAULT_HTTP_TIMEOUT_SECONDS = 5
+VENDOR_UNAVAILABLE_UID = 'vendor-unavailable'
 
 
 # FEATURE 02 — Load the dated snapshot once
@@ -86,10 +97,29 @@ def _enough(score, matched_name):
     return score >= MATCH_THRESHOLD
 
 
-# FEATURE 04 — Screen one payee name
+# FEATURE 04 — Choose the screening provider
+def provider_name(env=None):
+    env = os.environ if env is None else env
+    raw = (env.get(PROVIDER_ENV) or PROVIDER_LOCAL).strip().lower()
+    if raw not in PROVIDERS:
+        raise ValueError(f'{PROVIDER_ENV} must be one of: {", ".join(sorted(PROVIDERS))}.')
+    return raw
+
+
+# FEATURE 04b — Screen one payee name (public entry used by create/decide/settle)
 # Returns the best matching entry, the name that matched (primary or alias),
-# and a 0–100 score, or None when nothing is close enough. Read-only.
-def screen(name):
+# and a 0–100 score, or None when nothing is close enough. HTTP provider
+# outages fail closed with a provider-error match.
+def screen(name, env=None):
+    if provider_name(env) == PROVIDER_HTTP:
+        try:
+            return screen_http(name, env=env)
+        except OfacProviderError:
+            return _provider_error_match(name)
+    return screen_local(name)
+
+
+def screen_local(name):
     if not isinstance(name, str) or not normalize(name):
         return None
     best = None
@@ -112,6 +142,84 @@ def screen(name):
             if score == 1.0:
                 return _public(best)
     return None if best is None else _public(best)
+
+
+class OfacProviderError(RuntimeError):
+    """HTTP vendor unreachable or returned an invalid payload."""
+
+
+def _http_timeout(env):
+    raw = env.get(HTTP_TIMEOUT_ENV) or str(DEFAULT_HTTP_TIMEOUT_SECONDS)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as error:
+        raise OfacProviderError(f'{HTTP_TIMEOUT_ENV} must be a number of seconds.') from error
+    if value <= 0:
+        raise OfacProviderError(f'{HTTP_TIMEOUT_ENV} must be positive.')
+    return value
+
+
+def _validate_http_match(payload):
+    if payload is None:
+        return None
+    if not isinstance(payload, dict):
+        raise OfacProviderError('OFAC HTTP vendor must return null or a JSON object.')
+    required = ('uid', 'entry_name', 'entry_type', 'matched_name', 'score',
+                'list_published', 'snapshot_taken')
+    missing = [key for key in required if key not in payload]
+    if missing:
+        raise OfacProviderError(f'OFAC HTTP match missing fields: {", ".join(missing)}.')
+    score = payload['score']
+    if not isinstance(score, int) or isinstance(score, bool) or not 0 <= score <= 100:
+        raise OfacProviderError('OFAC HTTP match score must be an integer 0–100.')
+    for key in ('uid', 'entry_name', 'entry_type', 'matched_name',
+                'list_published', 'snapshot_taken'):
+        if not isinstance(payload[key], str) or not payload[key].strip():
+            raise OfacProviderError(f'OFAC HTTP match {key} must be non-empty text.')
+    return {key: payload[key] for key in required}
+
+
+def screen_http(name, env=None):
+    env = os.environ if env is None else env
+    if not isinstance(name, str) or not normalize(name):
+        return None
+    url = (env.get(HTTP_URL_ENV) or '').strip()
+    if not url:
+        raise OfacProviderError(f'{HTTP_URL_ENV} is required when {PROVIDER_ENV}=http.')
+    body = json.dumps({'name': name}).encode('utf-8')
+    request = urllib.request.Request(
+        url, data=body, method='POST',
+        headers={'Content-Type': 'application/json', 'Accept': 'application/json'})
+    try:
+        with urllib.request.urlopen(request, timeout=_http_timeout(env)) as response:
+            raw = response.read().decode('utf-8')
+            status = getattr(response, 'status', None) or response.getcode()
+    except urllib.error.HTTPError as error:
+        raise OfacProviderError(f'OFAC HTTP vendor returned HTTP {error.code}.') from error
+    except urllib.error.URLError as error:
+        raise OfacProviderError(f'OFAC HTTP vendor unreachable: {error.reason}.') from error
+    except TimeoutError as error:
+        raise OfacProviderError('OFAC HTTP vendor timed out.') from error
+    if status is not None and not (200 <= int(status) < 300):
+        raise OfacProviderError(f'OFAC HTTP vendor returned HTTP {status}.')
+    try:
+        payload = json.loads(raw) if raw.strip() else None
+    except ValueError as error:
+        raise OfacProviderError('OFAC HTTP vendor returned invalid JSON.') from error
+    return _validate_http_match(payload)
+
+
+def _provider_error_match(name):
+    display = name if isinstance(name, str) and name.strip() else '(unknown payee)'
+    return {
+        'uid': VENDOR_UNAVAILABLE_UID,
+        'entry_name': 'OFAC vendor unavailable',
+        'entry_type': 'provider_error',
+        'matched_name': display,
+        'score': 100,
+        'list_published': 'unknown',
+        'snapshot_taken': 'vendor-error',
+    }
 
 
 def _public(match):
