@@ -98,12 +98,56 @@ def destination_for(payee_account, column=None, env=None):
     return dest
 
 
+OBJECT_TRANSFER = 'transfer'
+OBJECT_PAYMENT_INTENT = 'payment_intent'
+OBJECT_PAYOUT = 'payout'
+_OBJECT_PREFIXES = (
+    ('tr_', OBJECT_TRANSFER),
+    ('pi_', OBJECT_PAYMENT_INTENT),
+    ('po_', OBJECT_PAYOUT),
+)
+
+
 def transfer_idempotency_key(demo_id, payout_id):
     return f'desk-transfer:{demo_id}:{payout_id}'
 
 
 def charge_idempotency_key(demo_id, payout_id):
     return f'desk-charge:{demo_id}:{payout_id}'
+
+
+def object_type_for_id(object_id):
+    text = '' if object_id is None else str(object_id)
+    for prefix, name in _OBJECT_PREFIXES:
+        if text.startswith(prefix):
+            return name
+    return None
+
+
+def submit_evidence(record):
+    """Build payout_events evidence that maps Stripe idempotency key ↔ object id."""
+    object_id = str(
+        record.get('stripe_object_id')
+        or record.get('payment_intent_id')
+        or record.get('transfer_id')
+        or '')
+    object_type = record.get('stripe_object_type') or object_type_for_id(object_id)
+    if not object_id or object_type is None:
+        _blocked()
+    evidence = {
+        'stripe_object_id': object_id,
+        'stripe_object_type': object_type,
+        'stripe_idempotency_key': str(record.get('idempotency_key') or ''),
+        'stripe_destination': str(record.get('destination') or ''),
+        'stripe_livemode': bool(record.get('livemode')),
+    }
+    if not evidence['stripe_idempotency_key']:
+        _blocked()
+    if object_type == OBJECT_TRANSFER:
+        evidence['stripe_transfer_id'] = object_id
+    elif object_type == OBJECT_PAYMENT_INTENT:
+        evidence['stripe_payment_intent_id'] = object_id
+    return evidence
 
 
 def create_transfer(*, payout_id, amount_cents, currency, destination, demo_id,
