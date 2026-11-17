@@ -30,4 +30,4 @@ All five are evaluated together in `explain_flag()`; multiple codes may be store
 
 ## Not in this gate set
 
-Rail cutoff/limit enforcement: [rail-enforcement.md](rail-enforcement.md). Live OFAC vendor path: [ofac-vendor.md](ofac-vendor.md). Authenticated operator identity is P1 — see [operator-authz.md](operator-authz.md). Concurrent decide exclusivity under load is covered by product tests here; a fuller formal model remains optional (P2). Stripe Connect money movement is P3.
+Rail cutoff/limit enforcement: [rail-enforcement.md](rail-enforcement.md). Live OFAC vendor path: [ofac-vendor.md](ofac-vendor.md). Authenticated operator identity is P1 — see [operator-authz.md](operator-authz.md). Concurrent decide exclusivity (`BEGIN IMMEDIATE` + UNIQUE keys, stress + formal `Inv_AtMostOneMutation`): [decide-exclusivity.md](decide-exclusivity.md). Stripe Connect money movement is P3.
