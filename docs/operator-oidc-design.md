@@ -52,8 +52,7 @@ The routes are `GET /auth/oidc/login` and `GET /auth/oidc/callback`.
 3. If OIDC is set and the method is GET or HEAD, Desk redirects to
    `GET /auth/oidc/login`, which redirects to the provider authorization
    endpoint. The flow is authorization code with a proof key for code exchange.
-   Desk stores `state`
-   and `nonce` until the callback.
+   Desk stores `state` and `nonce` until the callback.
 4. The provider redirects to the callback with a code.
 5. Desk exchanges the code and checks the ID token.
    Desk verifies `HS256` with the client secret, using the standard library.
