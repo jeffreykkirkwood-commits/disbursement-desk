@@ -1,0 +1,39 @@
+- banner: Disbursement Desk Example data · fake money
+- main:
+  - region "Outgoing payouts":
+    - heading "Outgoing payouts" [level=1]
+    - group "Filter":
+      - button "Exceptions 4" [pressed]
+      - button "All 10"
+    - list:
+      - listitem:
+        - button "Acme Supplies $4,850.00 PO-1042 · Amount is 6× this payee’s usual payout ($790 avg) Needs review"
+      - listitem:
+        - button "Bluebird Bakery $312.40 PO-1043 · Payee bank details changed 2 days ago Needs review"
+      - listitem:
+        - button "Northwind Freight $1,200.00 PO-1044 · Same payee and amount as yesterday (possible duplicate) Needs review"
+      - listitem:
+        - button "Harbor Hardware $2,075.50 PO-1038 · Amount is 4× this payee’s usual payout ($520 avg) Held"
+    - paragraph:
+      - text: Your changes stay in this browser only.
+      - button "Reset demo"
+  - complementary "Payout detail":
+    - button "Back to list": ← Back
+    - text: Needs review
+    - heading "Acme Supplies" [level=2]
+    - paragraph: $4,850.00
+    - term: Payout
+    - definition: PO-1042
+    - term: To account
+    - definition: DEMO-ACME-001
+    - term: Rail
+    - definition: ACH · USD
+    - heading "Why this is in review 1 reason" [level=3]
+    - list:
+      - listitem:
+        - paragraph: Amount is 6× this payee’s usual payout ($790 avg).
+        - code: AMOUNT_OVER_3X_AVG
+    - paragraph: From fixed rules. Review before sending.
+    - button "Approve"
+    - button "Hold"
+    - button "Return"

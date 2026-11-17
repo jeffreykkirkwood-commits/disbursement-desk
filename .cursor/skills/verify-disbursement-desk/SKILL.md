@@ -9,6 +9,17 @@ Project-local verification for the Disbursement Desk (Flask `create_app` + Desk 
 
 Agents read this cold mid-task. Follow Launch → Doctor → Drive → Evidence → Cleanup. Never drive an instance you did not start.
 
+## Prerequisites
+
+From the repo root (Flask is in `requirements.txt`; Playwright is verification-only):
+
+```bash
+python3 -m pip install -r requirements.txt playwright
+python3 -m playwright install chromium   # only needed for browser drives
+```
+
+Prefer a venv when `python3 -m venv` works in the environment. System/`--user` installs are fine for a one-off proof.
+
 ## Launch
 
 Each run picks a unique `RUN_ID` (e.g. `date +%s`-pid). State lives under `/tmp/disbursement-desk-verify/$RUN_ID/` (override with `DESK_VERIFY_STATE_ROOT`). Evidence lives under a path **outside** that tree (recommended: `/tmp/disbursement-desk-verify-artifacts/$RUN_ID/`) so cleanup cannot delete proofs.
@@ -23,11 +34,11 @@ python3 "$HELPER" launch --run-id "$RUN_ID"
 
 What launch does:
 
-- Binds `127.0.0.1` on a free port (or `--port`).
-- Sets `DEMO_DIRECTORY` to this run's demos folder and `PUBLIC_ORIGIN` to the instance URL.
+- Starts `python3 app.py` with `PORT`, `DEMO_DIRECTORY` (empty run-local folder), and `PUBLIC_ORIGIN`.
+- Binds `127.0.0.1` on a free port (or `--port`). First `GET /desk` (doctor/drive) creates the visitor demo DB and seeds payouts via `DemoStore` / `payouts.ensure_seeded` — no separate migrate step.
 - Waits until `GET /health` returns `{"status":"ok",...}`.
 
-Ready means `/health` is ok **and** `doctor` can open `/desk`, receive a `payments_demo` cookie, and see brand text plus seeded `PO-*` payout ids. A listening socket alone is not enough.
+Ready means `/health` is ok **and** `doctor` can open `/desk`, receive a `payments_demo` cookie, and see brand text plus seeded `PO-*` payout ids. A listening socket alone is not enough. The Desk list shows the current-queue subset (history / replay / recon ids stay hidden); the DB still holds the full seed (~40 rows).
 
 Teardown: `python3 "$HELPER" cleanup --run-id "$RUN_ID"` (see Cleanup).
 
@@ -64,13 +75,17 @@ python3 "$HELPER" browser --run-id "$RUN_ID" --path /desk \
 
 python3 "$HELPER" browser --run-id "$RUN_ID" --path /desk \
   --click-filter All --out "$EVIDENCE/desk-all" --expect-filter all --expect-min-rows 1
+
+python3 "$HELPER" browser --run-id "$RUN_ID" --path /desk \
+  --open-payout PO-1042 --expect-open-payout PO-1042 \
+  --out "$EVIDENCE/desk-queue/open-po-1042"
 ```
 
 Prefer stable handles from `desk.py` / `desk.js`: brand `.brand`, filter chips `role="button"` named `Exceptions` / `All` (`data-f`, `aria-pressed`), list rows `.row[data-id]`, actions `[data-act]`, confirm dialog `#confirm` / `#ok` / `#cancel`, Reset `#reset`.
 
 Use the feature map under `features/` for journey recipes. Drive the user path; do not call internal Python setters or invent test-only endpoints.
 
-Requires Playwright + Chromium for browser drives (`pip install playwright && python3 -m playwright install chromium` if missing). HTTP-only proofs can skip browser when the feature file says so.
+Requires Playwright + Chromium for browser drives (see Prerequisites). HTTP-only proofs can skip browser when the feature file says so. A checked-in example proof for `desk-queue` lives under `proof/desk-queue/`.
 
 ## Evidence
 
