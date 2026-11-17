@@ -8,6 +8,11 @@ closed until the unchecked items below are signed off.
 Related gates:
 [pre-send-gates.md](pre-send-gates.md), [ofac-vendor.md](ofac-vendor.md),
 [decide-exclusivity.md](decide-exclusivity.md), [desk-audit.md](desk-audit.md).
+The account-type recommendation is in
+[stripe-connect-account-ownership.md](stripe-connect-account-ownership.md).
+The owner sign-off there is unchecked.
+Kill-switch steps are in
+[stripe-connect-kill-switch.md](stripe-connect-kill-switch.md).
 
 ## Entry criteria (must all be true before Connect send-path)
 
@@ -24,14 +29,15 @@ Re-verify these on any change to `decide`, `_settle`, `route_one`, or OFAC scree
 
 Checked items are enforced by the test-mode send path. Unchecked items still block a live pilot:
 
-- [ ] Connected account type chosen (Express vs Custom); KYC ownership documented
+- [ ] Connected account type and KYC ownership signed off. The recommendation is Express. See [Account ownership](stripe-connect-account-ownership.md). The owner sign-off box is unchecked.
 - [x] Platform → connected-account fund flow: test-mode **Transfers** from platform balance (not destination charges)
 - [x] Desk `Idempotency-Key` maps 1:1 to Stripe `Transfer` / `PaymentIntent` / `Payout` ids in `payout_events` evidence
 - [x] OFAC **Clear** is a hard precondition in code **before** any Stripe money-movement API call
 - [x] Failure / retry: Stripe webhooks update `execution_status` without inventing Desk `status`
 - [x] Reconciliation treats Stripe as source of truth for SETTLED / FAILED
 - [x] Secrets only via env / secret manager; no keys in repo
-- [ ] Test-mode end-to-end on Connect test clocks; then limited live pilot with a kill switch
+- [x] Kill switch. New Transfers run only when `STRIPE_PAYOUTS_ENABLED` is exactly `1`. Steps are in [Disarm Stripe payouts](stripe-connect-kill-switch.md).
+- [ ] Test-mode end-to-end on Connect test clocks, then a limited live pilot that can be disarmed with the kill switch
 - [ ] Compliance review (sanctions, money transmission, ToS) signed off outside this repo
 
 ## Still out of scope

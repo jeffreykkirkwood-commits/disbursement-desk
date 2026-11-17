@@ -42,7 +42,13 @@ Desk detail Activity (who/what/when from `payout_events`): see
 
 Stripe Connect test-mode Transfers stay off unless `STRIPE_PAYOUTS_ENABLED`
 is exactly `1`. Any other value keeps the demo settle. See
-[docs/stripe-connect-go-live.md](docs/stripe-connect-go-live.md).
+[Stripe Connect go-live](docs/stripe-connect-go-live.md).
+The account-type recommendation is Express, and Jeff has not signed it. See
+[Account ownership](docs/stripe-connect-account-ownership.md).
+To disarm Transfers, see
+[Disarm Stripe payouts](docs/stripe-connect-kill-switch.md).
+
+## Stripe environment
 
 Set these in the environment. Do not commit them.
 
