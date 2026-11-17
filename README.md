@@ -48,7 +48,7 @@ Concurrent decide exclusivity (stress + formal `Inv_AtMostOneSettle`): see
 Desk detail Activity (who/what/when from `payout_events`): see
 [docs/desk-audit.md](docs/desk-audit.md).
 
-Stripe Connect test-mode Transfers stay off unless `STRIPE_PAYOUTS_ENABLED`
+Stripe Connect test-mode send stays off unless `STRIPE_PAYOUTS_ENABLED`
 is exactly `1`. Any other value keeps the demo settle. See
 [Stripe Connect go-live](docs/stripe-connect-go-live.md).
 The account-type recommendation is Express, and Jeff has not signed it. See
@@ -60,7 +60,9 @@ To disarm Transfers, see
 
 Set these in the environment. Do not commit them.
 
-- `STRIPE_PAYOUTS_ENABLED`: `1` arms test-mode Transfers. Any other value keeps the demo settle.
+- `STRIPE_PAYOUTS_ENABLED`: `1` arms test-mode Stripe send. Any other value keeps the demo settle.
+- `STRIPE_SEND_PATH`: unset or any value except `transfer` uses destination charges (PaymentIntent + `transfer_data[destination]`). Set `transfer` for the legacy platform-balance Transfer API.
+- `STRIPE_FUNDING_PAYMENT_METHOD`: payment method id used to confirm destination charges (default `pm_card_visa` in test mode).
 - `STRIPE_SECRET_KEY`: test key. Prefer `rk_test_`. `sk_test_` is allowed. `sk_live_` and `rk_live_` are refused.
 - `STRIPE_WEBHOOK_SECRET`: signing secret for `POST /stripe/webhook`. It must start with `whsec_`.
 - `STRIPE_DESTINATION_MAP`: JSON object mapping a `payee_account` to an `acct_` id. A payout column `stripe_connected_account_id` wins when it is set.

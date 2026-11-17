@@ -148,7 +148,7 @@ def _in_scope(payout):
     # (including the #61 scenario's Approved PO-1042) still shows the six
     # intended cases instead of an extra missing_from_settlement.
     ref = payout.get('execution_ref') or ''
-    if ref.startswith('demo:') or ref.startswith('tr_'):
+    if ref.startswith('demo:') or ref.startswith('tr_') or ref.startswith('pi_'):
         return False
     status = payout['execution_status']
     if status not in COMPARABLE:

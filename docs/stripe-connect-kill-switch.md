@@ -23,7 +23,7 @@ path armed and misconfigured. Approve then returns HTTP 409 with
 2. Restart the process so it loads the new environment. A process that is already running keeps its old environment until it exits. Use one of these.
    - On Render, save the variable in the service settings. Render starts the service again from the current code.
    - In a local shell, stop the process and start `.venv/bin/python app.py` again.
-3. Approve one payout in the pilot demo. Confirm `execution_ref` is `demo:` followed by the payout id. Confirm there is no new `tr_` id.
+3. Approve one payout in the pilot demo. Confirm `execution_ref` is `demo:` followed by the payout id. Confirm there is no new `pi_` or `tr_` id.
 
 With the flag off, that approve uses the demo settle even when the other
 Stripe secrets are still present. `status` is `PAID`, `execution_status`

@@ -720,7 +720,10 @@ def decide(database, payout_id, action, actor, idempotency_key, reason=None, now
                 (step, review, outcome, at, payout_id))
         evidence = _decision_evidence(payout, actor, reason, at)
         if held and held.get('kind') == 'stripe_submit':
-            evidence['stripe_transfer_id'] = held['transfer_id']
+            if held.get('payment_intent_id'):
+                evidence['stripe_payment_intent_id'] = held['payment_intent_id']
+            else:
+                evidence['stripe_transfer_id'] = held['transfer_id']
             evidence['stripe_destination'] = held['destination']
             evidence['stripe_idempotency_key'] = held['idempotency_key']
             evidence['stripe_livemode'] = False
@@ -845,7 +848,7 @@ def _settle(db, payout_id, at, allow_sanctions_clear=False, actor='automation',
         raise APIError(404, 'Payout not found.', code=api_contract.NOT_FOUND)
     payout = dict(zip(COLUMNS, row))
     ref = payout.get('execution_ref') or ''
-    if payout['execution_status'] in (SUBMITTED, SETTLED, FAILED) and ref.startswith('tr_'):
+    if payout['execution_status'] in (SUBMITTED, SETTLED, FAILED) and ref.startswith(('tr_', 'pi_')):
         return None
     if not allow_sanctions_clear:
         match = ofac.screen(payout['payee_name'])
@@ -864,10 +867,10 @@ def _settle(db, payout_id, at, allow_sanctions_clear=False, actor='automation',
         return _settle_demo(
             db, payout_id, at, allow_sanctions_clear=allow_sanctions_clear,
             actor=actor, idempotency_key=idempotency_key)
-    return _submit_stripe_transfer(db, payout, payout_id, at, demo_id)
+    return _submit_stripe_send(db, payout, payout_id, at, demo_id)
 
 
-def _submit_stripe_transfer(db, payout, payout_id, at, demo_id):
+def _submit_stripe_send(db, payout, payout_id, at, demo_id):
     if payout['execution_status'] == UNKNOWN:
         check_execution_transition(UNKNOWN, SUBMITTED)
     if payout['execution_status'] == SUBMITTED:
@@ -879,30 +882,43 @@ def _submit_stripe_transfer(db, payout, payout_id, at, demo_id):
         check_execution_transition(payout['execution_status'], SUBMITTED)
     destination = stripe_connect.destination_for(
         payout['payee_account'], column=payout.get('stripe_connected_account_id'))
-    idem = stripe_connect.transfer_idempotency_key(demo_id, payout_id)
-    record = stripe_connect.create_transfer(
-        payout_id=payout_id, amount_cents=payout['amount_cents'], currency='usd',
-        destination=destination, demo_id=demo_id, idempotency_key=idem)
+    use_transfer = stripe_connect.send_path() == 'transfer'
+    if use_transfer:
+        idem = stripe_connect.transfer_idempotency_key(demo_id, payout_id)
+        record = stripe_connect.create_transfer(
+            payout_id=payout_id, amount_cents=payout['amount_cents'], currency='usd',
+            destination=destination, demo_id=demo_id, idempotency_key=idem)
+        execution_ref = record['transfer_id']
+    else:
+        idem = stripe_connect.charge_idempotency_key(demo_id, payout_id)
+        record = stripe_connect.create_destination_charge(
+            payout_id=payout_id, amount_cents=payout['amount_cents'], currency='usd',
+            destination=destination, demo_id=demo_id, idempotency_key=idem)
+        execution_ref = record['payment_intent_id']
     check_execution_transition(NOT_STARTED, SUBMITTED)
     stored_dest = payout.get('stripe_connected_account_id') or destination
     db.execute(
         'UPDATE payouts SET status = ?, review_status = ?, execution_status = ?, '
         'execution_ref = ?, execution_updated_at = ?, stripe_connected_account_id = ?, '
         'updated_at = ? WHERE payout_id = ?',
-        (PAID, APPROVED, SUBMITTED, record['transfer_id'], at, stored_dest, at, payout_id))
+        (PAID, APPROVED, SUBMITTED, execution_ref, at, stored_dest, at, payout_id))
     event_id = f'stripe-submit:{payout_id}'
     if not db.execute('SELECT 1 FROM execution_events WHERE event_id = ?', (event_id,)).fetchone():
         db.execute(
             'INSERT INTO execution_events (event_id, payout_id, execution_status, execution_ref, at, source) '
             'VALUES (?, ?, ?, ?, ?, ?)',
-            (event_id, payout_id, SUBMITTED, record['transfer_id'], at, STRIPE))
-    return {
+            (event_id, payout_id, SUBMITTED, execution_ref, at, STRIPE))
+    held = {
         'kind': 'stripe_submit',
-        'transfer_id': record['transfer_id'],
         'destination': destination,
         'idempotency_key': idem,
         'livemode': False,
     }
+    if use_transfer:
+        held['transfer_id'] = record['transfer_id']
+    else:
+        held['payment_intent_id'] = record['payment_intent_id']
+    return held
 
 
 def apply_stripe_event(database, command, now=None):
@@ -913,7 +929,7 @@ def apply_stripe_event(database, command, now=None):
     payout_id = command.get('payout_id')
     event_id = command.get('stripe_event_id')
     transfer_id = command.get('transfer_id') or ''
-    if not payout_id or not event_id or not str(transfer_id).startswith('tr_'):
+    if not payout_id or not event_id or not str(transfer_id).startswith(('tr_', 'pi_')):
         return 'ignored'
     outcome = command['outcome']
     at = (now or datetime.now(timezone.utc)).isoformat()
