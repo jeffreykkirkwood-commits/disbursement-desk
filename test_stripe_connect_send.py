@@ -27,7 +27,10 @@ WEBHOOK_SECRET = 'whsec_test_secret'
 ENV_KEYS = (
     'STRIPE_PAYOUTS_ENABLED', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET',
     'STRIPE_DESTINATION_MAP', 'STRIPE_DEMO_ID', 'STRIPE_API_BASE',
+    'STRIPE_SEND_PATH', 'STRIPE_FUNDING_PAYMENT_METHOD',
 )
+PI_TEST_ID = 'pi_test_1'
+TR_TEST_ID = 'tr_test_1'
 DESTINATIONS = {
     'DEMO-ACME-001': 'acct_acme',
     'DEMO-NWND-003': 'acct_north',
@@ -52,7 +55,7 @@ class _Handler(BaseHTTPRequestHandler):
         if stub.error_status:
             status, payload = stub.error_status, stub.error_body
         else:
-            status, payload = 200, stub.payload_for(parse_qs(raw.decode()))
+            status, payload = 200, stub.payload_for(self.path, parse_qs(raw.decode()))
         data = json.dumps(payload).encode()
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
@@ -83,15 +86,30 @@ class TransferStub:
         self._httpd.server_close()
         self._thread.join(timeout=3)
 
-    def payload_for(self, form):
+    def payload_for(self, path, form):
         if self.fixed is not None:
             return self.fixed
 
         def one(name):
             return form[name][0]
 
+        if path.startswith('/v1/payment_intents'):
+            dest = one('transfer_data[destination]')
+            return {
+                'id': PI_TEST_ID,
+                'object': 'payment_intent',
+                'amount': int(one('amount')),
+                'currency': one('currency'),
+                'status': 'succeeded',
+                'livemode': False,
+                'transfer_data': {'destination': dest},
+                'metadata': {
+                    'payout_id': one('metadata[payout_id]'),
+                    'demo_id': one('metadata[demo_id]'),
+                },
+            }
         return {
-            'id': 'tr_test_1',
+            'id': TR_TEST_ID,
             'object': 'transfer',
             'amount': int(one('amount')),
             'currency': one('currency'),
@@ -171,8 +189,33 @@ class StripeSendTests(unittest.TestCase):
         self.assertEqual(self.stub.requests, [])
         return caught.exception
 
+    def payment_intent_event(self, payout_id, event_id='evt_1',
+                             event_type='payment_intent.succeeded',
+                             payment_intent_id=PI_TEST_ID, amount=None, destination='acct_acme',
+                             livemode=False, currency='usd', demo_id=None):
+        return {
+            'id': event_id,
+            'object': 'event',
+            'type': event_type,
+            'livemode': livemode,
+            'data': {
+                'object': {
+                    'id': payment_intent_id,
+                    'object': 'payment_intent',
+                    'amount': self.cents(payout_id) if amount is None else amount,
+                    'currency': currency,
+                    'livemode': livemode,
+                    'transfer_data': {'destination': destination},
+                    'metadata': {
+                        'payout_id': payout_id,
+                        'demo_id': self.pilot if demo_id is None else demo_id,
+                    },
+                },
+            },
+        }
+
     def transfer_event(self, payout_id, event_id='evt_1', event_type='transfer.created',
-                       transfer_id='tr_test_1', amount=None, destination='acct_acme',
+                       transfer_id=TR_TEST_ID, amount=None, destination='acct_acme',
                        reversed_flag=False, livemode=False, currency='usd', demo_id=None):
         return {
             'id': event_id,
@@ -261,7 +304,7 @@ class StripeSendTests(unittest.TestCase):
         payout = self.payout('PO-1042')
         self.assertEqual(code, 201)
         self.assertEqual(payout['execution_status'], 'SUBMITTED')
-        self.assertEqual(payout['execution_ref'], 'tr_test_1')
+        self.assertEqual(payout['execution_ref'], PI_TEST_ID)
         self.assertTrue(self.stub.requests[0]['headers']['authorization'].startswith('Bearer sk_test_'))
         self.assertIsNone(stripe.api_key)
 
@@ -286,7 +329,7 @@ class StripeSendTests(unittest.TestCase):
         code, decision = self.decide('PO-1042', 'approve', 'column')
         self.assertEqual(code, 201)
         self.assertEqual(decision['evidence']['stripe_destination'], 'acct_rowcol')
-        self.assertIn('destination=acct_rowcol', self.stub.requests[0]['body'])
+        self.assertIn('transfer_data[destination]=acct_rowcol', self.stub.requests[0]['body'])
         self.assertEqual(self.payout('PO-1042')['stripe_connected_account_id'], 'acct_rowcol')
 
     def test_approve_submits_transfer_and_does_not_settle(self):
@@ -294,38 +337,43 @@ class StripeSendTests(unittest.TestCase):
         before_requests = len(self.stub.requests)
         code, decision = self.decide('PO-1042', 'approve', 'approve-1')
         payout = self.payout('PO-1042')
-        idem = f'desk-transfer:{self.pilot}:PO-1042'
+        idem = f'desk-charge:{self.pilot}:PO-1042'
         self.assertEqual(code, 201)
         self.assertEqual(decision['to_status'], 'PAID')
         self.assertEqual(payout['status'], 'PAID')
         self.assertEqual(payout['review_status'], 'APPROVED')
         self.assertEqual(payout['execution_status'], 'SUBMITTED')
         self.assertNotEqual(payout['execution_status'], 'SETTLED')
-        self.assertEqual(payout['execution_ref'], 'tr_test_1')
+        self.assertEqual(payout['execution_ref'], PI_TEST_ID)
         self.assertEqual(payout['stripe_connected_account_id'], 'acct_acme')
-        self.assertEqual(decision['evidence']['stripe_transfer_id'], 'tr_test_1')
+        self.assertEqual(decision['evidence']['stripe_payment_intent_id'], PI_TEST_ID)
         self.assertEqual(decision['evidence']['stripe_destination'], 'acct_acme')
         self.assertEqual(decision['evidence']['stripe_idempotency_key'], idem)
         self.assertIs(decision['evidence']['stripe_livemode'], False)
         [event] = payouts.list_execution_events(self.db, 'PO-1042')
         self.assertEqual(
             (event['event_id'], event['source'], event['execution_status'], event['execution_ref']),
-            ('stripe-submit:PO-1042', 'stripe', 'SUBMITTED', 'tr_test_1'))
+            ('stripe-submit:PO-1042', 'stripe', 'SUBMITTED', PI_TEST_ID))
         self.assertEqual(len(self.stub.requests), before_requests + 1)
         [request] = self.stub.requests
-        self.assertEqual(request['path'], '/v1/transfers')
+        self.assertEqual(request['path'], '/v1/payment_intents')
         self.assertEqual(request['headers']['idempotency-key'], idem)
         self.assertEqual(request['headers']['stripe-version'], stripe_connect.API_VERSION)
         self.assertTrue(request['headers']['authorization'].startswith('Bearer rk_test_'))
         self.assertIn(f'amount={self.cents("PO-1042")}', request['body'])
         self.assertIn('currency=usd', request['body'])
-        self.assertIn('destination=acct_acme', request['body'])
+        self.assertIn('transfer_data[destination]=acct_acme', request['body'])
+        self.assertIn('confirm=true', request['body'])
+        self.assertIn('off_session=true', request['body'])
+        self.assertIn('error_on_requires_action=true', request['body'])
+        self.assertIn('payment_method_types[0]=card', request['body'])
+        self.assertIn('payment_method=pm_card_visa', request['body'])
         self.assertIn('metadata[payout_id]=PO-1042', request['body'])
         self.assertIn(f'metadata[demo_id]={self.pilot}', request['body'])
         self.assertIsNone(stripe.api_key)
         replay_code, replay = self.decide('PO-1042', 'approve', 'approve-1')
         self.assertEqual(replay_code, 200)
-        self.assertEqual(replay['evidence']['stripe_transfer_id'], 'tr_test_1')
+        self.assertEqual(replay['evidence']['stripe_payment_intent_id'], PI_TEST_ID)
         self.assertEqual(len(self.stub.requests), 1)
         with self.assertRaises(APIError) as caught:
             self.decide('PO-1042', 'approve', 'approve-2')
@@ -352,9 +400,9 @@ class StripeSendTests(unittest.TestCase):
         self.assertEqual(len(self.stub.requests), 1)
         self.assertEqual(
             self.stub.requests[0]['headers']['idempotency-key'],
-            f'desk-transfer:{self.pilot}:PO-OFAC-1')
+            f'desk-charge:{self.pilot}:PO-OFAC-1')
         self.assertIn(f'amount={ofac.DEMO_AMOUNT_CENTS}', self.stub.requests[0]['body'])
-        self.assertIn('destination=acct_ofac', self.stub.requests[0]['body'])
+        self.assertIn('transfer_data[destination]=acct_ofac', self.stub.requests[0]['body'])
         payout_rules.create(
             self.db, 'PO-OFAC-2', ofac.DEMO_PAYEE_NAME, ofac.DEMO_PAYEE_ACCOUNT,
             ofac.DEMO_AMOUNT_CENTS, 'ACH', now=NOW)
@@ -399,12 +447,12 @@ class StripeSendTests(unittest.TestCase):
     def test_live_response_and_non_transfer_id_roll_back(self):
         cents = self.cents('PO-1042')
         base = {
-            'object': 'transfer', 'amount': cents, 'currency': 'usd',
-            'destination': 'acct_acme', 'reversed': False,
+            'object': 'payment_intent', 'amount': cents, 'currency': 'usd',
+            'status': 'succeeded', 'transfer_data': {'destination': 'acct_acme'},
             'metadata': {'payout_id': 'PO-1042', 'demo_id': self.pilot},
         }
         cases = (
-            dict(base, id='tr_test_1', livemode=True),
+            dict(base, id=PI_TEST_ID, livemode=True),
             dict(base, id='py_123', livemode=False),
         )
         for payload in cases:
@@ -463,9 +511,9 @@ class StripeSendTests(unittest.TestCase):
         self.assertEqual(payout['status'], 'PAID')
         self.assertEqual(payout['execution_status'], 'SUBMITTED')
         self.assertNotEqual(payout['execution_status'], 'SETTLED')
-        self.assertEqual(payout['execution_ref'], 'tr_test_1')
+        self.assertEqual(payout['execution_ref'], PI_TEST_ID)
         self.assertEqual(result['event']['to_status'], 'PAID')
-        self.assertEqual(result['event']['evidence']['stripe_transfer_id'], 'tr_test_1')
+        self.assertEqual(result['event']['evidence']['stripe_payment_intent_id'], PI_TEST_ID)
         self.assertEqual(len(self.stub.requests), 1)
 
     def test_clean_route_misconfig_does_not_leave_a_payout(self):
@@ -483,12 +531,12 @@ class StripeSendTests(unittest.TestCase):
         self.arm()
         before = self.payout('PO-1042')
         response = self.post_event(
-            self.transfer_event('PO-1042'), signature='t=1,v1=deadbeef',
+            self.payment_intent_event('PO-1042'), signature='t=1,v1=deadbeef',
             extra_headers={'Origin': 'https://evil.example'})
         self.assertEqual(response.status_code, 400)
         self.assertNotEqual(response.status_code, 403)
         self.assertNotEqual(response.status_code, 409)
-        missing = self.post_event(self.transfer_event('PO-1042'), include_signature=False)
+        missing = self.post_event(self.payment_intent_event('PO-1042'), include_signature=False)
         self.assertEqual(missing.status_code, 400)
         self.assertEqual(self.payout('PO-1042'), before)
         self.assertEqual(payouts.list_execution_events(self.db, 'PO-1042'), [])
@@ -496,13 +544,13 @@ class StripeSendTests(unittest.TestCase):
     def test_transfer_created_settles_and_replay_does_not_add_a_row(self):
         self.arm()
         self.decide('PO-1042', 'approve', 'submit')
-        response = self.post_event(self.transfer_event('PO-1042', event_id='evt_created'))
+        response = self.post_event(self.payment_intent_event('PO-1042', event_id='evt_created'))
         self.assertEqual(response.status_code, 200)
         payout = self.payout('PO-1042')
         self.assertEqual(payout['status'], 'PAID')
         self.assertEqual(payout['execution_status'], 'SETTLED')
-        self.assertEqual(payout['execution_ref'], 'tr_test_1')
-        again = self.post_event(self.transfer_event('PO-1042', event_id='evt_created'))
+        self.assertEqual(payout['execution_ref'], PI_TEST_ID)
+        again = self.post_event(self.payment_intent_event('PO-1042', event_id='evt_created'))
         self.assertEqual(again.status_code, 200)
         events = payouts.list_execution_events(self.db, 'PO-1042')
         self.assertEqual(
@@ -515,22 +563,22 @@ class StripeSendTests(unittest.TestCase):
         self.arm()
         self.decide('PO-1042', 'approve', 'submit')
         cases = (
-            self.transfer_event('PO-1042', amount=self.cents('PO-1042') + 1),
-            self.transfer_event('PO-1042', currency='eur'),
-            self.transfer_event('PO-1042', destination='acct_other'),
-            self.transfer_event('PO-1042', transfer_id='tr_other'),
+            self.payment_intent_event('PO-1042', amount=self.cents('PO-1042') + 1),
+            self.payment_intent_event('PO-1042', currency='eur'),
+            self.payment_intent_event('PO-1042', destination='acct_other'),
+            self.payment_intent_event('PO-1042', payment_intent_id='pi_other'),
         )
         for event in cases:
             with self.subTest(event_id=event['id'], transfer=event['data']['object']['id'],
                               amount=event['data']['object']['amount'],
                               currency=event['data']['object']['currency'],
-                              destination=event['data']['object']['destination']):
+                              destination=event['data']['object']['transfer_data']['destination']):
                 response = self.post_event(event)
                 self.assertEqual(response.status_code, 422)
                 self.assertEqual(response.json['code'], api_contract.STRIPE_SEND_BLOCKED)
         payout = self.payout('PO-1042')
         self.assertEqual(payout['execution_status'], 'SUBMITTED')
-        self.assertEqual(payout['execution_ref'], 'tr_test_1')
+        self.assertEqual(payout['execution_ref'], PI_TEST_ID)
         self.assertEqual(
             [event['event_id'] for event in payouts.list_execution_events(self.db, 'PO-1042')],
             ['stripe-submit:PO-1042'])
@@ -538,8 +586,8 @@ class StripeSendTests(unittest.TestCase):
     def test_reversed_transfer_fails_without_a_new_desk_status(self):
         self.arm()
         self.decide('PO-1042', 'approve', 'submit')
-        response = self.post_event(self.transfer_event(
-            'PO-1042', event_id='evt_rev', event_type='transfer.reversed', reversed_flag=True))
+        response = self.post_event(self.payment_intent_event(
+            'PO-1042', event_id='evt_rev', event_type='payment_intent.payment_failed'))
         self.assertEqual(response.status_code, 200)
         payout = self.payout('PO-1042')
         self.assertEqual(payout['status'], 'PAID')
@@ -552,9 +600,9 @@ class StripeSendTests(unittest.TestCase):
     def test_reversal_after_settled_stays_settled(self):
         self.arm()
         self.decide('PO-1042', 'approve', 'submit')
-        self.post_event(self.transfer_event('PO-1042', event_id='evt_created'))
-        response = self.post_event(self.transfer_event(
-            'PO-1042', event_id='evt_late', event_type='transfer.reversed', reversed_flag=True))
+        self.post_event(self.payment_intent_event('PO-1042', event_id='evt_created'))
+        response = self.post_event(self.payment_intent_event(
+            'PO-1042', event_id='evt_late', event_type='payment_intent.payment_failed'))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.payout('PO-1042')['execution_status'], 'SETTLED')
         self.assertEqual(self.payout('PO-1042')['status'], 'PAID')
@@ -565,7 +613,7 @@ class StripeSendTests(unittest.TestCase):
         self.arm()
         before = {row['payout_id']: (row['status'], row['execution_status'])
                   for row in payouts.list_payouts(self.db)}
-        response = self.post_event(self.transfer_event('PO-1042', event_id='evt_early'))
+        response = self.post_event(self.payment_intent_event('PO-1042', event_id='evt_early'))
         self.assertEqual(response.status_code, 503)
         after = {row['payout_id']: (row['status'], row['execution_status'])
                  for row in payouts.list_payouts(self.db)}
@@ -580,9 +628,9 @@ class StripeSendTests(unittest.TestCase):
             'livemode': False, 'data': {'object': {'id': 'ch_1', 'object': 'charge'}},
         })
         self.assertEqual(ignored.status_code, 200)
-        unknown = self.post_event(self.transfer_event('PO-NOPE', event_id='evt_missing', amount=1))
+        unknown = self.post_event(self.payment_intent_event('PO-NOPE', event_id='evt_missing', amount=1))
         self.assertEqual(unknown.status_code, 200)
-        stranger = self.post_event(self.transfer_event(
+        stranger = self.post_event(self.payment_intent_event(
             'PO-1042', event_id='evt_other_demo', demo_id='c' * 64))
         self.assertEqual(stranger.status_code, 200)
         self.assertEqual(self.payout('PO-1042')['execution_status'], 'SUBMITTED')
@@ -592,7 +640,7 @@ class StripeSendTests(unittest.TestCase):
     def test_livemode_webhook_is_422_and_writes_nothing(self):
         self.arm()
         self.decide('PO-1042', 'approve', 'submit')
-        response = self.post_event(self.transfer_event('PO-1042', event_id='evt_live', livemode=True))
+        response = self.post_event(self.payment_intent_event('PO-1042', event_id='evt_live', livemode=True))
         self.assertEqual(response.status_code, 422)
         self.assertEqual(response.json['code'], api_contract.STRIPE_SEND_BLOCKED)
         self.assertEqual(self.payout('PO-1042')['execution_status'], 'SUBMITTED')
@@ -642,11 +690,11 @@ class StripeSendTests(unittest.TestCase):
                          ('PAID', 'SETTLED', 'demo:PO-1044'))
         self.assertEqual(len(self.stub.requests), 1)
         self.assertEqual(self.payout('PO-1042')['execution_status'], 'SUBMITTED')
-        response = self.post_event(self.transfer_event('PO-1042', event_id='evt_after_kill'))
+        response = self.post_event(self.payment_intent_event('PO-1042', event_id='evt_after_kill'))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.payout('PO-1042')['status'], 'PAID')
         self.assertEqual(self.payout('PO-1042')['execution_status'], 'SETTLED')
-        self.assertEqual(self.payout('PO-1042')['execution_ref'], 'tr_test_1')
+        self.assertEqual(self.payout('PO-1042')['execution_ref'], PI_TEST_ID)
 
     def test_reconciliation_skips_transfer_refs(self):
         with sqlite3.connect(self.db) as db:
@@ -656,6 +704,31 @@ class StripeSendTests(unittest.TestCase):
         report = reconciliation.reconcile(self.db)
         ids = {item['payout_id'] for item in report['items']}
         self.assertNotIn('PO-1042', ids)
+
+    def test_reconciliation_skips_payment_intent_refs(self):
+        with sqlite3.connect(self.db) as db:
+            db.execute(
+                "UPDATE payouts SET status = 'PAID', review_status = 'APPROVED', "
+                "execution_status = 'SETTLED', execution_ref = 'pi_out' WHERE payout_id = 'PO-1042'")
+        report = reconciliation.reconcile(self.db)
+        ids = {item['payout_id'] for item in report['items']}
+        self.assertNotIn('PO-1042', ids)
+
+    def test_legacy_transfer_path_selectable_via_env(self):
+        self.arm(STRIPE_SEND_PATH='transfer')
+        code, decision = self.decide('PO-1042', 'approve', 'legacy-transfer')
+        payout = self.payout('PO-1042')
+        idem = f'desk-transfer:{self.pilot}:PO-1042'
+        self.assertEqual(code, 201)
+        self.assertEqual(payout['execution_ref'], TR_TEST_ID)
+        self.assertEqual(decision['evidence']['stripe_transfer_id'], TR_TEST_ID)
+        self.assertEqual(decision['evidence']['stripe_idempotency_key'], idem)
+        request = self.stub.requests[0]
+        self.assertEqual(request['path'], '/v1/transfers')
+        self.assertIn('destination=acct_acme', request['body'])
+        response = self.post_event(self.transfer_event('PO-1042', event_id='evt_legacy'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.payout('PO-1042')['execution_status'], 'SETTLED')
 
     def test_upgrade_adds_destination_column_and_stripe_source(self):
         path = self.root / 'upgrade.sqlite3'

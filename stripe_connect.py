@@ -35,6 +35,20 @@ def stripe_enabled(env=None):
     return env.get('STRIPE_PAYOUTS_ENABLED') == '1'
 
 
+def send_path(env=None):
+    """Default send path is destination charges; set STRIPE_SEND_PATH=transfer for legacy."""
+    env = os.environ if env is None else env
+    if _value(env, 'STRIPE_SEND_PATH') == 'transfer':
+        return 'transfer'
+    return 'destination_charge'
+
+
+def funding_payment_method(env=None):
+    env = os.environ if env is None else env
+    chosen = _value(env, 'STRIPE_FUNDING_PAYMENT_METHOD')
+    return chosen or 'pm_card_visa'
+
+
 def load_config(env=None):
     env = os.environ if env is None else env
     if not stripe_enabled(env):
@@ -88,6 +102,10 @@ def transfer_idempotency_key(demo_id, payout_id):
     return f'desk-transfer:{demo_id}:{payout_id}'
 
 
+def charge_idempotency_key(demo_id, payout_id):
+    return f'desk-charge:{demo_id}:{payout_id}'
+
+
 def create_transfer(*, payout_id, amount_cents, currency, destination, demo_id,
                     idempotency_key, env=None):
     config = load_config(env)
@@ -111,6 +129,37 @@ def create_transfer(*, payout_id, amount_cents, currency, destination, demo_id,
         _blocked(502)
     return _checked_transfer(
         transfer, payout_id, amount_cents, destination, demo_id, idempotency_key)
+
+
+def create_destination_charge(*, payout_id, amount_cents, currency, destination, demo_id,
+                              idempotency_key, env=None):
+    config = load_config(env)
+    if config is None or mode_for(config, demo_id) != 'stripe':
+        _blocked()
+    if (currency != 'usd' or isinstance(amount_cents, bool) or not isinstance(amount_cents, int)
+            or amount_cents <= 0 or not _ACCT.fullmatch(destination or '') or not idempotency_key):
+        _blocked()
+    client = _client(config)
+    funding = funding_payment_method(env)
+    try:
+        intent = client.v1.payment_intents.create(
+            {
+                'amount': amount_cents,
+                'currency': 'usd',
+                'payment_method_types': ['card'],
+                'transfer_data': {'destination': destination},
+                'metadata': {'payout_id': str(payout_id), 'demo_id': demo_id},
+                'payment_method': funding,
+                'confirm': True,
+                'off_session': True,
+                'error_on_requires_action': True,
+            },
+            {'idempotency_key': idempotency_key},
+        )
+    except stripe.StripeError:
+        _blocked(502)
+    return _checked_payment_intent(
+        intent, payout_id, amount_cents, destination, demo_id, idempotency_key)
 
 
 def parse_webhook(payload, signature_header, secret):
@@ -187,6 +236,33 @@ def _client(config):
     return stripe.StripeClient(**kwargs)
 
 
+def _checked_payment_intent(intent, payout_id, amount_cents, destination, demo_id, idempotency_key):
+    intent_id = str(_field(intent, 'id') or '')
+    status = str(_field(intent, 'status') or '')
+    if (_field(intent, 'livemode') or not intent_id.startswith('pi_')
+            or status not in ('succeeded', 'processing')):
+        _blocked()
+    if _field(intent, 'amount') != amount_cents:
+        _blocked()
+    if str(_field(intent, 'currency') or '').lower() != 'usd':
+        _blocked()
+    transfer_data = _field(intent, 'transfer_data')
+    if _destination_id(_field(transfer_data, 'destination')) != destination:
+        _blocked()
+    if _metadata_value(intent, 'payout_id') != str(payout_id):
+        _blocked()
+    if _metadata_value(intent, 'demo_id') != demo_id:
+        _blocked()
+    return {
+        'payment_intent_id': intent_id,
+        'amount_cents': amount_cents,
+        'currency': 'usd',
+        'destination': destination,
+        'livemode': False,
+        'idempotency_key': idempotency_key,
+    }
+
+
 def _checked_transfer(transfer, payout_id, amount_cents, destination, demo_id, idempotency_key):
     transfer_id = str(_field(transfer, 'id') or '')
     if (_field(transfer, 'livemode') or _field(transfer, 'reversed')
@@ -224,15 +300,34 @@ def _transfer_outcome(event_type, obj):
     return None
 
 
+def _payment_intent_outcome(event_type, obj):
+    is_intent = (
+        _field(obj, 'object') == 'payment_intent'
+        or str(_field(obj, 'id') or '').startswith('pi_'))
+    if not is_intent:
+        return None
+    if event_type in ('payment_intent.payment_failed', 'payment_intent.canceled'):
+        return 'FAILED'
+    if event_type == 'payment_intent.succeeded':
+        return 'SETTLED'
+    return None
+
+
 def _command_from_event(event):
     obj = _field(_field(event, 'data'), 'object')
-    outcome = _transfer_outcome(str(_field(event, 'type') or ''), obj)
+    event_type = str(_field(event, 'type') or '')
+    outcome = _transfer_outcome(event_type, obj)
+    if outcome is None:
+        outcome = _payment_intent_outcome(event_type, obj)
     if outcome is None or obj is None:
         return None
     try:
         amount_cents = int(_field(obj, 'amount'))
     except (TypeError, ValueError):
         amount_cents = None
+    destination = _destination_id(_field(obj, 'destination'))
+    if not destination:
+        destination = _destination_id(_field(_field(obj, 'transfer_data'), 'destination'))
     return {
         'stripe_event_id': str(_field(event, 'id') or ''),
         'payout_id': _metadata_value(obj, 'payout_id'),
@@ -240,7 +335,7 @@ def _command_from_event(event):
         'transfer_id': str(_field(obj, 'id') or ''),
         'amount_cents': amount_cents,
         'currency': str(_field(obj, 'currency') or '').lower(),
-        'destination': _destination_id(_field(obj, 'destination')),
+        'destination': destination,
         'outcome': outcome,
         'livemode': bool(_field(event, 'livemode')) or bool(_field(obj, 'livemode')),
     }

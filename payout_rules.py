@@ -86,11 +86,14 @@ def route_one(db, payout_id, now=None):
     evidence = None
     if held and held.get('kind') == 'stripe_submit':
         evidence = {
-            'stripe_transfer_id': held['transfer_id'],
             'stripe_destination': held['destination'],
             'stripe_idempotency_key': held['idempotency_key'],
             'stripe_livemode': False,
         }
+        if held.get('payment_intent_id'):
+            evidence['stripe_payment_intent_id'] = held['payment_intent_id']
+        else:
+            evidence['stripe_transfer_id'] = held['transfer_id']
     key = f'route:{payout_id}'
     event = payouts.record_transition(
         db, payout_id, ACTION, current, step, ACTOR, key,

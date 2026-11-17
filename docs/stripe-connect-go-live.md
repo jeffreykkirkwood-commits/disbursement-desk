@@ -1,9 +1,10 @@
 # Stripe Connect go-live (P3) — gated checklist
 
-Test-mode Transfers run only when `STRIPE_PAYOUTS_ENABLED` is exactly `1`,
+Test-mode Stripe send runs only when `STRIPE_PAYOUTS_ENABLED` is exactly `1`,
 and only for the demo folder named by `STRIPE_DEMO_ID`. Any other flag value
-keeps the demo settle, even when Stripe secrets are present. Live mode stays
-closed until the unchecked items below are signed off.
+keeps the demo settle, even when Stripe secrets are present. Armed send
+creates a destination charge unless `STRIPE_SEND_PATH` is `transfer`.
+Live mode stays closed until the unchecked items below are signed off.
 
 Related gates:
 [pre-send-gates.md](pre-send-gates.md), [ofac-vendor.md](ofac-vendor.md),
@@ -30,13 +31,13 @@ Re-verify these on any change to `decide`, `_settle`, `route_one`, or OFAC scree
 Checked items are enforced by the test-mode send path. Unchecked items still block a live pilot:
 
 - [ ] Connected account type and KYC ownership signed off. The recommendation is Express. See [Account ownership](stripe-connect-account-ownership.md). The owner sign-off box is unchecked.
-- [x] Platform → connected-account fund flow: test-mode **Transfers** from platform balance (not destination charges)
+- [x] Platform → connected-account fund flow: test-mode destination charge (`PaymentIntent` with `transfer_data[destination]`). `STRIPE_SEND_PATH=transfer` keeps Transfers.
 - [x] Desk `Idempotency-Key` maps 1:1 to Stripe `Transfer` / `PaymentIntent` / `Payout` ids in `payout_events` evidence
 - [x] OFAC **Clear** is a hard precondition in code **before** any Stripe money-movement API call
 - [x] Failure / retry: Stripe webhooks update `execution_status` without inventing Desk `status`
 - [x] Reconciliation treats Stripe as source of truth for SETTLED / FAILED
 - [x] Secrets only via env / secret manager; no keys in repo
-- [x] Kill switch. New Transfers run only when `STRIPE_PAYOUTS_ENABLED` is exactly `1`. Steps are in [Disarm Stripe payouts](stripe-connect-kill-switch.md).
+- [x] Kill switch. New Stripe sends run only when `STRIPE_PAYOUTS_ENABLED` is exactly `1`. Steps are in [Disarm Stripe payouts](stripe-connect-kill-switch.md).
 - [ ] Test-mode end-to-end on Connect test clocks, then a limited live pilot that can be disarmed with the kill switch
 - [ ] Compliance review (sanctions, money transmission, ToS) signed off outside this repo
 
