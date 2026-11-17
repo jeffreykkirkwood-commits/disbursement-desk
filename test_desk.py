@@ -27,7 +27,9 @@ ALL_IDS = EXCEPTION_IDS + ['PO-1037', 'PO-1036', 'PO-1039', 'PO-1040', 'PO-1041'
 ROW = re.compile(r'<li data-ex="(\d)"( hidden)?><button type="button" class="row" data-id="PO-\d+" '
                  r'aria-current="false"><span class="payee">(.*?)</span>'
                  r'<span class="amt">(.*?)</span><span class="sub">(.*?)</span>'
-                 r'<span class="pill (s-\w+)">(.*?)</span></button></li>')
+                 r'<span class="pills"><span class="pill (s-\w+)">(.*?)</span>'
+                 r'(?:<span class="marks">(?:<span class="mark m-\w+">[^<]*</span>)+</span>)?'
+                 r'</span></button></li>')
 PANEL = re.compile(r'<div class="panel" data-id="(PO-\d+)"[^>]* hidden>(.*?)</div>(?=<div class="panel"|</aside>)', re.S)
 
 
@@ -366,6 +368,7 @@ APPROVE_BUTTON = ('<button type="button" class="btn primary" data-act="approve" 
 HOLD_BUTTON = ('<button type="button" class="btn" data-act="hold" data-heading="Hold this payout?" '
                'data-body="It stays in Exceptions and will not send until someone approves it." data-ok="Hold" '
                'data-ok-class="btn primary"{}>Hold</button>')
+HELD_DISABLED = (' disabled title="Already held. It will not send until someone approves or returns it."')
 RETURN_BUTTON = ('<button type="button" class="btn danger" data-act="return" data-heading="Return this payout?" '
                  'data-body="It is cancelled and no money moves. This cannot be undone." data-ok="Return" '
                  'data-ok-class="btn danger fill">Return</button>')
@@ -390,7 +393,7 @@ class DeskActionTests(DeskBase):
     # Scenario — a Held payout can still be approved or returned; Hold is disabled
     def test_held_buttons(self):
         panel = self.panels()['PO-1038']
-        self.assertIn(APPROVE_BUTTON + HOLD_BUTTON.format(' disabled') + RETURN_BUTTON, panel)
+        self.assertIn(APPROVE_BUTTON + HOLD_BUTTON.format(HELD_DISABLED) + RETURN_BUTTON, panel)
 
     # Scenario — Sent and Returned payouts have no action buttons
     def test_final_payouts_have_no_buttons(self):
@@ -430,6 +433,73 @@ class DeskActionTests(DeskBase):
         self.assertIn('typedId || pendingCreate.payoutId', script)
         self.assertNotIn("fetch('/payouts/simulate'", script)
         self.assertIn("'#f=all'", script)
+        self.assertIn('location.reload()', script)
+
+    # Scenario — create failures name a known code, and a local miss does not send
+    def test_create_errors_name_known_codes_only(self):
+        script = self.client.get('/desk.js').get_data(as_text=True)
+        self.assertIn('Enter a payee name, a DEMO- account, and an amount greater than zero. Nothing was sent.', script)
+        self.assertIn("code === 'local'", script)
+        for code, sentence in (
+            ('VALIDATION_ERROR', 'Check the payee name, DEMO- account, amount, and rail. Nothing was created.'),
+            ('CONFLICT', 'A payout with this id already exists. Nothing new was created.'),
+            ('RAIL_OVER_LIMIT', 'That amount is over this rail’s limit. Lower the amount or pick another rail.'),
+            ('RAIL_WINDOW_CLOSED', 'That rail’s send window is closed. Pick another rail or wait for the next window.'),
+            ('IDEMPOTENCY_KEY_REUSED', 'This create key was already used for a different payout. Close the dialog and start again.'),
+        ):
+            self.assertIn(code, script)
+            self.assertIn(sentence, script)
+        self.assertIn("CREATE_CODE_TEXT[code] + ' (' + code + ')'", script)
+        self.assertIn('showCreateError(code)', script)
+        self.assertIn("ok.textContent = 'Creating…'", script)
+        self.assertIn('if (!pendingCreate || !createForm || creating) return;', script)
+        # Stable code only. Never the response text, and never reply.json / reply.text.
+        self.assertNotIn('.error', script)
+        self.assertNotIn('reply.json', script)
+        self.assertNotIn('reply.text', script)
+        self.assertNotIn('.json()', script)
+        self.assertNotIn('internal_error', script)
+
+    # Scenario — Review, On hold, and OFAC chips, plus one detail callout
+    def test_queue_and_detail_show_review_hold_and_ofac(self):
+        self.get()
+        payout_rules.create(
+            self.database(), 'PO-4100', ofac.DEMO_PAYEE_NAME, ofac.DEMO_PAYEE_ACCOUNT,
+            ofac.DEMO_AMOUNT_CENTS, 'ACH')
+        html = self.get().get_data(as_text=True)
+        rows = {row['sub'].split(' · ')[0]: row for row in self.rows(html)}
+        self.assertEqual(rows['PO-1042']['word'], 'Needs review')
+        self.assertEqual(rows['PO-1038']['word'], 'Held')
+        self.assertIn('PO-4100', rows)
+        self.assertNotIn('class="mark m-review"', html)
+        self.assertNotIn('class="mark m-held"', html)
+        self.assertIn('<span class="mark m-ofac">OFAC</span>', html)
+        panels = dict(PANEL.findall(html))
+        self.assertIn(
+            '<p class="callout s-review" role="status">Needs review. Read the reasons below before you approve, hold, or return.</p>',
+            panels['PO-1042'])
+        self.assertIn(
+            '<p class="callout s-held" role="status">Held. This payout will not send until someone approves it.</p>',
+            panels['PO-1038'])
+        self.assertIn(
+            '<p class="callout s-ofac" role="status">Possible sanctions match. Approve is unavailable. Use Clear or Block.</p>',
+            panels['PO-4100'])
+        self.assertNotIn('data-act="approve"', panels['PO-4100'])
+        self.assertIn('data-act="clear"', panels['PO-4100'])
+        self.assertIn('data-act="block"', panels['PO-4100'])
+        self.assertNotIn('class="callout', panels['PO-1040'])
+        for code in ('FLAGGED', 'PENDING', 'APPROVED', 'HELD<', 'PAID', 'RETURNED'):
+            self.assertNotIn(code, html)
+
+    # Scenario — a decision in flight disables confirm and cancel, and ignores a second click
+    def test_decide_busy_state_blocks_a_second_submit(self):
+        script = self.client.get('/desk.js').get_data(as_text=True)
+        self.assertIn('if (!pending || deciding) return;', script)
+        self.assertIn("ok.textContent = 'Saving…'", script)
+        self.assertIn("ok.setAttribute('aria-busy', busy ? 'true' : 'false')", script)
+        self.assertIn('if (deciding) event.preventDefault();', script)
+        self.assertIn('if (creating) event.preventDefault();', script)
+        self.assertIn('if (deciding) return;', script)
 
     # Scenario — after an operator Hold: Held, "Held by operator", still in Exceptions, Hold disabled
     def test_after_hold(self):
@@ -443,7 +513,7 @@ class DeskActionTests(DeskBase):
         self.assertIn('AMOUNT_OVER_3X_AVG', panel)
         self.assertNotIn('Why flagged', panel)
         self.assertNotIn('Held by operator', panel)
-        self.assertIn(HOLD_BUTTON.format(' disabled'), panel)
+        self.assertIn(HOLD_BUTTON.format(HELD_DISABLED), panel)
         self.assertIn(APPROVE_BUTTON, panel)
         self.assertIn(RETURN_BUTTON, panel)
 

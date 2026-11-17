@@ -67,6 +67,35 @@ SANCTIONS_ACTIONS = {
 SANCTIONS_BUTTON_CLASS = {'clear': 'btn primary', 'block': 'btn danger'}
 SANCTIONS_FLAG = 'POSSIBLE_SANCTIONS_MATCH'
 OPERATOR_FLAGS = {'HELD': 'Held by operator', 'RETURNED': 'Returned by operator'}
+HELD_BUTTON_TITLE = 'Already held. It will not send until someone approves or returns it.'
+
+
+def _flag_codes(payout):
+    return [part for part in (payout.get('flag_code') or '').split(',') if part]
+
+
+def queue_marks(payout):
+    """OFAC chip beside the status pill. Review and Held already have their own pills."""
+    status = payout.get('status')
+    if SANCTIONS_FLAG in _flag_codes(payout) and status not in FINAL_STATUSES:
+        return [('m-ofac', 'OFAC')]
+    return []
+
+
+def status_callout(payout):
+    """One safety line on an open payout. A sanctions match outranks hold and review."""
+    status = payout.get('status')
+    if status in FINAL_STATUSES:
+        return None
+    if SANCTIONS_FLAG in _flag_codes(payout):
+        return ('s-ofac',
+                'Possible sanctions match. Approve is unavailable. Use Clear or Block.')
+    if status == 'HELD':
+        return ('s-held', 'Held. This payout will not send until someone approves it.')
+    if status in ('FLAGGED', 'PENDING'):
+        return ('s-review',
+                'Needs review. Read the reasons below before you approve, hold, or return.')
+    return None
 
 
 # FEATURE 01c — Which flag sentence to show
@@ -188,6 +217,14 @@ def _notes(payout):
 # Payee, amount like $4,850.00, the payout id plus why it was flagged (or the rail when
 # nothing fired) and the status pill. Each row is a button that opens its detail (slice 2).
 # Rows that are not exceptions start hidden because the page opens on Exceptions.
+def _row_marks(payout):
+    marks = queue_marks(payout)
+    if not marks:
+        return ''
+    chips = ''.join(f'<span class="mark {css}">{text(label)}</span>' for css, label in marks)
+    return f'<span class="marks">{chips}</span>'
+
+
 def _row(payout):
     word, css = STATUS_WORDS[payout['status']]
     exception = payout['status'] in EXCEPTION_STATUSES
@@ -197,7 +234,8 @@ def _row(payout):
             f'<span class="payee">{text(payout["payee_name"])}</span>'
             f'<span class="amt">{money(payout["amount"])}</span>'
             f'<span class="sub">{text(payout["payout_id"])} · {text(why)}</span>'
-            f'<span class="pill {css}">{word}</span></button></li>')
+            f'<span class="pills"><span class="pill {css}">{word}</span>{_row_marks(payout)}</span>'
+            f'</button></li>')
 
 
 def status_word(code):
@@ -268,11 +306,16 @@ def _detail(payout, events=()):
     parts = [f'<div class="panel" data-id="{pid}" data-payee="{text(payout["payee_name"])}" '
              f'data-amount="{money(payout["amount"])}" hidden>',
              '<div class="dtop"><button type="button" class="back" aria-label="Back to list">← Back</button>'
-             f'<span class="pill {css}">{word}</span></div>',
+             f'<span class="pill {css}">{word}</span></div>']
+    callout = status_callout(payout)
+    if callout:
+        callout_css, sentence = callout
+        parts.append(f'<p class="callout {callout_css}" role="status">{text(sentence)}</p>')
+    parts.extend([
              f'<h2 tabindex="-1">{text(payout["payee_name"])}</h2>',
              f'<p class="big">{money(payout["amount"])}</p>',
              f'<dl><dt>Payout</dt><dd>{pid}</dd><dt>To account</dt><dd>{text(payout["payee_account"])}</dd>'
-             f'<dt>Rail</dt><dd>{text(payout["rail"])} · {text(payout["currency"])}</dd></dl>']
+             f'<dt>Rail</dt><dd>{text(payout["rail"])} · {text(payout["currency"])}</dd></dl>'])
     items = review_items(payout)
     if items:
         parts.append(_review_panel(payout, items))
@@ -282,14 +325,15 @@ def _detail(payout, events=()):
     if payout['status'] in FINAL_STATUSES:
         parts.append(f'<p class="done">{FINAL_MESSAGE}</p>')
     else:
-        codes = (payout.get('flag_code') or '').split(',')
-        if SANCTIONS_FLAG in codes:
+        if SANCTIONS_FLAG in _flag_codes(payout):
             actions, classes = SANCTIONS_ACTIONS, SANCTIONS_BUTTON_CLASS
         else:
             actions, classes = ACTIONS, PANEL_BUTTON_CLASS
         buttons = []
         for action, (label, heading, body, ok_class) in actions.items():
-            disabled = ' disabled' if action == 'hold' and payout['status'] == 'HELD' else ''
+            disabled = ''
+            if action == 'hold' and payout['status'] == 'HELD':
+                disabled = f' disabled title="{text(HELD_BUTTON_TITLE)}"'
             buttons.append(f'<button type="button" class="{classes[action]}" data-act="{action}" '
                            f'data-heading="{text(heading)}" data-body="{text(body)}" data-ok="{label}" '
                            f'data-ok-class="{ok_class}"{disabled}>{label}</button>')
@@ -353,7 +397,15 @@ h1{font-size:26px;margin:0;letter-spacing:-.5px}
 /* The line above each row; .list clips it above the first visible row. */
 .payee{font-weight:650;overflow-wrap:anywhere}.amt{font-weight:700;text-align:right;font-variant-numeric:tabular-nums}
 .sub{font-size:14px;color:var(--muted)}
-.pill{display:inline-block;font-size:13px;font-weight:700;padding:2px 9px;border-radius:5px;justify-self:end;align-self:start}
+.pills{display:flex;flex-wrap:nowrap;gap:4px;justify-content:flex-end;align-items:center;justify-self:end;align-self:start}
+.pill{display:inline-block;font-size:13px;font-weight:700;padding:2px 9px;border-radius:5px;flex-shrink:0}
+.marks{display:flex;gap:4px;flex-shrink:0}
+.mark{display:inline-block;font-size:12px;font-weight:800;padding:2px 7px;border-radius:5px;white-space:nowrap}
+.m-ofac{background:var(--red-bg);color:var(--red)}
+.callout{border-radius:8px;padding:10px 12px;font-size:15px;font-weight:650;margin:12px 0 0}
+.callout.s-review{background:var(--amber-bg);color:var(--amber)}
+.callout.s-held{background:var(--blue-bg);color:var(--blue)}
+.callout.s-ofac{background:var(--red-bg);color:var(--red)}
 .s-review{background:var(--amber-bg);color:var(--amber)}.s-held{background:var(--blue-bg);color:var(--blue)}
 .s-returned{background:var(--red-bg);color:var(--red)}.s-sent{background:var(--ok-bg);color:var(--ok)}
 .empty{padding:18px;color:var(--muted);box-shadow:0 -1px 0 var(--line)}
