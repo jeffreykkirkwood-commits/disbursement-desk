@@ -30,7 +30,7 @@ Read every TLC result with `/statechart` so invariant breaks show as shortest pa
 
 Files: `payouts.py` (`decide`, `record_transition`, SCHEMA `idempotency_key TEXT UNIQUE`).
 
-**Last sync commit:** `ffec688a95c44a6f9f45fa982de3c85e4b92dca9` (confirm before trusting after later edits). Move this forward only after you confirm the model still describes those functions.
+**Last sync commit:** `1d198c3046d20b77fc62a5a5cd6b7a37f6af7e5e` (confirm before trusting after later edits). Move this forward only after you confirm the model still describes those functions.
 
 ## When to run
 
