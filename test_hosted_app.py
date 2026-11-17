@@ -85,7 +85,7 @@ class HostedTests(unittest.TestCase):
     # FEATURE 05 — Scenario — health and unknown paths do not create a demo
     # These requests must not allocate a visitor database or set a cookie.
     def test_health_and_unknown_do_not_create_demo(self):
-        for path in ('/', '/health', '/ready', '/metrics', '/not-found',
+        for path in ('/', '/health', '/ready', '/metrics', '/openapi.json', '/not-found',
                      '/dwolla-credentials.local.json'):
             response = self.get(path)
             self.assertNotIn('Set-Cookie', response.headers)
@@ -183,7 +183,10 @@ class HostedTests(unittest.TestCase):
         self.assertEqual(expected.json, {'error': 'Send a JSON object with a reviewer name.'})
         crash = self.get('/probe/crash')
         self.assertEqual(crash.status_code, 500)
-        self.assertEqual(crash.json, {'error': 'Internal server error. Retry with the same idempotency key.'})
+        self.assertEqual(crash.json, {
+            'error': 'Internal server error. Retry with the same idempotency key.',
+            'code': 'INTERNAL_ERROR',
+        })
 
     # FEATURE 13 — Scenario — Render's URL is the allowed origin
     # On Render the public origin must be HTTPS; RENDER_EXTERNAL_URL becomes the allowed origin.

@@ -9,6 +9,7 @@ import storage
 from datetime import datetime, timezone
 
 import aba
+import api_contract
 import payout_notes
 import payouts
 from desk_common import APIError
@@ -129,27 +130,34 @@ def create(database, payout_id, payee_name, payee_account, amount_cents, rail,
            bank_details_changed_at=None, now=None, routing_number=None,
            idempotency_key=None):
     if not isinstance(payout_id, str) or not payout_id.strip() or len(payout_id) > 40:
-        raise APIError(422, 'Provide a payout id (1–40 characters).')
+        raise APIError(422, 'Provide a payout id (1–40 characters).',
+                       code=api_contract.VALIDATION_ERROR)
     if not isinstance(payee_name, str) or not payee_name.strip() or len(payee_name.strip()) > 80:
-        raise APIError(422, 'Provide a payee name (1–80 characters).')
+        raise APIError(422, 'Provide a payee name (1–80 characters).',
+                       code=api_contract.VALIDATION_ERROR)
     if not isinstance(payee_account, str) or not payee_account.startswith('DEMO-'):
-        raise APIError(422, 'Payee account must be a DEMO- id.')
+        raise APIError(422, 'Payee account must be a DEMO- id.',
+                       code=api_contract.VALIDATION_ERROR)
     if not isinstance(amount_cents, int) or isinstance(amount_cents, bool) or amount_cents <= 0:
-        raise APIError(422, 'Amount must be a positive number of cents.')
+        raise APIError(422, 'Amount must be a positive number of cents.',
+                       code=api_contract.VALIDATION_ERROR)
     if rail is None or (isinstance(rail, str) and not rail.strip()):
         rail = payouts.DEFAULT_RAIL
     elif rail not in payouts.RAILS:
-        raise APIError(422, 'Rail must be ACH, SAME_DAY_ACH, RTP, FEDNOW, or WIRE.')
+        raise APIError(422, 'Rail must be ACH, SAME_DAY_ACH, RTP, FEDNOW, or WIRE.',
+                       code=api_contract.VALIDATION_ERROR)
     if bank_details_changed_at is not None:
         if not isinstance(bank_details_changed_at, str):
-            raise APIError(422, 'Bank-details change time must be text if given.')
+            raise APIError(422, 'Bank-details change time must be text if given.',
+                           code=api_contract.VALIDATION_ERROR)
         try:
             parsed = datetime.fromisoformat(bank_details_changed_at)
         except ValueError:
             parsed = None
         if parsed is None or parsed.tzinfo is None:
             raise APIError(
-                422, 'Bank-details change time must be an ISO 8601 datetime with a timezone offset.')
+                422, 'Bank-details change time must be an ISO 8601 datetime with a timezone offset.',
+                code=api_contract.VALIDATION_ERROR)
     aba.validate(routing_number)
     payout_id, payee_name = payout_id.strip(), payee_name.strip()
     payee_account = payee_account.strip()
@@ -171,12 +179,14 @@ def create(database, payout_id, payee_name, payee_account, amount_cents, rail,
             previous = payouts._as_event(existing)
             prior = (previous.get('evidence') or {}) if isinstance(previous.get('evidence'), dict) else {}
             if previous['action'] != CREATE_ACTION or prior != fingerprint:
-                raise APIError(409, 'This Idempotency-Key was already used for a different create.')
+                raise APIError(409, 'This Idempotency-Key was already used for a different create.',
+                               code=api_contract.IDEMPOTENCY_KEY_REUSED)
             payout = _load(db, previous['payout_id'])
             return dict(changed=False, replayed=True, payout_id=previous['payout_id'],
                         status=payout['status'], event=None, create_event=previous)
         if db.execute('SELECT 1 FROM payouts WHERE payout_id = ?', (payout_id,)).fetchone():
-            raise APIError(409, 'A payout with this id already exists.')
+            raise APIError(409, 'A payout with this id already exists.',
+                           code=api_contract.CONFLICT)
         # Usual amount is the average of earlier SETTLED payouts, matching the seed,
         # so a prior flagged or held outlier does not hide a new amount exception.
         past = [row[0] for row in db.execute(

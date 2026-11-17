@@ -19,6 +19,9 @@ Turso / multi-visitor tenancy: see [docs/tenancy.md](docs/tenancy.md). A shared
 Observability (structured logs + decide/create/503/stream counters): see
 [docs/observability.md](docs/observability.md). Snapshot: `GET /metrics`.
 
+Versioned create/decide (`/v1/payouts`, OpenAPI, stable error `code`): see
+[docs/api-contract.md](docs/api-contract.md). Document: `GET /openapi.json`.
+
 ## Run the app shell locally
 
 The app shell (payments-api-simulator #122, step 2) answers `/health` (liveness),

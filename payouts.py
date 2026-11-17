@@ -12,6 +12,7 @@ import storage
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import api_contract
 import ofac
 import payout_notes
 import rails
@@ -528,7 +529,7 @@ def get_payout(database, payout_id):
         row = db.execute(f'SELECT {", ".join(COLUMNS)} FROM payouts WHERE payout_id = ?',
                          (payout_id,)).fetchone()
     if not row:
-        raise APIError(404, 'Payout not found.')
+        raise APIError(404, 'Payout not found.', code=api_contract.NOT_FOUND)
     return _public(row)
 
 
@@ -595,7 +596,8 @@ EXECUTION_EVENT_COLUMNS = ('event_id', 'payout_id', 'execution_status', 'executi
 def clean_idempotency_key(key):
     """Require a non-empty Idempotency-Key (1–200 characters), same rules as decide."""
     if not isinstance(key, str) or not key.strip() or len(key) > 200:
-        raise APIError(422, 'Provide an Idempotency-Key header (1–200 characters).')
+        raise APIError(422, 'Provide an Idempotency-Key header (1–200 characters).',
+                       code=api_contract.IDEMPOTENCY_KEY_REQUIRED)
     return key.strip()
 
 
@@ -605,15 +607,18 @@ def clean_idempotency_key(key):
 # The idempotency key works like the payment routes' Idempotency-Key header.
 def _clean(action, actor, reason, key):
     if action not in DECISIONS:
-        raise APIError(422, 'Decision must be approve, hold, return, clear or block.')
+        raise APIError(422, 'Decision must be approve, hold, return, clear or block.',
+                       code=api_contract.VALIDATION_ERROR)
     key = clean_idempotency_key(key)
     if not isinstance(actor, str) or not actor.strip() or len(actor.strip()) > 80:
-        raise APIError(422, 'Provide a reviewer name (1–80 characters).')
+        raise APIError(422, 'Provide a reviewer name (1–80 characters).',
+                       code=api_contract.VALIDATION_ERROR)
     if reason is not None and not isinstance(reason, str):
-        raise APIError(422, 'Reason must be text if given.')
+        raise APIError(422, 'Reason must be text if given.', code=api_contract.VALIDATION_ERROR)
     reason = (reason or '').strip() or None
     if reason is not None and len(reason) > 500:
-        raise APIError(422, 'Reason must be 500 characters or fewer.')
+        raise APIError(422, 'Reason must be 500 characters or fewer.',
+                       code=api_contract.VALIDATION_ERROR)
     return actor.strip(), reason, key
 
 
@@ -654,23 +659,27 @@ def decide(database, payout_id, action, actor, idempotency_key, reason=None, now
             previous = _as_event(existing)
             if (previous['payout_id'], previous['action'], previous['actor'], previous['reason']) != (
                     payout_id, action, actor, reason):
-                raise APIError(409, 'This Idempotency-Key was already used for a different decision.')
+                raise APIError(409, 'This Idempotency-Key was already used for a different decision.',
+                               code=api_contract.IDEMPOTENCY_KEY_REUSED)
             return 200, previous
         row = db.execute(f'SELECT {", ".join(COLUMNS)} FROM payouts WHERE payout_id = ?',
                          (payout_id,)).fetchone()
         if not row:
-            raise APIError(404, 'Payout not found.')
+            raise APIError(404, 'Payout not found.', code=api_contract.NOT_FOUND)
         payout = dict(zip(COLUMNS, row))
         current = payout['status']
         if current not in DECIDABLE:
             raise APIError(409, f'A {current} payout cannot be decided; only FLAGGED or HELD payouts can '
-                                f'be approved, held, returned, cleared or blocked.')
+                                f'be approved, held, returned, cleared or blocked.',
+                           code=api_contract.CONFLICT)
         at = (now or datetime.now(timezone.utc)).isoformat()
         flagged_sanctions = POSSIBLE_SANCTIONS_MATCH in split_flag_codes(payout['flag_code'])
         if action == APPROVE and flagged_sanctions:
-            raise APIError(409, 'A payout with a possible sanctions match cannot be approved; use Clear or Block.')
+            raise APIError(409, 'A payout with a possible sanctions match cannot be approved; use Clear or Block.',
+                           code=api_contract.CONFLICT)
         if action in (CLEAR, BLOCK) and not flagged_sanctions:
-            raise APIError(409, 'Clear and Block apply only to a payout with a possible sanctions match.')
+            raise APIError(409, 'Clear and Block apply only to a payout with a possible sanctions match.',
+                           code=api_contract.CONFLICT)
         # Screen again before sending. A reviewer who is clearing an already-flagged
         # possible match is allowed to send; any other path that still matches is
         # held for review instead of settling. Approve on an already-flagged
@@ -765,7 +774,7 @@ def _settle(db, payout_id, at, allow_sanctions_clear=False, actor='automation',
     row = db.execute(
         f'SELECT {", ".join(COLUMNS)} FROM payouts WHERE payout_id = ?', (payout_id,)).fetchone()
     if not row:
-        raise APIError(404, 'Payout not found.')
+        raise APIError(404, 'Payout not found.', code=api_contract.NOT_FOUND)
     payout = dict(zip(COLUMNS, row))
     ref = payout['execution_ref'] or f'demo:{payout_id}'
     event_id = f'demo-settle:{payout_id}'

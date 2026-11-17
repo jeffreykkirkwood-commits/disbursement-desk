@@ -13,6 +13,7 @@
 """Return every reason a payout is held for review, as structured items."""
 from datetime import datetime, timedelta
 
+import api_contract
 import payouts
 import storage
 from desk_common import APIError
@@ -175,7 +176,7 @@ def for_payout(database, payout_id):
             f'SELECT {", ".join(payouts.COLUMNS)} FROM payouts WHERE payout_id = ?',
             (payout_id,)).fetchone()
         if not row:
-            raise APIError(404, 'Payout not found.')
+            raise APIError(404, 'Payout not found.', code=api_contract.NOT_FOUND)
         payout = dict(zip(payouts.COLUMNS, row))
         earlier = [dict(zip(payouts.COLUMNS, other))
                    for other in db.execute(

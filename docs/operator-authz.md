@@ -52,5 +52,5 @@ Send `Authorization: Bearer tok-ada`. Unknown tokens → **401**
 
 ## Not in this slice
 
-SSO/OIDC login UI, durable multi-tenant Turso row isolation, OpenAPI, and
-metrics exporters land in later P1 PRs.
+SSO/OIDC login UI is out of scope here. OpenAPI / versioned create-decide:
+see [docs/api-contract.md](api-contract.md).
