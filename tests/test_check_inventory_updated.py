@@ -407,11 +407,12 @@ class WorkflowRunsWhenEditHistoryIsUnreadable(unittest.TestCase):
     """The Actions token gets "Resource not accessible by integration" for userContentEdits once a
     body was edited (run 41945462570). The step must fall back to the old rule, warn, and exit 0."""
 
-    def run_step(self, graphql, body, comments, edits=()):
+    def run_step(self, graphql, body, comments, edits=(), author='jeffreykkirkwood-commits'):
         d, runner_temp = tempfile.mkdtemp(), tempfile.mkdtemp()  # separate: the step writes into RUNNER_TEMP
         self.addCleanup(shutil.rmtree, d)
         self.addCleanup(shutil.rmtree, runner_temp)
-        Path(d, 'pr.json').write_text(json.dumps({'head': {'sha': 'abc1234def'}, 'body': body}))
+        Path(d, 'pr.json').write_text(json.dumps({'head': {'sha': 'abc1234def'}, 'body': body,
+                                                  'user': {'login': author}}))
         Path(d, 'comments.json').write_text(json.dumps(list(comments)))
         Path(d, 'edits.json').write_text(json.dumps(list(edits)))
         gh = Path(d, 'bin', 'gh')
@@ -447,6 +448,54 @@ class WorkflowRunsWhenEditHistoryIsUnreadable(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertNotIn('::warning', p.stdout + p.stderr)
         self.assertIn('state=failure', call)
+
+
+    def test_dependabot_pr_posts_success_with_its_own_description(self):
+        # Dependabot bodies have no Inventory line (#2); the step still posts a pass.
+        p, call = self.run_step('fail', 'Bumps gunicorn from 26.2.0 to 27.0.1.', [], author='dependabot[bot]')
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn('repos/example/repo/statuses/abc1234def', call)
+        self.assertIn('state=success', call)
+        self.assertIn('context=inventory-updated', call)
+        self.assertIn('description=Dependabot dependency bump: Inventory: no change.', call)
+
+    def test_same_body_from_a_person_still_fails(self):
+        p, call = self.run_step('ok', 'Bumps gunicorn from 26.2.0 to 27.0.1.', [])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn('state=failure', call)
+
+
+class Dependabot(unittest.TestCase):
+    BUMP = 'Bumps [gunicorn](https://github.com/benoitc/gunicorn) from 26.2.0 to 27.0.1.'
+
+    def test_dependabot_bump_passes_without_an_inventory_line(self):
+        self.assertEqual(check.decide(self.BUMP, [], None, 'dependabot[bot]'),
+                         (True, 'Dependabot dependency bump: Inventory: no change.'))
+
+    def test_only_the_exact_dependabot_login_counts(self):
+        for author in ('', 'jeffreykkirkwood-commits', 'dependabot', 'Dependabot[bot]', 'evil-dependabot[bot]',
+                       'dependabot[bot] ', 'github-actions[bot]'):
+            self.assertFalse(check.decide(self.BUMP, [], None, author)[0], author)
+
+    def test_main_reads_pr_author(self):
+        with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as f:
+            json.dump([], f)
+        out = io.StringIO()
+        try:
+            env = {'PR_BODY': self.BUMP, 'PR_AUTHOR': 'dependabot[bot]', 'COMMENTS_FILE': f.name}
+            with mock.patch.dict(os.environ, env), redirect_stdout(out):
+                check.main()
+        finally:
+            os.unlink(f.name)
+        self.assertEqual(json.loads(out.getvalue()),
+                         {'state': 'success', 'description': 'Dependabot dependency bump: Inventory: no change.'})
+
+    def test_workflow_no_longer_skips_dependabot_and_reads_author_from_the_api(self):
+        text = WORKFLOW.read_text()
+        self.assertNotIn("!= 'dependabot[bot]'", text)
+        self.assertNotIn('user.login }}', text)  # the author is never interpolated from the event
+        self.assertIn('PR_AUTHOR=$(jq -r \'.user.login // ""\' "$RUNNER_TEMP/pr.json")', text)
+        self.assertNotIn('secrets.', text)
 
 
 class UnreadableEditsFile(unittest.TestCase):

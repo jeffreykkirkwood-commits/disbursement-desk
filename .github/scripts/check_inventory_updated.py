@@ -13,6 +13,8 @@ Rule:
   negation or pending word (no, not, pending, yet, waiting, todo, soon, later; #227 d). A "?" later on the line, such as in an API path, is fine. So "Inventory updated? Not yet." and
   "Inventory updated: no, still pending" don't count, but Operations' "Inventory updated
   (Operations, <time>), head <sha>: ... No new key ..." does.
+- Dependabot PRs (PR_AUTHOR is "dependabot[bot]", the author login from the GitHub API) pass
+  as "Inventory: no change": a dependency bump adds no service, key or setting.
 - Lines inside fenced code blocks (``` or ~~~) are ignored in the body and in comments.
 - Stale confirmations (#227 a): a confirmation counts only if it was posted after the Inventory
   line took its current value. The PR body's edit history (EDITS_FILE: GitHub's
@@ -21,7 +23,7 @@ Rule:
   case, spacing or bold markers only is not a change.
 Every agent, Operations included, comments as the same GitHub account, so authors can't be
 told apart. A comment counts by its text only. Comments from bots such as github-actions are
-ignored. Python standard library only. It reads PR_BODY (env), COMMENTS_FILE (a JSON list of
+ignored. Python standard library only. It reads PR_BODY and PR_AUTHOR (env), COMMENTS_FILE (a JSON list of
 GitHub issue comments) and EDITS_FILE (optional, the body's edit history), and never prints the
 body or a comment back.
 """
@@ -121,8 +123,13 @@ def operations_confirmed(comments, since=None):
     return False
 
 
-def decide(body, comments, edits=None):
+DEPENDABOT = 'dependabot[bot]'
+
+
+def decide(body, comments, edits=None, author=''):
     """(passed, short description of 140 chars or fewer for the commit status)."""
+    if author == DEPENDABOT:
+        return True, 'Dependabot dependency bump: Inventory: no change.'
     line = inventory_line(body)
     if line is None:
         return False, 'No "Inventory:" line in the PR body. Add "Inventory: no change" or what changes.'
@@ -154,7 +161,7 @@ def main():
             edits = None
             print("::warning title=Inventory gate::PR body edit history unreadable; any Operations "
                   "confirmation counts.", file=sys.stderr)
-    passed, why = decide(os.environ.get('PR_BODY') or '', comments, edits)
+    passed, why = decide(os.environ.get('PR_BODY') or '', comments, edits, os.environ.get('PR_AUTHOR') or '')
     print(json.dumps({'state': 'success' if passed else 'failure', 'description': why}))
     return 0
 
