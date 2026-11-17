@@ -793,6 +793,8 @@ def _settle(db, payout_id, at, allow_sanctions_clear=False, actor='automation',
     if not already:
         if payout['review_status'] != APPROVED:
             raise APIError(409, 'Only an Approved payout can be settled.')
+        # Refuse over-limit amounts and closed same-day rail windows before money moves.
+        rails.enforce_send(payout['rail'], payout['amount_cents'], submitted_at=at)
         current = payout['execution_status']
         if current == UNKNOWN:
             check_execution_transition(current, SUBMITTED)

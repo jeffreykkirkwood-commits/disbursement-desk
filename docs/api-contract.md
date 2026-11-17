@@ -35,6 +35,8 @@ Legacy Desk UI routes (`/payouts/simulate`, `/payouts/<id>/<action>`, …) stay.
 | `IDEMPOTENCY_KEY_REQUIRED` | 422 |
 | `IDEMPOTENCY_KEY_REUSED` | 409 |
 | `INTERNAL_ERROR` | 500 |
+| `RAIL_OVER_LIMIT` | 422 |
+| `RAIL_WINDOW_CLOSED` | 409 |
 
 ## Semantics
 

@@ -326,7 +326,7 @@ class PayoutJsonWiringTest(unittest.TestCase):
         timing = payout['rail_timing']
         self.assertEqual(set(timing),
                          {'expected_settlement', 'return_path', 'payment_limit',
-                          'limit_source', 'limit_note', 'over_limit',
+                          'limit_source', 'limit_note', 'over_limit', 'window_closed',
                           'cutoff_source', 'fed_deadlines', 'cutoff_note'})
         expected = rails.describe(
             payout['rail'], payout['created_at'], payout['amount'])
@@ -349,25 +349,23 @@ class PayoutJsonWiringTest(unittest.TestCase):
                 payout['rail_timing']['expected_settlement'],
                 rails.expected_settlement(rail, payout['created_at']).isoformat())
 
-    def test_over_limit_payout_json_flags_the_breach_and_still_creates(self):
-        # Limits are labelled, not enforced: a payout over the labelled cap is
-        # still stored, and rail_timing.over_limit is True.
+    def test_over_limit_create_is_refused(self):
+        # P2: over-limit amounts are refused on create (and settle).
+        from desk_common import APIError
+        import api_contract
         cases = (
-            ('FEDNOW', 1_000_000_001, '10000000.01', '10000000.00', 'network'),
-            ('RTP', 1_000_000_001, '10000000.01', '10000000.00', 'network'),
-            ('SAME_DAY_ACH', 150_000_000, '1500000.00', '1000000.00', 'network'),
-            ('WIRE', 900_000_000, '9000000.00', '5000000.00', 'bank_policy'),
+            ('FEDNOW', 1_000_000_001),
+            ('RTP', 1_000_000_001),
+            ('SAME_DAY_ACH', 150_000_000),
+            ('WIRE', 900_000_000),
         )
-        for index, (rail, cents, amount, limit, source) in enumerate(cases):
-            created = payout_rules.create(
-                self.db, f'PO-52{index:02d}', 'Pat Taylor', 'DEMO-RAIL-LIMIT',
-                cents, rail, now=et(TUE, 10, 0))
-            payout = payouts.get_payout(self.db, created['payout_id'])
-            timing = payout['rail_timing']
-            self.assertEqual(payout['amount'], amount)
-            self.assertEqual(timing['payment_limit'], limit)
-            self.assertEqual(timing['limit_source'], source)
-            self.assertTrue(timing['over_limit'])
+        for index, (rail, cents) in enumerate(cases):
+            with self.assertRaises(APIError) as caught:
+                payout_rules.create(
+                    self.db, f'PO-52{index:02d}', 'Pat Taylor', 'DEMO-RAIL-LIMIT',
+                    cents, rail, now=et(TUE, 10, 0))
+            self.assertEqual(caught.exception.status, 422)
+            self.assertEqual(caught.exception.code, api_contract.RAIL_OVER_LIMIT)
 
     def test_desk_html_does_not_surface_timing_or_return_codes(self):
         queue = payouts.current_queue(self.db)
@@ -375,9 +373,27 @@ class PayoutJsonWiringTest(unittest.TestCase):
         html = desk.render_desk(queue)
         for needle in ('expected_settlement', 'rail_timing', 'R01', 'R02', 'R03',
                        'request_for_return', 'payment_limit', 'limit_source',
-                       'limit_note', 'over_limit', 'cutoff_source',
+                       'limit_note', 'over_limit', 'window_closed', 'cutoff_source',
                        'fed_deadlines', 'cutoff_note', 'bank_policy'):
             self.assertNotIn(needle, html)
+
+
+class EnforceSendTest(unittest.TestCase):
+
+    def test_same_day_window_closed_after_cutoff(self):
+        self.assertFalse(rails.same_day_window_closed('SAME_DAY_ACH', et(TUE, 14, 45, 0)))
+        self.assertTrue(rails.same_day_window_closed('SAME_DAY_ACH', et(TUE, 14, 45, 1)))
+        self.assertTrue(rails.same_day_window_closed('WIRE', et(TUE, 16, 0, 1)))
+        self.assertFalse(rails.same_day_window_closed('ACH', et(TUE, 17, 0, 1)))
+        self.assertFalse(rails.same_day_window_closed('RTP', et(SAT, 23, 0)))
+
+    def test_enforce_send_refuses_closed_same_day_window(self):
+        from desk_common import APIError
+        import api_contract
+        with self.assertRaises(APIError) as caught:
+            rails.enforce_send('SAME_DAY_ACH', 2500, submitted_at=et(TUE, 15, 0))
+        self.assertEqual(caught.exception.code, api_contract.RAIL_WINDOW_CLOSED)
+        rails.enforce_send('SAME_DAY_ACH', 2500, submitted_at=et(TUE, 14, 0))
 
 
 if __name__ == '__main__':

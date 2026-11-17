@@ -2,11 +2,15 @@
 # return paths. Pure functions over the rail and a submission time; nothing is
 # stored and no network is called. Desk HTML is unchanged: callers that already
 # serialize a payout (get_payout, list_payouts, current_queue) attach a
-# rail_timing object computed here.
-"""Simulated settlement windows, ET cutoffs, labelled limits and return paths per payout rail."""
+# rail_timing object computed here. Create and settle also call enforce_send()
+# so over-limit amounts and closed same-day windows are refused (P2).
+"""Settlement windows, ET cutoffs, limits and return paths — labelled and enforced."""
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
+
+import api_contract
+from desk_common import APIError
 
 ET = ZoneInfo('America/New_York')
 
@@ -261,20 +265,66 @@ def describe(rail, submitted_at, amount):
 
     payment_limit is the rail's labelled cap. limit_source is 'network' or
     'bank_policy'. over_limit is True only when amount is strictly greater
-    than that figure. Limits are labelled, not enforced. FedNow's limit_note
-    records the $100,000 default; over_limit still uses the $10,000,000
-    network maximum.
+    than that figure. Create/settle call enforce_send() so over_limit and
+    closed same-day windows are refused. FedNow's limit_note records the
+    $100,000 default; over_limit still uses the $10,000,000 network maximum.
     """
     spec = _spec(rail)
     limit = payment_limit(rail)
+    submitted = _as_et(submitted_at)
     return {
-        'expected_settlement': expected_settlement(rail, submitted_at).isoformat(),
+        'expected_settlement': expected_settlement(rail, submitted).isoformat(),
         'return_path': return_path(rail),
         'payment_limit': limit,
         'limit_source': spec['limit_source'],
         'limit_note': spec['limit_note'],
         'over_limit': Decimal(amount) > Decimal(limit),
+        'window_closed': same_day_window_closed(rail, submitted),
         'cutoff_source': spec['cutoff_source'],
         'fed_deadlines': [deadline.strftime('%H:%M') for deadline in spec['fed_deadlines']],
         'cutoff_note': spec['cutoff_note'],
     }
+
+
+def amount_over_limit(rail, amount_cents):
+    """True when amount_cents is strictly greater than the rail's per-payment cap."""
+    if not isinstance(amount_cents, int) or isinstance(amount_cents, bool):
+        raise TypeError('amount_cents must be an int.')
+    return amount_cents > _spec(rail)['limit_cents']
+
+
+def same_day_window_closed(rail, submitted_at):
+    """True when this rail is same-day (non-immediate) and the cutoff window is closed.
+
+    RTP/FedNow are 24/7. Next-day ACH can roll to the next business day, so a
+    late ACH is not a closed window. SAME_DAY_ACH and WIRE require today's
+    bank cutoff on a business day — weekends, Fed holidays, or a time after
+    the cutoff close the window for that rail.
+    """
+    spec = _spec(rail)
+    if spec['immediate'] or spec['cutoff_et'] is None or spec['business_days'] > 0:
+        return False
+    submitted = _as_et(submitted_at)
+    day = submitted.date()
+    if not is_business_day(day):
+        return True
+    return submitted.time() > spec['cutoff_et']
+
+
+def enforce_send(rail, amount_cents, submitted_at=None):
+    """Refuse over-limit amounts and closed same-day windows before create/settle."""
+    from datetime import timezone
+    when = submitted_at if submitted_at is not None else datetime.now(timezone.utc)
+    if amount_over_limit(rail, amount_cents):
+        limit = payment_limit(rail)
+        raise APIError(
+            422,
+            f'Amount exceeds the {rail} per-payment limit of ${limit}.',
+            code=api_contract.RAIL_OVER_LIMIT)
+    if same_day_window_closed(rail, when):
+        cutoff = _spec(rail)['cutoff_et'].strftime('%H:%M')
+        raise APIError(
+            409,
+            f'The {rail} send window is closed after the {cutoff} ET bank cutoff '
+            f'(or on a non-business day). Use another rail or wait for the next window.',
+            code=api_contract.RAIL_WINDOW_CLOSED)
