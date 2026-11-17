@@ -1,6 +1,6 @@
 # Health and redirect
 
-`/health` answers without creating a visitor demo. Visiting `/` redirects to `/desk`, which is the Desk entry point for this repo.
+`/health` (liveness) and `/ready` (demo storage writable) answer without creating a visitor demo. Visiting `/` redirects to `/desk`, which is the Desk entry point for this repo.
 
 ## Sub-features
 

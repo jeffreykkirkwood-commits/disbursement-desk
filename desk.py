@@ -231,7 +231,7 @@ def _detail(payout):
 # queue is the current-queue payouts (payouts.current_queue), or None when it could not be
 # read, which shows the approved load-error sentence instead of the list (Q2 option A).
 # The list is part of the first paint, so there is no loading message.
-def render_desk(queue, demo_id='local-test'):
+def render_desk(queue, demo_id='local-test', operator=None):
     if queue is None:
         exceptions = total = details = ''
         items = f'<li class="err" role="alert">{LOAD_ERROR}</li>'
@@ -241,8 +241,11 @@ def render_desk(queue, demo_id='local-test'):
         items = ''.join(_row(p) for p in queue)
         items += f'<li class="empty" data-empty{"" if ex_count == 0 else " hidden"}>{EMPTY_EXCEPTIONS}</li>'
         details = ''.join(_detail(p) for p in queue)
+    operator_name = text(getattr(operator, 'display_name', None) or 'Desk operator')
+    operator_role = text(getattr(operator, 'role', None) or 'admin')
+    operator_id = text(getattr(operator, 'operator_id', None) or 'local-test')
     return '''<!doctype html>
-<html lang="en"><head><meta name="demo-id" content="''' + text(demo_id) + '''"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="en"><head><meta name="demo-id" content="''' + text(demo_id) + '''"><meta name="operator-id" content="''' + operator_id + '''"><meta name="operator-role" content="''' + operator_role + '''"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Disbursement Desk · Example data</title>
 <style>
 :root{color-scheme:light;--ink:#173b35;--muted:#4f6159;--line:#d5ddd5;--paper:#f5f6f0;--green:#176348;--amber-bg:#fff2d6;--amber:#6b4d0f;--red-bg:#f9ebe5;--red:#8a3523;--ok-bg:#e8f2eb;--ok:#1f5a3f;--blue-bg:#e7eefb;--blue:#234a8a}
@@ -333,7 +336,7 @@ dialog .btn{min-width:110px}
 <body>
 <header class="top">
   <div class="brand"><span class="mark" aria-hidden="true">D</span>Disbursement Desk</div>
-  <div class="right"><span class="tag">Example data · fake money</span></div>
+  <div class="right"><span class="tag">Example data · fake money</span><span class="tag op" title="Signed-in operator">''' + operator_name + ''' · ''' + operator_role + '''</span></div>
 </header>
 <main class="layout">
   <section class="queue" aria-labelledby="qh">

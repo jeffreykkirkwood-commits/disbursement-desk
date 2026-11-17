@@ -60,7 +60,7 @@ class MetricsHttpTests(unittest.TestCase):
         self.open_desk()
         hold = self.client.post(
             '/payouts/PO-1043/hold',
-            json={'reviewer': 'Metrics Reviewer'},
+            json={},
             base_url=SITE,
             headers={'Idempotency-Key': 'm-hold', 'Origin': SITE})
         self.assertEqual(hold.status_code, 201)

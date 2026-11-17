@@ -85,10 +85,13 @@ class HostedTests(unittest.TestCase):
     # FEATURE 05 — Scenario — health and unknown paths do not create a demo
     # These requests must not allocate a visitor database or set a cookie.
     def test_health_and_unknown_do_not_create_demo(self):
-        for path in ('/', '/health', '/metrics', '/not-found', '/dwolla-credentials.local.json'):
+        for path in ('/', '/health', '/ready', '/metrics', '/not-found',
+                     '/dwolla-credentials.local.json'):
             response = self.get(path)
             self.assertNotIn('Set-Cookie', response.headers)
         self.assertEqual(self.get('/not-found').status_code, 404)
+        self.assertEqual(self.get('/ready').status_code, 200)
+        self.assertEqual(self.get('/ready').get_json()['status'], 'ready')
         self.assertEqual(self.get('/metrics').status_code, 200)
         self.assertEqual(self.demo_files(), [])
 

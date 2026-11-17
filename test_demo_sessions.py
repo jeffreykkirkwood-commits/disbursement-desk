@@ -174,12 +174,14 @@ class DemoStoreLimitTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {'DEMO_MAX_SESSIONS': '1'}):
             store = DemoStore(self.folder, DeskDemo)
         try:
-            demo_id, _, _, cookie = store.resolve('', create=True)
+            demo_id, _, _, cookie, operator = store.resolve('', create=True)
+            self.assertTrue(operator.can_decide())
             store.release(demo_id)
             with self.assertRaises(DemoCapacityError):
                 store.resolve('', create=True)
             again = store.resolve(cookie.split(';')[0], create=True)
             self.assertEqual(again[0], demo_id)
+            self.assertEqual(again[4].operator_id, operator.operator_id)
             store.release(demo_id)
         finally:
             store.close()
@@ -189,9 +191,9 @@ class DemoStoreLimitTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {'DEMO_IDLE_SECONDS': '60'}):
             store = DemoStore(self.folder, DeskDemo)
         try:
-            idle, _, _, _ = store.resolve('', create=True)
+            idle, _, _, _, _ = store.resolve('', create=True)
             store.release(idle)
-            busy, _, _, _ = store.resolve('', create=True)
+            busy, _, _, _, _ = store.resolve('', create=True)
             old = time.time() - 120
             for demo_id in (idle, busy):
                 os.utime(self.folder / demo_id / '.last-used', (old, old))
