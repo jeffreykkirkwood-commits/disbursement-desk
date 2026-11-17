@@ -8,6 +8,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 import desk
+import operators
 import payout_events
 import payout_rules
 import payouts
@@ -90,7 +91,8 @@ class DecisionTests(unittest.TestCase):
     # FEATURE 04 — Scenario — bad input is refused before anything changes
     def test_bad_input(self):
         for kwargs in (dict(action='pay'), dict(key=''), dict(key='x' * 201), dict(actor=''),
-                       dict(actor='   '), dict(actor=None), dict(actor='x' * 81), dict(reason=7),
+                       dict(actor='   '), dict(actor=None),
+                       dict(actor='x' * (operators.MAX_ACTOR_LENGTH + 1)), dict(reason=7),
                        dict(reason='x' * 501)):
             with self.subTest(**{k: repr(v)[:20] for k, v in kwargs.items()}):
                 args = dict(payout_id='PO-1042', action='approve', key='k', actor='Test Reviewer')

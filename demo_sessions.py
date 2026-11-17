@@ -12,6 +12,7 @@ from pathlib import Path
 from threading import RLock
 from event_log import make_logger
 import operators
+import operator_oidc
 
 COOKIE_NAME = "payments_demo"
 
@@ -85,7 +86,7 @@ class DemoStore:
     # no login. If there's no valid demo: a page view may start a new one (if under the
     # limits), a payment submission is refused. Marks the demo as recently used and
     # "leased" (in use) so cleanup won't delete it until the web layer calls release().
-    def resolve(self, cookie_header, create=False):
+    def resolve(self, cookie_header, create=False, mint_operator=True):
         # Never use a caller-supplied value as a filesystem path. Only hash a
         # correctly shaped random token, and accept it only for an existing demo.
         cookie = SimpleCookie()
@@ -114,7 +115,12 @@ class DemoStore:
             payments, logger = self.loaded[demo_id]
             # Mint a server-side operator for this demo on first use. Clients never
             # choose the audit actor; decide/reset read this principal instead.
-            operator = operators.ensure_for_demo(folder, demo_id)
+            # A set DESK_OIDC_ISSUER never writes operator.json (every caller).
+            issuer_set = bool((os.environ.get(operator_oidc.ENV_ISSUER) or '').strip())
+            if issuer_set or not mint_operator:
+                operator = None
+            else:
+                operator = operators.ensure_for_demo(folder, demo_id)
             (folder / '.last-used').touch()
             self.active[demo_id] = self.active.get(demo_id, 0) + 1
             # Cookie lasts as long as the demo's idle expiry (DEMO_IDLE_SECONDS, default 1 day).

@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import api_contract
 import ofac
+import operators
 import payout_notes
 import rails
 import stripe_connect
@@ -615,9 +616,11 @@ def _clean(action, actor, reason, key):
         raise APIError(422, 'Decision must be approve, hold, return, clear or block.',
                        code=api_contract.VALIDATION_ERROR)
     key = clean_idempotency_key(key)
-    if not isinstance(actor, str) or not actor.strip() or len(actor.strip()) > 80:
-        raise APIError(422, 'Provide a reviewer name (1–80 characters).',
-                       code=api_contract.VALIDATION_ERROR)
+    if (not isinstance(actor, str) or not actor.strip()
+            or len(actor.strip()) > operators.MAX_ACTOR_LENGTH):
+        raise APIError(
+            422, f'Operator actor must be 1–{operators.MAX_ACTOR_LENGTH} characters.',
+            code=api_contract.VALIDATION_ERROR)
     if reason is not None and not isinstance(reason, str):
         raise APIError(422, 'Reason must be text if given.', code=api_contract.VALIDATION_ERROR)
     reason = (reason or '').strip() or None

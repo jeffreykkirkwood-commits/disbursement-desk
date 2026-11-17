@@ -24,6 +24,11 @@ ENV_TOKENS = 'DESK_OPERATOR_TOKENS'
 DEFAULT_ROLE = ROLE_ADMIN
 DEFAULT_NAME = 'Desk operator'
 ID_PATTERN = re.compile(r'^[a-z0-9][a-z0-9._-]{1,63}$')
+# Demo operator ids stay on ID_PATTERN. An OIDC sub may be 256 characters and
+# is not slugged. The audit actor is "{display_name} <{operator_id}>".
+MAX_NAME_LENGTH = 80
+MAX_SUBJECT_LENGTH = 256
+MAX_ACTOR_LENGTH = MAX_NAME_LENGTH + MAX_SUBJECT_LENGTH + 3
 
 
 @dataclass(frozen=True)
@@ -62,7 +67,7 @@ def _clean_role(role):
 
 def _clean_name(name):
     value = (name or DEFAULT_NAME).strip()
-    if not value or len(value) > 80:
+    if not value or len(value) > MAX_NAME_LENGTH:
         raise ValueError('Operator display name must be 1–80 characters.')
     return value
 

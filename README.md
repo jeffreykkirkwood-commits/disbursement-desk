@@ -11,8 +11,9 @@ Synthetic data only. No secrets in this repo.
 Pre-send exception and OFAC gates (mandatory before Sent): see [docs/pre-send-gates.md](docs/pre-send-gates.md).
 
 Operator identity (session-bound actor, reviewer vs admin, `/ready`): see
-[docs/operator-authz.md](docs/operator-authz.md). OIDC binding is design-only.
-See [docs/operator-oidc-design.md](docs/operator-oidc-design.md).
+[docs/operator-authz.md](docs/operator-authz.md). Set `DESK_OIDC_ISSUER` to
+sign browser operators in with OIDC. Tests use `DESK_OIDC_MOCK=1` and do not
+call an identity provider. See [docs/operator-oidc-design.md](docs/operator-oidc-design.md).
 
 Turso / multi-visitor tenancy: see [docs/tenancy.md](docs/tenancy.md). A shared
 `TURSO_DATABASE_URL` across visitors is refused unless tenancy is configured.
