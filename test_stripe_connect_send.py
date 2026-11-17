@@ -697,13 +697,21 @@ class StripeSendTests(unittest.TestCase):
         self.assertEqual(self.payout('PO-1042')['execution_ref'], PI_TEST_ID)
 
     def test_reconciliation_skips_transfer_refs(self):
+        cases = (
+            ('PO-1042', 'tr_out'),
+            ('PO-1043', 'pi_out'),
+            ('PO-1044', 'po_out'),
+        )
         with sqlite3.connect(self.db) as db:
-            db.execute(
-                "UPDATE payouts SET status = 'PAID', review_status = 'APPROVED', "
-                "execution_status = 'SETTLED', execution_ref = 'tr_out' WHERE payout_id = 'PO-1042'")
+            for payout_id, ref in cases:
+                db.execute(
+                    "UPDATE payouts SET status = 'PAID', review_status = 'APPROVED', "
+                    "execution_status = 'SETTLED', execution_ref = ? WHERE payout_id = ?",
+                    (ref, payout_id))
         report = reconciliation.reconcile(self.db)
         ids = {item['payout_id'] for item in report['items']}
-        self.assertNotIn('PO-1042', ids)
+        for payout_id, _ref in cases:
+            self.assertNotIn(payout_id, ids)
 
     def test_reconciliation_skips_payment_intent_refs(self):
         with sqlite3.connect(self.db) as db:

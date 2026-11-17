@@ -14,6 +14,7 @@ from pathlib import Path
 from desk_common import APIError
 import payout_notes
 import payouts
+import stripe_connect
 
 
 logger = logging.getLogger('reconciliation')
@@ -59,10 +60,10 @@ RECON_PAYOUT_IDS = frozenset(RECON_TARGETS)
 # Compare payouts that settlement should know about: sent or in flight, not
 # NOT_STARTED (nothing was sent), not backfilled SETTLED rows with no ref,
 # not hidden replay targets, not demo-sourced settles (execution_ref
-# starting with 'demo:', from option B Approve), and not Stripe Transfer
-# ids (execution_ref starting with 'tr_'). Those rows are not in the
-# hand-written settlement file. Leaving them out keeps the six intended
-# cases. The signed webhook is the writer for a Transfer's SETTLED or FAILED.
+# starting with 'demo:', from option B Approve), and not Stripe money
+# refs (tr_ / pi_ / po_). Those rows are not in the hand-written settlement
+# file. Leaving them out keeps the six intended cases. The Stripe webhook
+# and stripe_reconciliation job own SETTLED or FAILED for those refs.
 COMPARABLE = frozenset({payouts.SUBMITTED, payouts.UNKNOWN, payouts.SETTLED, payouts.FAILED})
 
 MATCHED = 'matched'
@@ -144,11 +145,12 @@ def _in_scope(payout):
     if payout_id in _hidden_other_ids():
         return False
     # Option B demo settles use a demo: ref and are not in the settlement
-    # file. Stripe Transfer ids use a tr_ ref. Exclude both, so a used demo
-    # (including the #61 scenario's Approved PO-1042) still shows the six
-    # intended cases instead of an extra missing_from_settlement.
+    # file. Stripe money ids (tr_ / pi_ / po_) are owned by the Stripe path.
+    # Exclude both, so a used demo (including the #61 scenario's Approved
+    # PO-1042) still shows the six intended cases instead of an extra
+    # missing_from_settlement.
     ref = payout.get('execution_ref') or ''
-    if ref.startswith('demo:') or ref.startswith('tr_') or ref.startswith('pi_'):
+    if ref.startswith('demo:') or stripe_connect.is_stripe_ref(ref):
         return False
     status = payout['execution_status']
     if status not in COMPARABLE:
@@ -229,8 +231,9 @@ def reconcile(database, fixture=None, now=None):
     payout is Approved). The move is logged in execution_events. review_status
     and status are never rewritten, so the Desk queue, stream and Sent word
     stay as they are. NOT_STARTED payouts, SETTLED rows with no
-    execution_ref, hidden replay targets, and demo-sourced settles (refs
-    starting with 'demo:') are left out of the comparison.
+    execution_ref, hidden replay targets, demo-sourced settles (refs
+    starting with 'demo:'), and Stripe money refs (tr_ / pi_ / po_) are
+    left out of the comparison.
     """
     path = Path(fixture or FIXTURE)
     settlement = load_settlement(path)

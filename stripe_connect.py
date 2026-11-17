@@ -357,6 +357,128 @@ def _payment_intent_outcome(event_type, obj):
     return None
 
 
+def _retrieved_transfer_outcome(obj):
+    event_type = 'transfer.reversed' if _field(obj, 'reversed') else 'transfer.created'
+    return _transfer_outcome(event_type, obj)
+
+
+def _retrieved_payment_intent_outcome(obj):
+    status = str(_field(obj, 'status') or '')
+    if status == 'succeeded':
+        return 'SETTLED'
+    if status == 'canceled':
+        return 'FAILED'
+    if status == 'requires_payment_method' and _field(obj, 'last_payment_error'):
+        return 'FAILED'
+    return None
+
+
+def _payout_outcome(obj):
+    status = str(_field(obj, 'status') or '')
+    if status == 'paid':
+        return 'SETTLED'
+    if status in ('failed', 'canceled'):
+        return 'FAILED'
+    return None
+
+
+# Stripe object registry. prefix selects the retrieve service. object is the
+# Stripe type. outcome maps a retrieved object to SETTLED, FAILED, or None
+# while that object is still in flight.
+_STRIPE_OBJECTS = (
+    {'prefix': 'tr_', 'object': 'transfer', 'service': 'transfers',
+     'outcome': _retrieved_transfer_outcome},
+    {'prefix': 'pi_', 'object': 'payment_intent', 'service': 'payment_intents',
+     'outcome': _retrieved_payment_intent_outcome},
+    {'prefix': 'po_', 'object': 'payout', 'service': 'payouts',
+     'outcome': _payout_outcome},
+)
+
+
+def is_stripe_ref(ref):
+    return _spec_for_prefix(ref) is not None
+
+
+def _spec_for_prefix(ref):
+    text = '' if ref is None else str(ref)
+    for spec in _STRIPE_OBJECTS:
+        if text.startswith(spec['prefix']):
+            return spec
+    return None
+
+
+def _spec_for_object(obj):
+    by_prefix = _spec_for_prefix(_field(obj, 'id'))
+    object_type = str(_field(obj, 'object') or '')
+    by_type = None
+    for spec in _STRIPE_OBJECTS:
+        if object_type and spec['object'] == object_type:
+            by_type = spec
+            break
+    if by_prefix is not None and by_type is not None and by_prefix is not by_type:
+        raise ValueError('Stripe object type does not match its id.')
+    return by_prefix or by_type
+
+
+def outcome_from_object(obj):
+    """Map one retrieved Stripe object to SETTLED, FAILED, or None when it is in flight."""
+    spec = _spec_for_object(obj)
+    if spec is None:
+        raise ValueError('Unsupported Stripe object.')
+    return spec['outcome'](obj)
+
+
+def _amount_cents(obj):
+    raw = _field(obj, 'amount')
+    if isinstance(raw, bool) or raw is None:
+        return None
+    if isinstance(raw, int):
+        return raw
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def object_facts(obj):
+    """Parse a retrieved Stripe object into the fields a reconciliation compares."""
+    destination = _destination_id(_field(obj, 'destination'))
+    if not destination:
+        destination = _destination_id(_field(_field(obj, 'transfer_data'), 'destination'))
+    return {
+        'id': str(_field(obj, 'id') or ''),
+        'amount_cents': _amount_cents(obj),
+        'currency': str(_field(obj, 'currency') or '').lower(),
+        'destination': destination,
+        'livemode': bool(_field(obj, 'livemode')),
+        'payout_id': _metadata_value(obj, 'payout_id'),
+        'demo_id': _metadata_value(obj, 'demo_id'),
+        'outcome': outcome_from_object(obj),
+    }
+
+
+def retrieve_object(ref, env=None):
+    """Retrieve one Stripe object by id. None means Stripe has no such object."""
+    spec = _spec_for_prefix(ref)
+    if spec is None:
+        raise ValueError('Unsupported Stripe id.')
+    config = load_config(env)
+    if config is None:
+        _blocked()
+    client = _client(config)
+    try:
+        obj = getattr(client.v1, spec['service']).retrieve(str(ref))
+    except stripe.StripeError as exc:
+        status = getattr(exc, 'http_status', None)
+        code = getattr(exc, 'code', None)
+        if status == 404 or code == 'resource_missing':
+            return None
+        raise
+    if hasattr(obj, 'to_dict'):
+        return obj.to_dict()
+    return obj
+
+
 def _command_from_event(event):
     obj = _field(_field(event, 'data'), 'object')
     event_type = str(_field(event, 'type') or '')
