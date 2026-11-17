@@ -13,9 +13,12 @@ Pre-send exception and OFAC gates (mandatory before Sent): see [docs/pre-send-ga
 Turso / multi-visitor tenancy: see [docs/tenancy.md](docs/tenancy.md). A shared
 `TURSO_DATABASE_URL` across visitors is refused unless tenancy is configured.
 
+Observability (structured logs + decide/create/503/stream counters): see
+[docs/observability.md](docs/observability.md). Snapshot: `GET /metrics`.
+
 ## Run the app shell locally
 
-The app shell (payments-api-simulator #122, step 2) answers `/health`.
+The app shell (payments-api-simulator #122, step 2) answers `/health` and `/metrics`.
 The payout engine (step 3) gives each visitor's demo the payout tables and 40 fictional
 starting payouts. Step 4 brings the Desk page at `/desk` (the root address redirects there)
 and the payout routes, unchanged from the Lab.

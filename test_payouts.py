@@ -378,6 +378,7 @@ class HostedSeedTests(unittest.TestCase):
             ('/desk/', frozenset({'GET'})),
             ('/desk.js', frozenset({'GET'})),
             ('/health', frozenset({'GET'})),
+            ('/metrics', frozenset({'GET'})),
             ('/demo-scenario', frozenset({'POST'})),
             ('/payouts/<payout_id>/<any(approve, hold, return, clear, block):action>', frozenset({'POST'})),
             ('/payouts/<payout_id>/review-reasons', frozenset({'GET'})),
@@ -388,7 +389,7 @@ class HostedSeedTests(unittest.TestCase):
             ('/reconciliation', frozenset({'POST'})),
         }
         app_rules = [r for r in self.app.url_map.iter_rules() if r.endpoint != 'static']
-        self.assertEqual(len(app_rules), 13)
+        self.assertEqual(len(app_rules), 14)
         self.assertEqual({(str(r), frozenset(r.methods - {'HEAD', 'OPTIONS'})) for r in app_rules}, expected)
         self.assertEqual(client.get('/payouts', base_url='https://demo.example').status_code, 404)
         self.assertEqual(client.get('/payouts/reset', base_url='https://demo.example').status_code, 405)
