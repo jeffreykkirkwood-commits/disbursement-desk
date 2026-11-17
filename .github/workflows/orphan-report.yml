@@ -1,0 +1,34 @@
+# Orphan report (#227): each weekday, list open issues with no parent issue
+# (skipping `type: initiative`) in the job summary, so every issue traces up to
+# an initiative. Report only: it fails nothing and changes nothing.
+# Uses the built-in GITHUB_TOKEN with read access only.
+# Schedule is UTC: 11:45 UTC is 7:45 AM EDT, 6:45 AM EST (after Nov 1).
+# Scheduled runs only happen from the default branch (main).
+name: Orphan report
+
+on:
+  schedule:
+    - cron: "45 11 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: read
+
+concurrency:
+  group: orphan-report
+
+jobs:
+  orphans:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: List open issues with no parent
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: python3 .github/scripts/orphan_report.py

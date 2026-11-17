@@ -2,6 +2,7 @@
 # It creates a synthetic payee payout in the visitor's own cookie-scoped demo only.
 """Exercise the demo-only payout create route with temporary fictional demos."""
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
 
@@ -167,12 +168,14 @@ class SimulatePayoutTests(unittest.TestCase):
                 self.assertNotIn('idempotency', reply.json['error'].lower())
         self.assertEqual(payouts.list_payouts(db), before)
         self.assertEqual(payouts.list_events(db), before_events)
+        # Stay inside the 7-day bank-change window relative to create time (now),
+        # not a fixed calendar day that ages out of the window.
+        changed = (datetime.now(timezone.utc) - timedelta(days=2)).replace(microsecond=0).isoformat()
         ok = self.simulate(dict(
             NEW_PAYEE, payout_id='PO-3006',
-            bank_details_changed_at='2026-11-10T18:00:00+00:00'))
+            bank_details_changed_at=changed))
         self.assertEqual(ok.status_code, 201)
-        self.assertEqual(ok.json['payout']['bank_details_changed_at'],
-                         '2026-11-10T18:00:00+00:00')
+        self.assertEqual(ok.json['payout']['bank_details_changed_at'], changed)
         self.assertEqual(ok.json['payout']['flag_code'], 'NEW_PAYEE_OVER_1000,BANK_CHANGED_7D')
 
 
