@@ -16,5 +16,10 @@ A fresh seed payout with no decisions yet shows “No activity yet.”
 
 ## Not in this panel
 
-Execution / reconciliation logs stay on their own APIs. Safe create UI with
-client idempotency keys is a separate Desk UX item.
+Execution / reconciliation logs stay on their own APIs.
+
+## Create payout (Desk UI)
+
+Queue header **Create payout** opens a dialog that POSTs `/payouts/simulate`
+with a client `Idempotency-Key` minted when the dialog opens. Retries reuse the
+same key; Cancel / close discards it. See `desk.js` (`pendingCreate`).

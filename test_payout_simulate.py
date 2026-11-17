@@ -139,18 +139,17 @@ class SimulatePayoutTests(unittest.TestCase):
         self.assertEqual(payouts.get_payout(self.database(), 'PO-1046')['payee_account'],
                          'DEMO-OAKS-010')
 
-    # FEATURE 07 — Scenario — no viewer-facing control points at this route
-    def test_no_viewer_facing_control(self):
+    # FEATURE 07 — Scenario — Desk create UI is the only viewer path to simulate
+    def test_desk_create_ui_wires_simulate(self):
         html = self.open_desk().get_data(as_text=True)
         self.assertEqual(self.client.get('/dashboard', base_url='https://demo.example').status_code, 404)
-        root = self.client.get('/', base_url='https://demo.example', follow_redirects=True)
-        self.assertEqual(root.status_code, 200)
-        desk_slash = self.client.get('/desk/', base_url='https://demo.example')
-        self.assertEqual(desk_slash.status_code, 200)
+        self.assertIn('id="create-open"', html)
+        self.assertIn('<dialog id="create"', html)
         script = self.client.get('/desk.js', base_url='https://demo.example').get_data(as_text=True)
-        for page in (html, root.get_data(as_text=True), desk_slash.get_data(as_text=True), script):
-            self.assertNotIn('/payouts/simulate', page)
-            self.assertNotIn('simulate payout', page.lower())
+        self.assertIn("fetch('/payouts/simulate'", script)
+        self.assertIn("'Idempotency-Key': pendingCreate.key", script)
+        self.assertNotIn('simulate payout', html.lower())
+        self.assertNotIn('simulate payout', script.lower())
 
     # FEATURE 08 — Scenario — a bad bank-details time is 422, not 500, and saves nothing
     def test_invalid_bank_details_changed_at_is_refused(self):

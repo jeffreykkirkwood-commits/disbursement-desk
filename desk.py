@@ -28,6 +28,9 @@ FINAL_STATUSES = frozenset({'PAID', 'RETURNED'})
 FINAL_MESSAGE = 'This payout is final. No actions available.'
 ACTION_FAILED = 'That didn’t save. Nothing has changed. Try again.'
 RESET_FAILED = 'That didn’t reset. Nothing has changed. Try again.'
+CREATE_FAILED = 'That didn’t create. Nothing has changed. Try again.'
+CREATE_HEADING = 'Create a demo payout'
+CREATE_HINT = 'Synthetic payee only. Uses the same Idempotency-Key rules as the API.'
 # Viewer words for payout_events.action (who/what/when on the detail panel).
 ACTION_WORDS = {
     'approve': 'Approved',
@@ -332,6 +335,11 @@ button{font:inherit;cursor:pointer}
 h2{font-size:22px;margin:12px 0 0}h2:focus{outline:none}
 h1{font-size:26px;margin:0;letter-spacing:-.5px}
 .qhead{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.qhead .filters{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.field{display:grid;gap:4px;margin:12px 0 0}
+.field label{font-size:14px;font-weight:600;color:var(--muted)}
+.field input,.field select{min-height:44px;border:1px solid var(--line);border-radius:8px;padding:0 12px;font:inherit;color:var(--ink);background:#fff;width:100%}
+.field .hint,dialog .hint{font-size:13px;color:var(--muted);font-weight:500}
 .filters{display:flex;gap:8px}
 .chip{min-height:44px;min-width:44px;padding:0 16px;border-radius:22px;border:1px solid var(--line);background:#fff;color:var(--ink);font-weight:600}
 .chip[aria-pressed=true]{background:var(--ink);color:#fff;border-color:var(--ink)}
@@ -424,6 +432,7 @@ dialog .btn{min-width:110px}
       <div class="filters" role="group" aria-label="Filter">
         <button type="button" class="chip" data-f="exceptions" aria-pressed="true">Exceptions''' + exceptions + '''</button>
         <button type="button" class="chip" data-f="all" aria-pressed="false">All''' + total + '''</button>
+        <button type="button" class="btn" id="create-open">Create payout</button>
       </div>
     </div>
     <ul id="list" class="list">''' + items + '''</ul>
@@ -437,6 +446,37 @@ dialog .btn{min-width:110px}
   <p id="c-body"></p>
   <p id="c-error" class="err-inline" role="alert" hidden>''' + ACTION_FAILED + '''</p>
   <div class="row2"><button type="button" class="btn" id="cancel">Cancel</button><button type="button" id="ok"></button></div>
+</dialog>
+<dialog id="create" aria-labelledby="cr-h">
+  <h2 id="cr-h">''' + CREATE_HEADING + '''</h2>
+  <p class="hint">''' + CREATE_HINT + '''</p>
+  <form id="create-form">
+    <div class="field"><label for="cr-payee">Payee name</label>
+      <input id="cr-payee" name="payee_name" autocomplete="off" required maxlength="120"></div>
+    <div class="field"><label for="cr-account">Payee account</label>
+      <input id="cr-account" name="payee_account" autocomplete="off" required maxlength="64"
+             pattern="DEMO-[A-Za-z0-9-]+" placeholder="DEMO-ACME-001"
+             title="Must start with DEMO-"></div>
+    <div class="field"><label for="cr-amount">Amount (USD)</label>
+      <input id="cr-amount" name="amount" inputmode="decimal" autocomplete="off" required
+             placeholder="1000.00"></div>
+    <div class="field"><label for="cr-rail">Rail</label>
+      <select id="cr-rail" name="rail" required>
+        <option value="ACH" selected>ACH</option>
+        <option value="SAME_DAY_ACH">Same-day ACH</option>
+        <option value="RTP">RTP</option>
+        <option value="FEDNOW">FedNow</option>
+        <option value="WIRE">Wire</option>
+      </select></div>
+    <div class="field"><label for="cr-id">Payout id <span class="hint">(optional)</span></label>
+      <input id="cr-id" name="payout_id" autocomplete="off" maxlength="32"
+             placeholder="Leave blank to mint the next PO-…"></div>
+    <p id="cr-error" class="err-inline" role="alert" hidden>''' + CREATE_FAILED + '''</p>
+    <div class="row2">
+      <button type="button" class="btn" id="cr-cancel">Cancel</button>
+      <button type="submit" class="btn primary" id="cr-ok">Create</button>
+    </div>
+  </form>
 </dialog>
 <script src="/desk.js"></script>
 </body></html>'''
