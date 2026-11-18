@@ -1,9 +1,9 @@
 # Express accounts for the Connect pilot
 
 This file recommends Express connected accounts for the Disbursement Desk
-Connect pilot. The owner sign-off box at the end is unchecked. Jeff has not
-signed the recommendation. The go-live checklist item stays open until
-that box is checked.
+Connect pilot. The owner sign-off box at the end is checked. Jeff has
+signed the recommendation. The go-live checklist item for account type /
+KYC ownership is no longer blocked on this sign-off.
 
 The send path defaults to a test-mode destination charge
 (`PaymentIntent` with `transfer_data[destination]`) to an `acct_` id.
@@ -38,7 +38,7 @@ Express:
 - Stripe hosts onboarding and verifies the connected account.
 - The payee can open an Express Dashboard. That screen is Stripe's.
 - Identity documents stay in Stripe's hosted flow. The Desk does not get a copy through this integration.
-- The Transfer call matches the send path that exists today.
+- Destination-charge and Transfer calls both target an `acct_` id the Desk already stores.
 - Operators confirm Express country and business-type coverage in Stripe's docs before they choose payees.
 
 Custom:
@@ -46,7 +46,7 @@ Custom:
 - The platform would build onboarding and collect the fields Stripe requires.
 - The platform would record the connected account's acceptance of Stripe's terms and send that acceptance to Stripe.
 - The platform would hold identity data before Stripe verifies it.
-- The Transfer call could stay the same. The new cost is the work before an `acct_` id exists.
+- Money-movement calls could stay the same. The new cost is the work before an `acct_` id exists.
 - That work needs the onboarding UI and a durable store. The Desk disk is not a durable store. See [Deploy posture](deploy-posture.md).
 
 ## KYC ownership
@@ -94,7 +94,7 @@ These points are still open:
 
 ## Owner sign-off
 
-Jeff has not signed this recommendation.
+Jeff has signed this recommendation.
 
-- [ ] Jeff signs off on Express connected accounts for the Connect pilot.
-- Date:
+- [x] Jeff signs off on Express connected accounts for the Connect pilot.
+- Date: 2026-11-17
