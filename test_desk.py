@@ -520,13 +520,15 @@ class DeskActionTests(DeskBase):
     # Scenario — confirm dialog: Cancel, a confirm button, and the Q2 A failure line, hidden
     def test_confirm_dialog_markup(self):
         html = self.get().get_data(as_text=True)
-        self.assertEqual(html.count('<dialog'), 2)
         self.assertIn('<dialog id="confirm" aria-labelledby="ch">', html)
+        self.assertIn('<dialog id="create" aria-labelledby="cr-h">', html)
+        self.assertIn('<dialog id="recon-confirm" aria-labelledby="rq-h">', html)
+        self.assertEqual(html.count('<dialog'), 3)
         self.assertIn('<p><strong id="c-payee"></strong> · <span id="c-amount"></span> · <span id="c-id"></span></p>', html)
         self.assertIn('<p id="c-error" class="err-inline" role="alert" hidden>'
                       'That didn’t save. Nothing has changed. Try again.</p>', html)
         self.assertIn('<button type="button" class="btn" id="cancel">Cancel</button>', html)
-        confirm = html.split('<dialog id="confirm"', 1)[1].split('<dialog id="create"', 1)[0]
+        confirm = html.split('<dialog id="confirm"', 1)[1].split('</dialog>', 1)[0]
         for word in ('<select', '<textarea', 'reason', 'Reason', 'note'):
             self.assertNotIn(word, confirm)
 
@@ -883,10 +885,14 @@ class DeskResetTests(DeskBase):
         self.assertIn('dialog.open', script)
         self.assertIn('close(true)', script)
         self.assertIn('writeHash()', script)
-        # Leave Escape to confirm/create dialogs while open; create adds a third fetch.
+        # Leave Escape to confirm/create/recon dialogs while open.
         self.assertIn('if (dialog && dialog.open) return;', script)
         self.assertIn('if (createDialog && createDialog.open) return;', script)
-        self.assertEqual(script.count('fetch('), 3)
+        self.assertIn('if (reconConfirm && reconConfirm.open) return;', script)
+        self.assertIn("fetch('/payouts/' + encodeURIComponent(pending.id)", script)
+        self.assertIn("fetch('/payouts/reset'", script)
+        self.assertIn("fetch('/v1/payouts'", script)
+        self.assertIn("fetch('/stripe/reconciliation'", script)
 
     # Scenario — the failed-reset line is the exact approved sentence, next to Reset demo
     def test_failed_reset_wording_is_exact(self):
@@ -1040,11 +1046,12 @@ class DeskNoteTests(DeskBase):
         self.assertIn("q.set('ai', 'off')", script)
         self.assertIn('.note[data-note="fallback"]', script)
         self.assertIn('.note[data-note="rules"]', script)
-        # Fetches are decide, reset, and create simulate — no model endpoint.
-        self.assertEqual(script.count('fetch('), 3)
+        # Fetches are decide, reset, create, and Stripe recon — no model endpoint.
         self.assertIn("fetch('/payouts/' + encodeURIComponent(pending.id)", script)
         self.assertIn("fetch('/payouts/reset'", script)
         self.assertIn("fetch('/v1/payouts'", script)
+        self.assertIn("fetch('/stripe/reconciliation'", script)
+        self.assertEqual(script.count('fetch('), 4)
         self.assertNotIn('workers.ai', script.lower())
         self.assertNotIn('openai', script.lower())
         self.assertNotIn('AI-drafted, review required', script)
