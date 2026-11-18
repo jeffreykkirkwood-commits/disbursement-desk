@@ -302,14 +302,12 @@ def audit_line(event):
     when = audit_when(event.get('at'))
     head = f'<span class="audit-when">{text(when)}</span>' if when else ''
     if event.get('kind') == 'execution':
+        # Who/what/when only on Desk HTML. execution_ref stays on the JSON API
+        # (same rule as decide evidence: not rendered into /desk).
         actor = text(execution_source_word(event.get('source')))
         outcome = text(execution_word(event.get('execution_status')))
-        line = (f'<li><p class="audit-main">{head}<span class="audit-actor">{actor}</span>'
-                f'<span class="audit-what">Execution · {outcome}</span></p>')
-        ref = event.get('execution_ref')
-        if isinstance(ref, str) and ref.strip():
-            line += f'<p class="audit-reason">{text(ref.strip())}</p>'
-        return line + '</li>'
+        return (f'<li><p class="audit-main">{head}<span class="audit-actor">{actor}</span>'
+                f'<span class="audit-what">Execution · {outcome}</span></p></li>')
     actor = text(event.get('actor') or 'Unknown')
     what = text(action_word(event.get('action')))
     frm = text(status_word(event.get('from_status')))

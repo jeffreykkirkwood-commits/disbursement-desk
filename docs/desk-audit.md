@@ -17,13 +17,16 @@ Rows come from `payouts.audit_entries` (oldest first), which merges:
 Status codes use the same Desk words as the queue (`Needs review`, `Held`,
 `Sent`, `Returned`). Execution rows say **Execution · Settled** (etc.) and
 name the source as the actor line. The panel never invents a transition that
-is not stored.
+is not stored. Desk HTML shows who/what/when only — it does **not** render
+`execution_ref` or decide `evidence` (same rule as the decide JSON vs Desk
+split).
 
 ## JSON API
 
 `GET /payouts/<payout_id>/events` returns `{payout_id, events}` for the same
 trail (same operator/session gate as `/desk`). Missing payout → **404**
-`NOT_FOUND`. Evidence and idempotency keys are not included.
+`NOT_FOUND`. Evidence and idempotency keys are not included. Execution rows
+may include `execution_ref` here for operators querying the API.
 
 ## Empty state
 

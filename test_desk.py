@@ -271,7 +271,7 @@ class DeskDetailTests(DeskBase):
         self.assertIn('Verified with payee', panel)
         self.assertIn('Demo settle', panel)
         self.assertIn('Execution · Settled', panel)
-        self.assertIn('demo:PO-1042', panel)
+        self.assertNotIn('demo:PO-1042', panel)
 
     # Scenario — GET /payouts/<id>/events matches Activity for known stored events
     def test_events_api_matches_activity_panel(self):
@@ -310,6 +310,9 @@ class DeskDetailTests(DeskBase):
         self.assertEqual(execution['source'], 'demo')
         self.assertEqual(execution['execution_status'], 'SETTLED')
         self.assertEqual(execution['execution_ref'], 'demo:PO-1042')
+        panel = self.panels()['PO-1042']
+        self.assertIn('Execution · Settled', panel)
+        self.assertNotIn('demo:PO-1042', panel)
         missing = self.client.get('/payouts/PO-MISSING/events', base_url='https://demo.example')
         self.assertEqual(missing.status_code, 404)
         self.assertEqual(missing.get_json()['code'], 'NOT_FOUND')
