@@ -320,7 +320,9 @@ class AutomationTests(unittest.TestCase):
         self.assertEqual(
             payout['note_text'],
             'Rule NEW_PAYEE_OVER_1000: No paid payout to this payee yet; amount is over $1,000. '
-            'Review before sending. ' + payout_notes.BANK_CHANGED_NOTE)
+            'Rule BANK_CHANGED_7D: Payee bank details changed today. '
+            'Confirm the change with the payee by phone before sending. '
+            'Review before sending.')
         self.assertEqual(payout['note_source'], 'rules')
         self.assertFalse(payout['note_fallback'])
         self.assertNotIn('Written by AI', payout['note_text'])
