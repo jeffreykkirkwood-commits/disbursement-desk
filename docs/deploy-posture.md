@@ -25,9 +25,13 @@ when the `name` matches.
 
 | Path | Meaning |
 |------|---------|
-| `GET /health` | Process is up; does **not** touch demo storage. Use for Render health checks. |
-| `GET /ready` | `DEMO_DIRECTORY` is writable; **503** when not. |
+| `GET /health` | Liveness. Process is up; does **not** touch demo storage. Use for Render health checks and keep-warm pings. |
+| `GET /ready` | Readiness. `DEMO_DIRECTORY` is writable; **503** when not. Use for traffic admission, not the Render health check. |
 | `GET /metrics` | Process-local counters (see [observability.md](observability.md)). |
+
+Probe roles, page signals, and runbooks (5xx, 503 capacity, OFAC hold burst,
+failed deploy, ephemeral demo directory) are in
+[observability.md](observability.md).
 
 ## Ephemeral filesystem
 
@@ -86,8 +90,9 @@ the rules note even when the flag is on.
 
 ## Deploy failure notifications
 
-Use the Render Dashboard for a failed deploy or an unhealthy service. No Desk
-secret is required.
+Jeffrey owns this Dashboard step. Agents do not mark it done. No Desk secret
+is required. The checkbox list lives in
+[observability.md](observability.md#jeffrey-checklist-render-failure-notifications-human).
 
 1. Open the workspace home in the Render Dashboard.
 2. Open **Integrations**, then **Notifications**.
@@ -99,7 +104,8 @@ service becomes unhealthy. Connect Slack on that page before you choose Slack.
 Per-service overrides are on the service **Settings** page, under
 **Notifications**.
 
-Metric and log signals are in [observability.md](observability.md).
+Metric signals, probe roles, and the failed-deploy runbook are in
+[observability.md](observability.md).
 
 ## Inbound deploy events
 
@@ -156,4 +162,4 @@ safe for the stream-slot cap when every worker shares one writable
 - [operator-authz.md](operator-authz.md) — `/health` / `/ready`, bearer tokens
 - [tenancy.md](tenancy.md) — Turso / visitor isolation
 - [stream-slots.md](stream-slots.md) — file-backed slot cap
-- [observability.md](observability.md) — counters and suggested alerts
+- [observability.md](observability.md) — counters, probe roles, alerts, runbooks
