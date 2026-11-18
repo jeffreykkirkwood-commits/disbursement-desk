@@ -413,8 +413,19 @@ def create_app(directory=None, public_origin=None):
     # words and layout are unchanged. Reset demo still restores the starting
     # set, including execution_events and the reconciliation tables.
     # Reconciliation (#57, PR #107) is not on main yet and is not run here.
+    def _require_demo_tools():
+        """Gate demo mutators: admin, or DESK_DEMO_TOOLS=1 for any role."""
+        if not g.operator.can_use_demo_tools():
+            return jsonify(
+                error='Demo tools require an admin operator or DESK_DEMO_TOOLS=1.',
+                code=api_contract.OPERATOR_FORBIDDEN), 403
+        return None
+
     @app.post('/demo-scenario')
     def run_demo_scenario():
+        refused = _require_demo_tools()
+        if refused is not None:
+            return refused
         import demo_scenario
         database = g.payments.database
         report = demo_scenario.run(database)
@@ -530,6 +541,9 @@ def create_app(directory=None, public_origin=None):
     # demo still restores the starting set.
     @app.post('/payouts/execution-replay')
     def replay_execution_events():
+        refused = _require_demo_tools()
+        if refused is not None:
+            return refused
         database = g.payments.database
         report = execution_replay.replay(database)
         event('execution_events_replayed', applied=report['applied'],
@@ -582,6 +596,9 @@ def create_app(directory=None, public_origin=None):
 
     @app.post('/payouts/simulate')
     def simulate_payout():
+        refused = _require_demo_tools()
+        if refused is not None:
+            return refused
         body = _require_json_object(
             'Send a JSON object with a payee name, DEMO- account and amount.')
         return _run_create(body)
@@ -651,6 +668,9 @@ def create_app(directory=None, public_origin=None):
     # starting set.
     @app.post('/reconciliation')
     def run_reconciliation():
+        refused = _require_demo_tools()
+        if refused is not None:
+            return refused
         import reconciliation
         database = g.payments.database
         report = reconciliation.reconcile(database)

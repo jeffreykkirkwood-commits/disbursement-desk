@@ -68,7 +68,7 @@ Dashboard values after first create:
 
 | Key | Purpose |
 |-----|---------|
-| `OPERATOR_BEARER_TOKENS` | API Bearer → operator map |
+| `DESK_OPERATOR_TOKENS` | API Bearer → operator map (`OPERATOR_BEARER_TOKENS` accepted as alias) |
 | `DESK_OIDC_CLIENT_SECRET` | OIDC client secret. Omit `DESK_OIDC_ISSUER` to keep demo mint. |
 | `STRIPE_SECRET_KEY` | Connect / Stripe SDK (test mode) |
 | `STRIPE_WEBHOOK_SECRET` | Webhook signature check |

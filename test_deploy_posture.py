@@ -42,7 +42,7 @@ class DeployPostureTests(unittest.TestCase):
 
     def test_secret_env_keys_cover_stripe_and_operators(self):
         keys = deploy_posture.secret_env_keys()
-        self.assertIn('OPERATOR_BEARER_TOKENS', keys)
+        self.assertIn('DESK_OPERATOR_TOKENS', keys)
         self.assertIn('STRIPE_SECRET_KEY', keys)
         self.assertIn('TURSO_AUTH_TOKEN', keys)
 
