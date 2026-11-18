@@ -41,11 +41,12 @@ def _load(db, payout_id):
 
 
 # FEATURE 02 — Route one PENDING payout through the rules
-# Recomputes the flag with explain_flag() and stores the #37 rules note. A clean
-# payout moves PENDING -> APPROVED -> PAID in one save (the same two steps the
-# #51 approve path uses) and appends one action-log row. A flagged payout moves
-# only to FLAGGED. Anything already past PENDING is left alone, so a second run
-# changes nothing and this path cannot approve, hold or return a flagged payout.
+# Recomputes the flag with explain_flag() and stores the #37 note (AI paraphrase
+# allowed when DESK_AI_NOTES is on). A clean payout moves PENDING -> APPROVED ->
+# PAID in one save (the same two steps the #51 approve path uses) and appends one
+# action-log row. A flagged payout moves only to FLAGGED. Anything already past
+# PENDING is left alone, so a second run changes nothing and this path cannot
+# approve, hold or return a flagged payout.
 def route_one(db, payout_id, now=None):
     payout = _load(db, payout_id)
     current = payout['status']
@@ -53,7 +54,7 @@ def route_one(db, payout_id, now=None):
         return dict(changed=False, payout_id=payout_id, status=current, event=None)
     payout['flag_code'], payout['flag_text'] = payouts.explain_flag(
         payout, _earlier_than(db, payout))
-    payout_notes.apply(payout)
+    payout_notes.apply(payout, allow_ai=True)
     targets = (payouts.FLAGGED,) if payout['flag_code'] else (payouts.APPROVED, payouts.PAID)
     step = current
     for target in targets:

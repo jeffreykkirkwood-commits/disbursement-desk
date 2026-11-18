@@ -74,10 +74,14 @@ Dashboard values after first create:
 | `STRIPE_WEBHOOK_SECRET` | Webhook signature check |
 | `RENDER_EVENTS_SECRET` | Shared secret for `POST /internal/render-events` |
 | `OFAC_HTTP_URL` / `OFAC_HTTP_TOKEN` | Live OFAC vendor |
+| `DESK_AI_API_KEY` | Optional note paraphrase HTTP bearer. Off unless `DESK_AI_NOTES=1`. |
 | `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | Durable SQLite |
 | `PUBLIC_ORIGIN` | Explicit HTTPS origin (else `RENDER_EXTERNAL_URL`) |
 
 Code inventory of secret keys: `deploy_posture.SECRET_ENV_KEYS`.
+`DESK_AI_NOTES=1` turns on optional note paraphrase. It is a flag, not a
+secret. Set `DESK_AI_API_URL` to the HTTP endpoint. Seed and backfill stay on
+the rules note even when the flag is on.
 
 ## Deploy failure notifications
 

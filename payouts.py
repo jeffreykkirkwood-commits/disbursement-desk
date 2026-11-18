@@ -146,8 +146,8 @@ FLAG_TEXT_SEP = '. '
 # payee_usual_cents is the payee's usual (average earlier) payout and bank_details_changed_at is
 # when the payee's bank details last changed (NULL = not recently); both are the facts
 # behind a flag. Note fields are filled by payout_notes.apply() from those stored rules
-# (#37). They stay 'rules' notes with fallback off; an AI source is reserved for later
-# (#38). payout_events is the operator action log (who, what, when, why).
+# (#37). Seed and backfill pass allow_ai=False so demos stay rules notes. Runtime
+# routing may paraphrase when DESK_AI_NOTES=1 and DESK_AI_API_KEY is set (#38).
 # review_status, execution_status, execution_ref and execution_updated_at are the #54
 # state split (docs/DESK-STATES.md). New tables hold later replay and reconciliation
 # rows; they start empty. Today's status column is not replaced.
@@ -353,7 +353,7 @@ def _build_seed_rows():
     for row in rows[len(history):]:
         row['flag_code'], row['flag_text'] = explain_flag(row, [r for r in rows if r['created_at'] < row['created_at']])
     for row in rows:
-        payout_notes.apply(row)
+        payout_notes.apply(row, allow_ai=False)
     return rows
 
 
@@ -474,7 +474,7 @@ def _backfill_notes(db):
     rows = db.execute(
         f'SELECT {", ".join(COLUMNS)} FROM payouts WHERE note_text IS NULL').fetchall()
     for raw in rows:
-        payout = payout_notes.apply(dict(zip(COLUMNS, raw)))
+        payout = payout_notes.apply(dict(zip(COLUMNS, raw)), allow_ai=False)
         db.execute(
             'UPDATE payouts SET note_text = ?, note_source = ?, note_fallback = ? '
             'WHERE payout_id = ?',
@@ -760,7 +760,7 @@ def _apply_sanctions_hold(db, payout, match, at):
         texts.append(sentence)
     payout['flag_code'] = FLAG_CODE_SEP.join(codes)
     payout['flag_text'] = FLAG_TEXT_SEP.join(texts)
-    payout_notes.apply(payout)
+    payout_notes.apply(payout, allow_ai=True)
     db.execute(
         'UPDATE payouts SET status = ?, review_status = ?, execution_status = ?, '
         'flag_code = ?, flag_text = ?, note_text = ?, note_source = ?, note_fallback = ?, '

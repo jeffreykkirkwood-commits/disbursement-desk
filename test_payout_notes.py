@@ -1,12 +1,21 @@
 # Automated checks for payout_notes.py: a deterministic rules note per payout
-# (issue #37). Notes are stored; the Desk does not render them here.
+# (issue #37) and the optional flagged paraphrase (#38). Notes are stored; the
+# Desk does not render them here.
 """Exercise the rules-note templates with the fictional seed and temporary databases."""
+import json
+import os
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
+from urllib.error import URLError
+import ofac
 import payout_notes
 import payouts
+import payout_rules
+import review_reasons
 
 
 HARBOR_AMOUNT_NOTE = (
@@ -218,3 +227,302 @@ class StoredNoteTests(unittest.TestCase):
         self.assertEqual(payouts.list_events(self.db, 'PO-1042')[0]['action'], 'hold')
         self.assertEqual(payouts.ensure_seeded(self.db), 0)
         self.assertEqual(payouts.get_payout(self.db, 'PO-1042')['note_text'], ACME_AMOUNT_NOTE)
+
+
+AI_ON = {
+    payout_notes.AI_NOTES_ENV: payout_notes.AI_ENABLED_VALUE,
+    payout_notes.AI_API_KEY_ENV: 'test-key',
+    payout_notes.AI_API_URL_ENV: 'https://notes.example/paraphrase',
+}
+AMOUNT_PAYOUT = {
+    'flag_code': 'AMOUNT_OVER_3X_AVG',
+    'flag_text': 'Amount is 6× this payee’s usual payout ($790 avg)',
+}
+MULTI_PAYOUT = {
+    'flag_code': 'NEW_PAYEE_OVER_1000,BANK_CHANGED_7D',
+    'flag_text': 'No paid payout to this payee yet; amount is over $1,000. '
+                 'Payee bank details changed today',
+}
+MULTI_RULES_NOTE = (
+    'Rule NEW_PAYEE_OVER_1000: No paid payout to this payee yet; amount is over $1,000. '
+    'Rule BANK_CHANGED_7D: Payee bank details changed today. '
+    'Confirm the change with the payee by phone before sending. '
+    'Review before sending.')
+
+
+def amount_label():
+    return review_reasons.stored_reasons(AMOUNT_PAYOUT)[0]['label']
+
+
+class FakeResponse:
+    def __init__(self, payload, status=200):
+        if isinstance(payload, bytes):
+            self._raw = payload
+        elif payload is None:
+            self._raw = b''
+        else:
+            self._raw = json.dumps(payload).encode('utf-8')
+        self.status = status
+
+    def read(self):
+        return self._raw
+
+    def getcode(self):
+        return self.status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+class AiNoteTests(unittest.TestCase):
+    def test_ai_stays_off_without_flag_and_key(self):
+        seen = []
+
+        def provider(reasons):
+            seen.append(reasons)
+            return 'Paraphrased amount note.'
+
+        for env in (
+            {},
+            {payout_notes.AI_NOTES_ENV: '1'},
+            {payout_notes.AI_API_KEY_ENV: 'test-key'},
+            {payout_notes.AI_NOTES_ENV: 'true',
+             payout_notes.AI_API_KEY_ENV: 'test-key'},
+            {payout_notes.AI_NOTES_ENV: '1',
+             payout_notes.AI_API_KEY_ENV: '  '},
+        ):
+            with self.subTest(env=env):
+                seen.clear()
+                row = payout_notes.apply(dict(AMOUNT_PAYOUT), allow_ai=True,
+                                         provider=provider, env=env)
+                self.assertEqual(row['note_text'], ACME_AMOUNT_NOTE)
+                self.assertEqual(row['note_source'], 'rules')
+                self.assertIs(row['note_fallback'], False)
+                self.assertEqual(seen, [])
+
+    def test_allow_ai_false_skips_provider_when_env_is_on(self):
+        def provider(reasons):
+            raise AssertionError('seed and backfill must not call the provider')
+
+        row = payout_notes.apply(dict(AMOUNT_PAYOUT), allow_ai=False,
+                                 provider=provider, env=AI_ON)
+        self.assertEqual(row['note_text'], ACME_AMOUNT_NOTE)
+        self.assertEqual((row['note_source'], row['note_fallback']), ('rules', False))
+
+    def test_success_stores_ai_triple_from_structured_reasons(self):
+        seen = []
+
+        def provider(reasons):
+            seen.append(reasons)
+            return 'Amount is unusually high for this payee. Review before sending.'
+
+        row = payout_notes.apply(dict(AMOUNT_PAYOUT), allow_ai=True,
+                                 provider=provider, env=AI_ON)
+        self.assertEqual(seen, [[{'code': 'AMOUNT_OVER_3X_AVG', 'label': amount_label()}]])
+        self.assertEqual(set(seen[0][0]), {'code', 'label'})
+        self.assertEqual(
+            row['note_text'],
+            'Amount is unusually high for this payee. Review before sending.')
+        self.assertEqual(row['note_source'], 'ai')
+        self.assertIs(row['note_fallback'], False)
+
+    def test_provider_exception_or_empty_keeps_rules_and_sets_fallback(self):
+        rules = payout_notes.rules_note(AMOUNT_PAYOUT)
+
+        def boom(reasons):
+            raise RuntimeError('down')
+
+        def blank(reasons):
+            return '  '
+
+        for provider in (boom, blank):
+            with self.subTest(provider=provider.__name__):
+                row = payout_notes.apply(dict(AMOUNT_PAYOUT), allow_ai=True,
+                                         provider=provider, env=AI_ON)
+                self.assertEqual(
+                    (row['note_text'], row['note_source'], row['note_fallback']),
+                    (rules[0], 'rules', True))
+
+    def test_seed_and_backfill_stay_rules_when_ai_env_is_on(self):
+        with mock.patch.dict(os.environ, AI_ON, clear=False):
+            with mock.patch.object(
+                    payout_notes, 'paraphrase_http',
+                    side_effect=AssertionError('seed must not call HTTP')):
+                rows = payouts.seed_rows()
+        for row in rows:
+            with self.subTest(payout=row['payout_id']):
+                self.assertEqual(row['note_source'], 'rules')
+                self.assertIs(row['note_fallback'], False)
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        db = Path(temp.name) / 'payments.sqlite3'
+        with mock.patch.dict(os.environ, AI_ON, clear=False):
+            with mock.patch.object(
+                    payout_notes, 'paraphrase_http',
+                    side_effect=AssertionError('backfill must not call HTTP')):
+                payouts.ensure_seeded(db)
+                with sqlite3.connect(db) as conn:
+                    conn.execute(
+                        "UPDATE payouts SET note_text = NULL, note_source = NULL, "
+                        "note_fallback = NULL WHERE payout_id = 'PO-1042'")
+                self.assertEqual(payouts.ensure_seeded(db), 0)
+        acme = payouts.get_payout(db, 'PO-1042')
+        self.assertEqual(acme['note_text'], ACME_AMOUNT_NOTE)
+        self.assertEqual((acme['note_source'], acme['note_fallback']), ('rules', False))
+
+    def test_runtime_route_uses_ai_when_enabled(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        db = Path(temp.name) / 'payments.sqlite3'
+        payouts.ensure_seeded(db)
+        paraphrase = 'New payee over the limit. Review before sending.'
+        with mock.patch.dict(os.environ, AI_ON, clear=False):
+            with mock.patch.object(payout_notes, 'paraphrase_http',
+                                   return_value=paraphrase) as http:
+                payout_rules.create(
+                    db, 'PO-AI-NEW', 'Oak Street Books', 'DEMO-OAKS-010', 100001, 'ACH',
+                    now=datetime(2026, 11, 10, 18, 0, tzinfo=timezone.utc),
+                    idempotency_key='ai-route-1')
+        payout = payouts.get_payout(db, 'PO-AI-NEW')
+        http.assert_called_once()
+        self.assertEqual(payout['flag_code'], 'NEW_PAYEE_OVER_1000')
+        self.assertEqual(payout['note_text'], paraphrase)
+        self.assertEqual(payout['note_source'], 'ai')
+        self.assertIs(payout['note_fallback'], False)
+
+    def test_http_paraphrase_posts_reasons_and_stores_text(self):
+        captured = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured['url'] = request.full_url
+            captured['body'] = json.loads(request.data.decode('utf-8'))
+            captured['auth'] = request.get_header('Authorization')
+            captured['timeout'] = timeout
+            return FakeResponse({'text': 'Amount looks high for this payee.'})
+
+        with mock.patch('urllib.request.urlopen', side_effect=fake_urlopen):
+            row = payout_notes.apply(dict(AMOUNT_PAYOUT), allow_ai=True, env=AI_ON)
+        self.assertEqual(captured['url'], AI_ON[payout_notes.AI_API_URL_ENV])
+        self.assertEqual(captured['auth'], 'Bearer test-key')
+        self.assertEqual(captured['body'], {
+            'reasons': [{'code': 'AMOUNT_OVER_3X_AVG', 'label': amount_label()}],
+        })
+        self.assertNotIn(payout_notes.AI_API_KEY_ENV, json.dumps(captured['body']))
+        self.assertEqual(row['note_text'], 'Amount looks high for this payee.')
+        self.assertEqual((row['note_source'], row['note_fallback']), ('ai', False))
+
+    def test_http_outage_falls_back_to_rules(self):
+        with mock.patch('urllib.request.urlopen', side_effect=URLError('down')):
+            row = payout_notes.apply(dict(AMOUNT_PAYOUT), allow_ai=True, env=AI_ON)
+        self.assertEqual(row['note_text'], ACME_AMOUNT_NOTE)
+        self.assertEqual((row['note_source'], row['note_fallback']), ('rules', True))
+
+    def test_sanctions_hold_uses_ai_when_enabled(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        db_path = Path(temp.name) / 'payments.sqlite3'
+        payouts.ensure_seeded(db_path)
+        payout = payouts.get_payout(db_path, 'PO-1040')
+        match = ofac.screen(ofac.DEMO_PAYEE_NAME)
+        paraphrase = 'Possible sanctions match. Hold this payout for review.'
+        with mock.patch.dict(os.environ, AI_ON, clear=False):
+            with mock.patch.object(payout_notes, 'paraphrase_http',
+                                   return_value=paraphrase) as http:
+                with sqlite3.connect(db_path) as db:
+                    payouts._apply_sanctions_hold(
+                        db, payout, match, '2026-11-18T00:00:00+00:00')
+        http.assert_called_once()
+        held = payouts.get_payout(db_path, 'PO-1040')
+        self.assertEqual(held['flag_code'], 'POSSIBLE_SANCTIONS_MATCH')
+        self.assertEqual(held['note_text'], paraphrase)
+        self.assertEqual((held['note_source'], held['note_fallback']), ('ai', False))
+
+
+class InventGuardTests(unittest.TestCase):
+    def test_known_flag_codes_match_stored_rule_inventory(self):
+        self.assertEqual(payout_notes.KNOWN_FLAG_CODES, frozenset(payouts.FLAG_TEXT))
+
+    def test_ai_cannot_add_codes_absent_from_flag_code(self):
+        def provider(reasons):
+            self.assertEqual([item['code'] for item in reasons], ['AMOUNT_OVER_3X_AVG'])
+            return ('Amount is high, and this also looks like DUPLICATE_24H '
+                    'and BANK_CHANGED_7D.')
+
+        row = payout_notes.apply(dict(AMOUNT_PAYOUT), allow_ai=True,
+                                 provider=provider, env=AI_ON)
+        self.assertEqual(row['note_text'], ACME_AMOUNT_NOTE)
+        self.assertEqual(row['note_source'], 'rules')
+        self.assertIs(row['note_fallback'], True)
+        self.assertNotIn('DUPLICATE_24H', row['note_text'])
+        self.assertNotIn('BANK_CHANGED_7D', row['note_text'])
+
+    def test_invent_guard_is_case_insensitive(self):
+        row = payout_notes.apply(
+            dict(AMOUNT_PAYOUT), allow_ai=True, env=AI_ON,
+            provider=lambda reasons: 'Treat this as duplicate_24h as well.')
+        self.assertEqual(row['note_text'], ACME_AMOUNT_NOTE)
+        self.assertEqual((row['note_source'], row['note_fallback']), ('rules', True))
+
+        kept = payout_notes.apply(
+            dict(AMOUNT_PAYOUT), allow_ai=True, env=AI_ON,
+            provider=lambda reasons: 'amount_over_3x_avg still applies.')
+        self.assertEqual(kept['note_text'], 'amount_over_3x_avg still applies.')
+        self.assertEqual((kept['note_source'], kept['note_fallback']), ('ai', False))
+
+    def test_clean_payout_skips_provider(self):
+        called = []
+        row = payout_notes.apply(
+            {'flag_code': None, 'flag_text': None},
+            allow_ai=True, env=AI_ON,
+            provider=lambda reasons: called.append(reasons) or 'Invented hold.')
+        self.assertEqual(called, [])
+        self.assertEqual(
+            (row['note_text'], row['note_source'], row['note_fallback']),
+            (payout_notes.CLEAN_NOTE, 'rules', False))
+
+    def test_stored_codes_in_paraphrase_are_allowed(self):
+        def provider(reasons):
+            return ('NEW_PAYEE_OVER_1000 and BANK_CHANGED_7D both apply. '
+                    'Confirm the change by phone.')
+
+        row = payout_notes.apply(dict(MULTI_PAYOUT), allow_ai=True,
+                                 provider=provider, env=AI_ON)
+        self.assertEqual(row['note_source'], 'ai')
+        self.assertIs(row['note_fallback'], False)
+        self.assertIn('NEW_PAYEE_OVER_1000', row['note_text'])
+        self.assertIn('BANK_CHANGED_7D', row['note_text'])
+        self.assertNotIn('AMOUNT_OVER_3X_AVG', row['note_text'])
+
+    def test_invent_guard_keeps_multi_flag_rules_story(self):
+        def provider(reasons):
+            return ('NEW_PAYEE_OVER_1000 plus AMOUNT_OVER_3X_AVG. '
+                    'Review before sending.')
+
+        row = payout_notes.apply(dict(MULTI_PAYOUT), allow_ai=True,
+                                 provider=provider, env=AI_ON)
+        self.assertEqual(row['note_text'], MULTI_RULES_NOTE)
+        self.assertEqual((row['note_source'], row['note_fallback']), ('rules', True))
+        self.assertEqual(row['note_text'].count('Review before sending.'), 1)
+        self.assertNotIn('Review before sending. Rule ', row['note_text'])
+
+
+class OpenaiBanTests(unittest.TestCase):
+    def test_desk_js_does_not_mention_openai(self):
+        script = Path(__file__).with_name('desk.js').read_text(encoding='utf-8')
+        self.assertNotIn('openai', script.lower())
+        self.assertEqual(script.count('fetch('), 3)
+
+    def test_notes_module_and_requirements_skip_openai_package(self):
+        source = Path(__file__).with_name('payout_notes.py').read_text(encoding='utf-8')
+        reqs = Path(__file__).with_name('requirements.txt').read_text(encoding='utf-8')
+        self.assertNotIn('openai', source.lower())
+        self.assertNotIn('import openai', source)
+        self.assertNotIn('openai', reqs.lower())
+
+
+if __name__ == '__main__':
+    unittest.main()
