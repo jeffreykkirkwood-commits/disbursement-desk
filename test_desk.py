@@ -239,7 +239,7 @@ class DeskDetailTests(DeskBase):
             self.assertIn('<p class="done">This payout is final. No actions available.</p>', panel)
             self.assertNotIn('class="btn', panel)
 
-    # Scenario — seed panels show an empty Activity section (no payout_events yet)
+    # Scenario — seed panels show an empty Activity section (no audit rows yet)
     def test_activity_empty_on_seed(self):
         panel = self.panels()['PO-1042']
         self.assertIn('<section class="audit" aria-label="Activity">', panel)
@@ -258,6 +258,64 @@ class DeskDetailTests(DeskBase):
         self.assertIn('Held · Needs review → Held', panel)
         self.assertIn('Checking bank change', panel)
         self.assertNotIn('No activity yet.', panel)
+        self.assertNotIn('Execution ·', panel)
+
+    # Scenario — Approve + settle shows status and execution rows from stored events
+    def test_activity_lists_approve_and_execution(self):
+        self.get()
+        payouts.decide(self.database(), 'PO-1042', payouts.APPROVE, 'Ada Reviewer',
+                       'desk-audit-approve-1', reason='Verified with payee')
+        panel = self.panels()['PO-1042']
+        self.assertIn('Ada Reviewer', panel)
+        self.assertIn('Approved · Needs review → Sent', panel)
+        self.assertIn('Verified with payee', panel)
+        self.assertIn('Demo settle', panel)
+        self.assertIn('Execution · Settled', panel)
+        self.assertIn('demo:PO-1042', panel)
+
+    # Scenario — GET /payouts/<id>/events matches Activity for known stored events
+    def test_events_api_matches_activity_panel(self):
+        self.get()
+        payouts.decide(self.database(), 'PO-1042', payouts.HOLD, 'Ada Reviewer',
+                       'desk-audit-api-hold-1', reason='Call back number on file')
+        reply = self.client.get('/payouts/PO-1042/events', base_url='https://demo.example')
+        self.assertEqual(reply.status_code, 200)
+        body = reply.get_json()
+        self.assertEqual(body['payout_id'], 'PO-1042')
+        self.assertEqual(len(body['events']), 1)
+        event = body['events'][0]
+        self.assertEqual(event['kind'], 'status')
+        self.assertEqual(event['action'], 'hold')
+        self.assertEqual(event['actor'], 'Ada Reviewer')
+        self.assertEqual(event['from_status'], 'FLAGGED')
+        self.assertEqual(event['to_status'], 'HELD')
+        self.assertEqual(event['reason'], 'Call back number on file')
+        self.assertNotIn('evidence', event)
+        self.assertNotIn('idempotency_key', event)
+        panel = self.panels()['PO-1042']
+        self.assertIn('Ada Reviewer', panel)
+        self.assertIn('Held · Needs review → Held', panel)
+        self.assertIn('Call back number on file', panel)
+
+    # Scenario — events API includes execution after Approve and 404s for missing ids
+    def test_events_api_includes_execution_and_404(self):
+        self.get()
+        payouts.decide(self.database(), 'PO-1042', payouts.APPROVE, 'Ada Reviewer',
+                       'desk-audit-api-approve-1')
+        reply = self.client.get('/payouts/PO-1042/events', base_url='https://demo.example')
+        self.assertEqual(reply.status_code, 200)
+        kinds = [event['kind'] for event in reply.get_json()['events']]
+        self.assertEqual(kinds, ['status', 'execution'])
+        execution = reply.get_json()['events'][1]
+        self.assertEqual(execution['source'], 'demo')
+        self.assertEqual(execution['execution_status'], 'SETTLED')
+        self.assertEqual(execution['execution_ref'], 'demo:PO-1042')
+        missing = self.client.get('/payouts/PO-MISSING/events', base_url='https://demo.example')
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(missing.get_json()['code'], 'NOT_FOUND')
+        empty = self.client.get('/payouts/PO-1043/events', base_url='https://demo.example')
+        self.assertEqual(empty.status_code, 200)
+        self.assertEqual(empty.get_json()['events'], [])
 
     # Scenario — the review panel replaces the RULES NOTE card; stored note text is not shown
     def test_stored_note_is_not_rendered_in_the_detail(self):
