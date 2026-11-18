@@ -346,6 +346,8 @@ class HostedSeedTests(unittest.TestCase):
     # review-reasons GET, and the behind-the-scenes audit events GET. /dashboard is
     # not a route here (the Lab dashboard stayed behind). / and /desk/ have no
     # control that points at simulate, execution-replay, review-reasons or events.
+    # Demo mutators (/demo-scenario, /payouts/execution-replay, /reconciliation,
+    # /payouts/simulate) require admin or DESK_DEMO_TOOLS=1; /v1/payouts does not.
     # Route pin includes /v1 create+decide and /openapi.json.
     def test_no_new_routes(self):
         client = self.app.test_client()

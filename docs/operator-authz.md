@@ -16,21 +16,30 @@ Decisions and audit rows bind to a **server-minted operator**, not a free-text
 
 ## Roles
 
-| Role | Decide | Reset demo |
-|------|--------|------------|
-| `reviewer` | yes | no |
-| `admin` | yes | yes |
+| Role | Decide | Reset demo | Demo tools\* |
+|------|--------|------------|--------------|
+| `reviewer` | yes | no | only if `DESK_DEMO_TOOLS=1` |
+| `admin` | yes | yes | yes |
 
-Demo sandboxes default to **admin** so Reset demo keeps working for the visitor
-who owns that sandbox. Set `DESK_OPERATOR_ROLE=reviewer` to mint reviewers.
+\*Demo tools: `POST /demo-scenario`, `/payouts/execution-replay`,
+`/reconciliation`, and `/payouts/simulate`. Versioned `POST /v1/payouts` is
+unchanged (any decidable operator).
+
+**Local/dev** sandboxes still default to **admin** so Reset demo keeps working.
+On **Render**, when neither OIDC (`DESK_OIDC_ISSUER`) nor bearer tokens are
+configured, newly minted operators are **reviewer** unless
+`DESK_OPERATOR_ROLE=admin` is set explicitly. Set
+`DESK_OPERATOR_ROLE=reviewer` on any host to mint reviewers.
 
 ## Environment
 
 | Variable | Purpose |
 |----------|---------|
-| `DESK_OPERATOR_ROLE` | `reviewer` or `admin` for newly minted demo operators (default `admin`) |
+| `DESK_OPERATOR_ROLE` | `reviewer` or `admin` for newly minted demo operators. Local default `admin`; Render without OIDC/tokens defaults to `reviewer`. |
 | `DESK_OPERATOR_NAME` | Display name for newly minted demo operators (default `Desk operator`) |
-| `DESK_OPERATOR_TOKENS` | Optional JSON map of Bearer token → `{id,name,role}` for API clients |
+| `DESK_OPERATOR_TOKENS` | Optional JSON map of Bearer token → `{id,name,role}` for API clients (canonical) |
+| `OPERATOR_BEARER_TOKENS` | Alias for `DESK_OPERATOR_TOKENS` when the canonical name is unset |
+| `DESK_DEMO_TOOLS` | Set to `1` to allow non-admin operators to call demo mutators |
 
 Bearer example:
 
@@ -40,6 +49,7 @@ Bearer example:
 
 Send `Authorization: Bearer tok-ada`. Unknown tokens → **401**
 `OPERATOR_UNAUTHORIZED`. The demo cookie still selects the tenant database.
+When both token env vars are set, `DESK_OPERATOR_TOKENS` wins.
 
 ## OIDC sign-in
 

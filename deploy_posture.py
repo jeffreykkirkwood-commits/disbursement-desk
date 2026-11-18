@@ -13,7 +13,7 @@ _EPHEMERAL_PREFIXES = ('/tmp', '/var/tmp')
 # Env keys that must never be committed; Dashboard / secret store only.
 # Keep in sync with docs/deploy-posture.md and render.yaml sync:false entries.
 SECRET_ENV_KEYS = (
-    'OPERATOR_BEARER_TOKENS',
+    'DESK_OPERATOR_TOKENS',
     'DESK_OIDC_CLIENT_SECRET',
     'STRIPE_SECRET_KEY',
     'STRIPE_WEBHOOK_SECRET',

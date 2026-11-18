@@ -21,7 +21,7 @@ services:
         value: file
       - key: PYTHON_VERSION
         value: "3.12.8"
-      - key: OPERATOR_BEARER_TOKENS
+      - key: DESK_OPERATOR_TOKENS
         sync: false
       - key: DESK_OIDC_CLIENT_SECRET
         sync: false

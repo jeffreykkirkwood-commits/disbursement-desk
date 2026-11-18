@@ -19,8 +19,13 @@ OPERATOR_FILE = 'operator.json'
 ENV_ROLE = 'DESK_OPERATOR_ROLE'
 ENV_NAME = 'DESK_OPERATOR_NAME'
 ENV_TOKENS = 'DESK_OPERATOR_TOKENS'
-# Demo sandboxes default to admin so Reset demo stays usable for the visitor who
-# owns that demo. Production token maps assign reviewer or admin explicitly.
+# Blueprint / older docs used OPERATOR_BEARER_TOKENS; accept it as an alias.
+ENV_TOKENS_LEGACY = 'OPERATOR_BEARER_TOKENS'
+ENV_DEMO_TOOLS = 'DESK_DEMO_TOOLS'
+ENV_OIDC_ISSUER = 'DESK_OIDC_ISSUER'
+ENV_RENDER = 'RENDER'
+# Local/dev sandboxes default to admin so Reset demo stays usable. On Render
+# without OIDC or bearer tokens, mint reviewer unless DESK_OPERATOR_ROLE=admin.
 DEFAULT_ROLE = ROLE_ADMIN
 DEFAULT_NAME = 'Desk operator'
 ID_PATTERN = re.compile(r'^[a-z0-9][a-z0-9._-]{1,63}$')
@@ -52,6 +57,13 @@ class Operator:
     def can_reconcile_stripe(self):
         """Stripe recon dry-run and apply stay admin-only, same gate as Reset."""
         return self.role == ROLE_ADMIN
+
+    def can_use_demo_tools(self, env=None):
+        """Demo mutators: admin, or any role when DESK_DEMO_TOOLS=1."""
+        if self.role == ROLE_ADMIN:
+            return True
+        env = os.environ if env is None else env
+        return (env.get(ENV_DEMO_TOOLS) or '').strip() == '1'
 
     def public(self):
         return {
@@ -93,6 +105,38 @@ def from_mapping(data):
     )
 
 
+def _token_map_raw(env):
+    """Prefer DESK_OPERATOR_TOKENS; fall back to OPERATOR_BEARER_TOKENS."""
+    for key in (ENV_TOKENS, ENV_TOKENS_LEGACY):
+        raw = env.get(key)
+        if raw and str(raw).strip():
+            return raw, key
+    return None, None
+
+
+def _oidc_or_tokens_configured(env):
+    if (env.get(ENV_OIDC_ISSUER) or '').strip():
+        return True
+    raw, _ = _token_map_raw(env)
+    return raw is not None
+
+
+def mint_role(env=None):
+    """Role for a newly minted demo operator.
+
+    Explicit DESK_OPERATOR_ROLE always wins. Local/dev keeps admin. On Render
+    with neither OIDC nor bearer tokens configured, mint reviewer unless the
+    operator sets DESK_OPERATOR_ROLE=admin.
+    """
+    env = os.environ if env is None else env
+    explicit = env.get(ENV_ROLE)
+    if explicit is not None and str(explicit).strip():
+        return _clean_role(explicit)
+    if env.get(ENV_RENDER) and not _oidc_or_tokens_configured(env):
+        return ROLE_REVIEWER
+    return DEFAULT_ROLE
+
+
 def default_operator(demo_id, env=None):
     """Mint a principal for a new demo. Role/name come from env at create time only."""
     env = os.environ if env is None else env
@@ -100,7 +144,7 @@ def default_operator(demo_id, env=None):
     return Operator(
         operator_id=f'op-{suffix}',
         display_name=_clean_name(env.get(ENV_NAME)),
-        role=_clean_role(env.get(ENV_ROLE)),
+        role=mint_role(env),
     )
 
 
@@ -140,18 +184,21 @@ def parse_bearer(authorization):
 
 
 def tokens_from_env(env=None):
-    """Optional production-shaped token map: {token: {id, name, role}}."""
+    """Optional production-shaped token map: {token: {id, name, role}}.
+
+    Reads DESK_OPERATOR_TOKENS when set; otherwise OPERATOR_BEARER_TOKENS.
+    """
     env = os.environ if env is None else env
-    raw = env.get(ENV_TOKENS)
-    if not raw or not str(raw).strip():
+    raw, source = _token_map_raw(env)
+    if raw is None:
         return {}
     data = json.loads(raw)
     if not isinstance(data, dict):
-        raise ValueError(f'{ENV_TOKENS} must be a JSON object of token → operator.')
+        raise ValueError(f'{source} must be a JSON object of token → operator.')
     out = {}
     for token, record in data.items():
         if not isinstance(token, str) or not token.strip():
-            raise ValueError(f'{ENV_TOKENS} keys must be non-empty token strings.')
+            raise ValueError(f'{source} keys must be non-empty token strings.')
         out[token.strip()] = from_mapping(record)
     return out
 
