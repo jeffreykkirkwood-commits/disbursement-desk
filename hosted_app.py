@@ -70,6 +70,36 @@ def _init_sentry():
     return True
 
 
+# FEATURE 01b — Optional OpenTelemetry traces (OTLP)
+# Single gate: OTEL_EXPORTER_OTLP_ENDPOINT. Idle when unset or blank.
+# Companion auth (optional): OTEL_EXPORTER_OTLP_HEADERS (read by the OTLP exporter).
+# Optional name: OTEL_SERVICE_NAME (default disbursement-desk).
+def _init_otel(app):
+    endpoint = (os.environ.get('OTEL_EXPORTER_OTLP_ENDPOINT') or '').strip()
+    if not endpoint:
+        return False
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.instrumentation.flask import FlaskInstrumentor
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+    service = (os.environ.get('OTEL_SERVICE_NAME') or '').strip() or 'disbursement-desk'
+    provider = TracerProvider(resource=Resource.create({'service.name': service}))
+    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
+    FlaskInstrumentor().instrument_app(app, tracer_provider=provider)
+    app.extensions['otel_tracer_provider'] = provider
+    return True
+
+
+def _set_request_id_span_attribute(request_id):
+    """Attach Desk request_id to the active HTTP span when OTel is enabled."""
+    from opentelemetry import trace
+    span = trace.get_current_span()
+    if span is not None and span.is_recording():
+        span.set_attribute('request_id', request_id)
+
+
 # FEATURE 01 — Assemble the web application
 # Connect HTTP requests (messages from browsers or API clients) to the Desk. Limit
 # request size and choose a trusted public website address. Every visitor gets a
@@ -77,6 +107,7 @@ def _init_sentry():
 def create_app(directory=None, public_origin=None):
     app = Flask(__name__, static_folder=None)
     app.extensions['sentry_enabled'] = _init_sentry()
+    app.extensions['otel_enabled'] = _init_otel(app)
     app.config['MAX_CONTENT_LENGTH'] = 10000  # Refuse request bodies over ~10 KB.
     WEBHOOK_MAX_CONTENT_LENGTH = 65536
     ENDPOINTS_WITHOUT_DEMO_DB = frozenset({
@@ -134,6 +165,8 @@ def create_app(directory=None, public_origin=None):
     def select_demo():
         g.request_id, g.started = str(uuid4()), time.monotonic()
         g.context_token = request_context.set((server_logger, g.request_id))
+        if app.extensions.get('otel_enabled'):
+            _set_request_id_span_attribute(g.request_id)
         g.leased = False
         event('http_request_received', method=request.method,
               endpoint=str(request.url_rule) if request.url_rule else '(unknown endpoint)')

@@ -82,6 +82,8 @@ Dashboard values after first create:
 | `DESK_AI_API_KEY` | Optional note paraphrase HTTP bearer. Off unless `DESK_AI_NOTES=1`. |
 | `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | Durable SQLite |
 | `SENTRY_DSN` | Sentry error reporting. Unset → SDK stays idle. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP traces gate. Unset → OpenTelemetry stays idle. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Optional OTLP auth headers (exporter reads this env). |
 | `PUBLIC_ORIGIN` | Explicit HTTPS origin (else `RENDER_EXTERNAL_URL`) |
 
 Code inventory of secret keys: `deploy_posture.SECRET_ENV_KEYS`.

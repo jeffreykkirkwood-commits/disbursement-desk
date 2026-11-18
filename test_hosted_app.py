@@ -307,6 +307,67 @@ class HostedTests(unittest.TestCase):
                     finally:
                         app.extensions['close']()
 
+    # FEATURE 17 — Scenario — OpenTelemetry stays idle without an OTLP endpoint
+    # Unset or blank OTEL_EXPORTER_OTLP_ENDPOINT must leave otel_enabled false; /health works.
+    def test_otel_idle_without_endpoint(self):
+        for value in (None, '', '  '):
+            env = {k: v for k, v in os.environ.items()
+                   if k not in ('OTEL_EXPORTER_OTLP_ENDPOINT', 'OTEL_EXPORTER_OTLP_HEADERS')}
+            if value is not None:
+                env['OTEL_EXPORTER_OTLP_ENDPOINT'] = value
+            with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, env, clear=True):
+                with mock.patch(
+                        'opentelemetry.instrumentation.flask.FlaskInstrumentor') as instrumentor:
+                    app = probe_app(d, ORIGIN)
+                    try:
+                        self.assertFalse(app.extensions['otel_enabled'])
+                        instrumentor.assert_not_called()
+                        self.assertEqual(app.test_client().get('/health').status_code, 200)
+                    finally:
+                        app.extensions['close']()
+
+    # FEATURE 18 — Scenario — OTel copies request_id onto the HTTP span (no network)
+    # Fake endpoint enables init; BatchSpanProcessor is replaced with an in-memory exporter.
+    def test_otel_request_id_span_attribute(self):
+        from opentelemetry.instrumentation.flask import FlaskInstrumentor
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+        memory = InMemorySpanExporter()
+        endpoint = 'http://127.0.0.1:4318'
+        env = {
+            **{k: v for k, v in os.environ.items()
+               if k not in ('OTEL_EXPORTER_OTLP_ENDPOINT', 'OTEL_EXPORTER_OTLP_HEADERS',
+                            'OTEL_SERVICE_NAME')},
+            'OTEL_EXPORTER_OTLP_ENDPOINT': endpoint,
+            'OTEL_SERVICE_NAME': 'desk-otel-test',
+        }
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch(
+                    'opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter',
+                    return_value=mock.Mock(name='otlp')) as exporter_cls:
+                with mock.patch(
+                        'opentelemetry.sdk.trace.export.BatchSpanProcessor',
+                        side_effect=lambda _exporter: SimpleSpanProcessor(memory)):
+                    app = probe_app(d, ORIGIN)
+                    try:
+                        self.assertTrue(app.extensions['otel_enabled'])
+                        exporter_cls.assert_called_once()
+                        self.assertEqual(
+                            exporter_cls.call_args.kwargs.get('endpoint'), endpoint)
+                        client = app.test_client()
+                        reply = client.get('/health')
+                        self.assertEqual(reply.status_code, 200)
+                        request_id = reply.headers.get('X-Request-ID')
+                        self.assertTrue(request_id)
+                        spans = memory.get_finished_spans()
+                        self.assertTrue(spans)
+                        attrs = {k: v for s in spans for k, v in dict(s.attributes or {}).items()}
+                        self.assertEqual(attrs.get('request_id'), request_id)
+                    finally:
+                        FlaskInstrumentor().uninstrument_app(app)
+                        app.extensions['close']()
+
 
 if __name__ == '__main__':
     unittest.main()

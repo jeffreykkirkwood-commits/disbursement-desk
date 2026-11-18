@@ -45,5 +45,9 @@ services:
         sync: false
       - key: SENTRY_DSN
         sync: false
+      - key: OTEL_EXPORTER_OTLP_ENDPOINT
+        sync: false
+      - key: OTEL_EXPORTER_OTLP_HEADERS
+        sync: false
       - key: PUBLIC_ORIGIN
         sync: false
