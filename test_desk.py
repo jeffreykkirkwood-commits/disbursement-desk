@@ -53,6 +53,12 @@ class DeskBase(unittest.TestCase):
     def database(self):
         return next(Path(self.temp.name).rglob('payments.sqlite3'))
 
+    def review_narrative(self, payout_id):
+        reply = self.client.get(f'/payouts/{payout_id}/review-reasons',
+                                base_url='https://demo.example')
+        self.assertEqual(reply.status_code, 200)
+        return reply.json['narrative']
+
 
 class DeskTests(DeskBase):
     # Scenario — the Desk opens on the 4 starting exceptions with the approved chrome
@@ -222,9 +228,11 @@ class DeskDetailTests(DeskBase):
         self.assertIn('BANK_CHANGED_7D', returned)
         self.assertNotIn('Why flagged', returned)
         self.assertNotIn('Returned by operator', returned)
+        self.assertNotIn('Why held', returned)
         self.assertIn('<span class="pill s-sent">Sent</span>', sent)
         self.assertNotIn('Why flagged', sent)
         self.assertNotIn('Why this was in review', sent)
+        self.assertNotIn('Why held', sent)
         self.assertIn('No rules triggered. Within normal range for this payee.', sent)
         self.assertIn('<dt>Rail</dt><dd>ACH · USD</dd>', sent)
         for panel in (returned, sent):
@@ -312,6 +320,7 @@ class DeskDetailTests(DeskBase):
         panel = self.panels()['PO-1037']
         self.assertIn('<h3>Why this was in review <span class="review-count">1 reason</span></h3>', panel)
         self.assertNotIn('Why this is in review', panel)
+        self.assertNotIn('Why held', panel)
         self.assertIn('Payee bank details changed 1 day ago.', panel)
         self.assertIn('Confirm the change with the payee by phone before sending.', panel)
         self.assertNotIn('Returned by operator', panel)
@@ -361,6 +370,112 @@ class DeskDetailTests(DeskBase):
         self.assertEqual(sanctions['details']['score'], 100)
         self.assertEqual(sanctions['details']['list_published'], '2026-11-09')
         self.assertEqual(sanctions['details']['snapshot_taken'], '2026-11-12')
+
+
+class DeskWhyHeldTests(DeskBase):
+    def panels(self, html=None):
+        return dict(PANEL.findall(html or self.get().get_data(as_text=True)))
+
+    def held_paragraph(self, narrative):
+        return f'<p>{desk.text(narrative)}</p>'
+
+    def why_held_block(self, panel):
+        marker = '<section class="why-held" aria-label="Why held">'
+        start = panel.index(marker)
+        return panel[start:panel.index('</section>', start) + len('</section>')]
+
+    # Scenario — Why held matches JSON narrative between the reasons and Activity
+    def test_why_held_matches_json_narrative_between_reasons_and_activity(self):
+        html = self.get().get_data(as_text=True)
+        for payout_id in ('PO-1042', 'PO-1038'):
+            panel = self.panels(html)[payout_id]
+            narrative = self.review_narrative(payout_id)
+            self.assertTrue(narrative)
+            block = self.why_held_block(panel)
+            self.assertIn('<h3>Why held</h3>', block)
+            self.assertIn(self.held_paragraph(narrative), block)
+            self.assertLess(panel.index('From fixed rules. Review before sending.'),
+                            panel.index(block))
+            self.assertLess(panel.index(block), panel.index('<h3>Activity</h3>'))
+            self.assertEqual(panel.count('class="why-held"'), 1)
+
+    # Scenario — every current-queue payout: Why held equals JSON narrative, else absent
+    def test_why_held_matches_json_narrative_for_every_current_payout(self):
+        html = self.get().get_data(as_text=True)
+        panels = self.panels(html)
+        self.assertEqual(list(panels), ALL_IDS)
+        shown = 0
+        for pid, panel in panels.items():
+            narrative = self.review_narrative(pid)
+            if narrative:
+                self.assertIn('<h3>Why held</h3>', panel, pid)
+                self.assertIn(self.held_paragraph(narrative), panel, pid)
+                shown += 1
+            else:
+                self.assertNotIn('Why held', panel, pid)
+                self.assertNotIn('class="why-held"', panel, pid)
+        self.assertGreater(shown, 0)
+
+    # Scenario — Why held keeps the stored sanctions sentence; the list stays short
+    def test_why_held_ofac_uses_full_stored_sentence(self):
+        self.get()
+        payout_rules.create(
+            self.database(), 'PO-4100', ofac.DEMO_PAYEE_NAME, ofac.DEMO_PAYEE_ACCOUNT,
+            ofac.DEMO_AMOUNT_CENTS, 'ACH')
+        panel = self.panels()['PO-4100']
+        narrative = self.review_narrative('PO-4100')
+        reasons = panel.split('<section class="why-held"', 1)[0]
+        self.assertIn('Possible sanctions match:', narrative)
+        self.assertIn(self.held_paragraph(narrative), self.why_held_block(panel))
+        self.assertIn('<p class="review-reason">Possible sanctions match.</p>', reasons)
+        self.assertNotIn('Possible sanctions match:', reasons)
+
+    # Scenario — two stored flags become one Why held paragraph, in stored order
+    def test_why_held_joins_multi_flag_labels(self):
+        self.get()
+        from datetime import datetime, timezone
+        now = datetime(2026, 11, 12, 16, 0, tzinfo=timezone.utc)
+        payout_rules.create(
+            self.database(), 'PO-2100', 'Cedar Lane Plumbing', 'DEMO-CEDL-012', 185000,
+            'ACH', bank_details_changed_at=now.isoformat(), now=now)
+        panel = self.panels()['PO-2100']
+        narrative = self.review_narrative('PO-2100')
+        self.assertIn(payouts.FLAG_TEXT_SEP, narrative)
+        self.assertLess(narrative.index('No paid payout to this payee yet'),
+                        narrative.index('Payee bank details changed today'))
+        self.assertIn(self.held_paragraph(narrative), self.why_held_block(panel))
+        review = panel.split('<ul class="review-list">', 1)[1].split('</ul>', 1)[0]
+        self.assertEqual(review.count('<li>'), 2)
+
+    # Scenario — approving removes Why held and keeps the past-tense reasons
+    def test_why_held_empty_after_payout_leaves_review(self):
+        self.get()
+        self.assertTrue(self.review_narrative('PO-1042'))
+        payouts.decide(self.database(), 'PO-1042', payouts.APPROVE, 'Ada Reviewer',
+                       'desk-why-held-approve-1')
+        panel = self.panels()['PO-1042']
+        self.assertEqual(self.review_narrative('PO-1042'), '')
+        self.assertNotIn('Why held', panel)
+        self.assertIn('Why this was in review', panel)
+        self.assertIn('Amount is 6× this payee’s usual payout ($790 avg).', panel)
+
+    # Scenario — a clean Sent payout has no Why held
+    def test_why_held_absent_on_clean_sent_payout(self):
+        panel = self.panels()['PO-1040']
+        self.assertEqual(self.review_narrative('PO-1040'), '')
+        self.assertNotIn('Why held', panel)
+        self.assertIn('No rules triggered. Within normal range for this payee.', panel)
+
+    # Scenario — a stored label with markup is escaped inside Why held
+    def test_why_held_escapes_the_narrative(self):
+        self.get()
+        with closing(sqlite3.connect(str(self.database()))) as db, db:
+            db.execute("UPDATE payouts SET flag_text = '<img alt=\"x\">' WHERE payout_id = 'PO-1042'")
+        panel = self.panels()['PO-1042']
+        narrative = self.review_narrative('PO-1042')
+        self.assertIn('<img', narrative)
+        self.assertIn(self.held_paragraph(narrative), self.why_held_block(panel))
+        self.assertNotIn('<img', panel)
 
 
 APPROVE_BUTTON = ('<button type="button" class="btn primary" data-act="approve" data-heading="Approve and send?" '
@@ -812,6 +927,7 @@ class DeskNoteTests(DeskBase):
         panel = self.panels()['PO-1040']
         self.assertIn('No rules triggered. Within normal range for this payee.', panel)
         self.assertNotIn('<div class="review">', panel)
+        self.assertNotIn('Why held', panel)
         self.assertNotIn('RULES NOTE', panel)
         self.assertNotIn('Written by AI', panel)
         self.assertNotIn('AI NOTE', panel)
