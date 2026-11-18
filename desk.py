@@ -149,7 +149,6 @@ WHY_HELD_HEADING = 'Why held'
 
 
 def _why_held(narrative):
-    """One gate-stop paragraph. Absent when the payout is not in review."""
     if not narrative:
         return ''
     return (f'<section class="why-held" aria-label="{WHY_HELD_HEADING}">'
@@ -310,9 +309,7 @@ def _audit_panel(events):
 # reasons under "Why this was in review" and say they are final. Needs review
 # and Held payouts get Approve / Hold / Return (slice 3); Hold is disabled when
 # the payout is already Held. A possible sanctions match gets Clear / Block.
-# While the payout is in review, Why held quotes narrative_for_payout between
-# the reasons and Activity. Sent and Returned payouts omit it. Activity
-# (who/what/when from payout_events) sits under that section.
+# Activity (who/what/when from payout_events) sits under the review block.
 # The panel carries the payee and amount so the dialog can repeat them.
 def _detail(payout, events=()):
     word, css = STATUS_WORDS[payout['status']]
