@@ -5,8 +5,10 @@ Connect pilot. The owner sign-off box at the end is unchecked. Jeff has not
 signed the recommendation. The go-live checklist item stays open until
 that box is checked.
 
-The send path creates test-mode Transfers from the platform balance to an
-`acct_` id. Connected-account onboarding UI is still out of scope. See
+The send path defaults to a test-mode destination charge
+(`PaymentIntent` with `transfer_data[destination]`) to an `acct_` id.
+`STRIPE_SEND_PATH=transfer` keeps the legacy platform-balance Transfer path.
+Connected-account onboarding UI is still out of scope. See
 [Stripe Connect go-live](stripe-connect-go-live.md) and
 [Disarm Stripe payouts](stripe-connect-kill-switch.md).
 
@@ -85,7 +87,7 @@ These points are still open:
 - Which countries and entity types the pilot payees are, and whether Express is offered for each one.
 - Whether any payee is the same legal entity as the platform. In that case there is no separate connected-account verification.
 - Who owns the platform Stripe account, and whether that owner has already accepted Stripe's platform agreement.
-- How negative balances on Transfers are allocated. That choice belongs to the Stripe account settings, and it is still open.
+- How negative balances on destination charges or Transfers are allocated. That choice belongs to the Stripe account settings, and it is still open.
 - Whether payees should see Stripe branding and the Express Dashboard.
 - Compliance review outside this repo. That go-live checklist item stays unchecked.
 - Test-mode end-to-end on Connect test clocks, then a limited live pilot. That go-live checklist item stays unchecked.
