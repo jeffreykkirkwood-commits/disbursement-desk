@@ -339,13 +339,14 @@ class HostedSeedTests(unittest.TestCase):
         self.assertEqual(len(payouts.list_payouts(databases[1])), SEED_COUNT)
 
     # FEATURE 12 — Scenario — payouts show only on the Desk, its POST routes, the stream,
-    # and the behind-the-scenes review-reasons GET (#32).
+    # and the behind-the-scenes review-reasons / events GETs (#32 / audit trail).
     # The payout APIs are the decision route (#35, clear/block in #111), Reset demo (#32 slice 4), the
     # live update stream (#43), the behind-the-scenes simulate route (#91),
-    # the behind-the-scenes execution replay route (#56), and the behind-the-scenes
-    # review-reasons GET. /dashboard is not a route here (the Lab dashboard stayed
-    # behind). / and /desk/ have no control that points at simulate, execution-replay
-    # or review-reasons. Route pin includes /v1 create+decide and /openapi.json.
+    # the behind-the-scenes execution replay route (#56), the behind-the-scenes
+    # review-reasons GET, and the behind-the-scenes audit events GET. /dashboard is
+    # not a route here (the Lab dashboard stayed behind). / and /desk/ have no
+    # control that points at simulate, execution-replay, review-reasons or events.
+    # Route pin includes /v1 create+decide and /openapi.json.
     def test_no_new_routes(self):
         client = self.app.test_client()
         self.assertEqual(client.get('/dashboard', base_url='https://demo.example').status_code, 404)
@@ -357,10 +358,12 @@ class HostedSeedTests(unittest.TestCase):
             self.assertNotIn('/payouts/simulate', page)
             self.assertNotIn('/payouts/execution-replay', page)
             self.assertNotIn('review-reasons', page)
+            self.assertNotIn('/events', page)
         rules = [rule for rule in self.app.url_map.iter_rules() if re.search('payout', str(rule))]
         self.assertEqual({str(r) for r in rules},
                          {'/payouts/<payout_id>/<any(approve, hold, return, clear, block):action>',
                           '/payouts/<payout_id>/review-reasons',
+                          '/payouts/<payout_id>/events',
                           '/payouts/reset', '/payouts/simulate', '/payouts/stream',
                           '/payouts/execution-replay',
                           '/v1/payouts', '/v1/payouts/<payout_id>/decisions'})
@@ -373,6 +376,8 @@ class HostedSeedTests(unittest.TestCase):
         self.assertEqual(stream.methods - {'OPTIONS', 'HEAD'}, {'GET'})
         reasons = next(r for r in rules if str(r) == '/payouts/<payout_id>/review-reasons')
         self.assertEqual(reasons.methods - {'OPTIONS', 'HEAD'}, {'GET'})
+        events = next(r for r in rules if str(r) == '/payouts/<payout_id>/events')
+        self.assertEqual(events.methods - {'OPTIONS', 'HEAD'}, {'GET'})
         self.assertEqual({str(r) for r in self.app.url_map.iter_rules() if 'desk' in str(r)}, {'/desk', '/desk/', '/desk.js'})
         expected = {
             ('/', frozenset({'GET'})),
@@ -389,6 +394,7 @@ class HostedSeedTests(unittest.TestCase):
             ('/demo-scenario', frozenset({'POST'})),
             ('/payouts/<payout_id>/<any(approve, hold, return, clear, block):action>', frozenset({'POST'})),
             ('/payouts/<payout_id>/review-reasons', frozenset({'GET'})),
+            ('/payouts/<payout_id>/events', frozenset({'GET'})),
             ('/payouts/reset', frozenset({'POST'})),
             ('/payouts/execution-replay', frozenset({'POST'})),
             ('/payouts/simulate', frozenset({'POST'})),

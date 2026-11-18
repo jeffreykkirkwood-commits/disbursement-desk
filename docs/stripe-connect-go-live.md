@@ -48,7 +48,7 @@ Kill-switch steps are in
 | 1 | **OFAC gate** — no settle of a possible match without Clear | `verify-ofac-settle` (`Inv_NoSettleWithoutClear`); product tests; optional HTTP vendor behind Clear/Block (#23) | Met |
 | 2 | **Fraud / exception screening** — mandatory rules cannot be skipped on create/route/decide/settle | `docs/pre-send-gates.md`, `MANDATORY_PRE_SEND_RULES`, `test_pre_send_gates.py` | Met |
 | 3 | **Create + decide idempotency** — no double disbursement / double settle | Create `Idempotency-Key` (#16); decide `BEGIN IMMEDIATE` + UNIQUE keys; stress + formal `Inv_AtMostOneSettle` (#25) | Met |
-| 4 | **Audit trail** — who/what/when for Desk transitions; queryable per payout | `payout_events` / `record_transition`; Desk **Activity** panel (#26) | Met |
+| 4 | **Audit trail** — who/what/when for Desk status + execution; queryable per payout | `payout_events` / `execution_events` via `audit_entries`; Desk **Activity** + `GET /payouts/<id>/events` (#26+) | Met |
 
 Re-verify these on any change to `decide`, `_settle`, `route_one`, or OFAC screening before starting Connect money movement.
 

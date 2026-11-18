@@ -309,9 +309,9 @@ def create_app(directory=None, public_origin=None):
     def desk():
         try:
             queue = payouts.current_queue(g.payments.database)
-            # One read of the action log, grouped for the detail Activity panels.
+            # One read of the audit trail (status + execution), grouped for Activity.
             events_by_id = {}
-            for row in payouts.list_events(g.payments.database):
+            for row in payouts.audit_entries(g.payments.database):
                 events_by_id.setdefault(row['payout_id'], []).append(row)
         except (sqlite3.Error, OSError, KeyError) as error:  # unreadable or unexpected data
             event('desk_load_failed', level=logging.ERROR, error_type=type(error).__name__)
@@ -475,6 +475,15 @@ def create_app(directory=None, public_origin=None):
         items = review_reasons.for_payout(g.payments.database, payout_id)
         narrative = review_reasons.narrative_from_stored_reasons(items)
         return jsonify(payout_id=payout_id, reasons=items, narrative=narrative)
+
+    # FEATURE 29b — Read-only audit trail for one payout (status + execution)
+    # Same session/operator gate as /desk and /review-reasons. Rows come only
+    # from stored payout_events and execution_events (oldest first). 404 when
+    # the payout is missing. No secrets; evidence stays off this payload.
+    @app.get('/payouts/<payout_id>/events')
+    def payout_audit_events(payout_id):
+        events = payouts.audit_trail(g.payments.database, payout_id)
+        return jsonify(payout_id=payout_id, events=events)
 
     # FEATURE 22 — Reset this visitor's Desk demo to the starting set (#32 slice 4)
     # Calls payouts.reset() on this visitor's own database only. That restores the

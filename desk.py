@@ -50,6 +50,20 @@ ACTION_WORDS = {
     'create': 'Created',
     'route': 'Routed',
 }
+# Viewer words for execution_events (payment outcome, not Desk status).
+EXECUTION_WORDS = {
+    'NOT_STARTED': 'Not started',
+    'SUBMITTED': 'Submitted',
+    'UNKNOWN': 'Unknown',
+    'SETTLED': 'Settled',
+    'FAILED': 'Failed',
+}
+EXECUTION_SOURCE_WORDS = {
+    'demo': 'Demo settle',
+    'replay': 'Replay',
+    'reconciliation': 'Reconciliation',
+    'stripe': 'Stripe',
+}
 AUDIT_EMPTY = 'No activity yet.'
 AUDIT_HEADING = 'Activity'
 
@@ -269,6 +283,16 @@ def action_word(code):
     return ACTION_WORDS.get(code, code or 'Updated')
 
 
+def execution_word(code):
+    """Plain Desk word for an execution_events.execution_status code."""
+    return EXECUTION_WORDS.get(code, code or 'Updated')
+
+
+def execution_source_word(code):
+    """Plain Desk word for an execution_events.source code."""
+    return EXECUTION_SOURCE_WORDS.get(code, code or 'Execution')
+
+
 def audit_when(at):
     """Show a compact UTC timestamp; blank when missing."""
     if not isinstance(at, str) or not at.strip():
@@ -282,14 +306,21 @@ def audit_when(at):
 
 
 def audit_line(event):
-    """One Activity row: when · who · what (from → to), plus reason when present."""
+    """One Activity row from a stored audit entry (status or execution)."""
     when = audit_when(event.get('at'))
+    head = f'<span class="audit-when">{text(when)}</span>' if when else ''
+    if event.get('kind') == 'execution':
+        # Who/what/when only on Desk HTML. execution_ref stays on the JSON API
+        # (same rule as decide evidence: not rendered into /desk).
+        actor = text(execution_source_word(event.get('source')))
+        outcome = text(execution_word(event.get('execution_status')))
+        return (f'<li><p class="audit-main">{head}<span class="audit-actor">{actor}</span>'
+                f'<span class="audit-what">Execution · {outcome}</span></p></li>')
     actor = text(event.get('actor') or 'Unknown')
     what = text(action_word(event.get('action')))
     frm = text(status_word(event.get('from_status')))
     to = text(status_word(event.get('to_status')))
     move = f'{frm} → {to}' if frm != to else frm
-    head = f'<span class="audit-when">{text(when)}</span>' if when else ''
     line = (f'<li><p class="audit-main">{head}<span class="audit-actor">{actor}</span>'
             f'<span class="audit-what">{what} · {move}</span></p>')
     reason = event.get('reason')
@@ -299,7 +330,7 @@ def audit_line(event):
 
 
 def _audit_panel(events):
-    """Activity list for one payout (oldest first). Empty when no events yet."""
+    """Activity list for one payout (oldest first). Empty when no stored rows yet."""
     parts = [f'<section class="audit" aria-label="{AUDIT_HEADING}">',
              f'<h3>{AUDIT_HEADING}</h3>']
     if not events:
@@ -317,8 +348,9 @@ def _audit_panel(events):
 # reasons under "Why this was in review" and say they are final. Needs review
 # and Held payouts get Approve / Hold / Return (slice 3); Hold is disabled when
 # the payout is already Held. A possible sanctions match gets Clear / Block.
-# Activity (who/what/when from payout_events) sits under the review block.
-# The panel carries the payee and amount so the dialog can repeat them.
+# Activity (who/what/when from payout_events + execution_events) sits under
+# the review / Why held block. The panel carries the payee and amount so the
+# dialog can repeat them.
 def _detail(payout, events=()):
     word, css = STATUS_WORDS[payout['status']]
     pid = text(payout['payout_id'])

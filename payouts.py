@@ -1051,3 +1051,59 @@ def list_execution_events(database, payout_id=None):
     with storage.connect(str(database)) as db:
         return [dict(zip(EXECUTION_EVENT_COLUMNS, row))
                 for row in db.execute(query + ' ORDER BY at, event_id', args)]
+
+
+# FEATURE 16 — Operator audit trail (Desk status + execution, read-only)
+# One chronological list per payout from stored payout_events and
+# execution_events only. No invented transitions. The Desk Activity panel and
+# GET /payouts/<id>/events both read this shape. Evidence and idempotency keys
+# stay off the public rows (status who/what/when only).
+AUDIT_STATUS = 'status'
+AUDIT_EXECUTION = 'execution'
+
+
+def _status_audit_entry(event):
+    return {
+        'kind': AUDIT_STATUS,
+        'payout_id': event['payout_id'],
+        'at': event['at'],
+        'actor': event['actor'],
+        'action': event['action'],
+        'from_status': event['from_status'],
+        'to_status': event['to_status'],
+        'reason': event.get('reason'),
+        'sort_id': f's:{event["event_id"]}',
+    }
+
+
+def _execution_audit_entry(event):
+    return {
+        'kind': AUDIT_EXECUTION,
+        'payout_id': event['payout_id'],
+        'at': event['at'],
+        'source': event['source'],
+        'execution_status': event['execution_status'],
+        'execution_ref': event.get('execution_ref'),
+        'sort_id': f'e:{event["event_id"]}',
+    }
+
+
+def audit_entries(database, payout_id=None):
+    """Stored Desk status and execution rows for one payout (or all), oldest first."""
+    entries = [_status_audit_entry(event) for event in list_events(database, payout_id)]
+    entries.extend(
+        _execution_audit_entry(event)
+        for event in list_execution_events(database, payout_id))
+    entries.sort(key=lambda row: (
+        row.get('at') or '',
+        0 if row['kind'] == AUDIT_STATUS else 1,
+        row['sort_id']))
+    for row in entries:
+        row.pop('sort_id', None)
+    return entries
+
+
+def audit_trail(database, payout_id):
+    """Audit rows for one existing payout. Raises 404 when the payout is missing."""
+    get_payout(database, payout_id)
+    return audit_entries(database, payout_id)

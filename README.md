@@ -45,8 +45,8 @@ see [docs/rail-enforcement.md](docs/rail-enforcement.md).
 Concurrent decide exclusivity (stress + formal `Inv_AtMostOneSettle`): see
 [docs/decide-exclusivity.md](docs/decide-exclusivity.md).
 
-Desk detail Activity (who/what/when from `payout_events`): see
-[docs/desk-audit.md](docs/desk-audit.md).
+Desk detail Activity (who/what/when from `payout_events` + `execution_events`):
+see [docs/desk-audit.md](docs/desk-audit.md).
 
 Stripe Connect test-mode send stays off unless `STRIPE_PAYOUTS_ENABLED`
 is exactly `1`. Any other value keeps the demo settle. See
