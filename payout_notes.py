@@ -19,31 +19,69 @@ NEW_PAYEE_OVER_1000 = 'NEW_PAYEE_OVER_1000'
 POSSIBLE_SANCTIONS_MATCH = 'POSSIBLE_SANCTIONS_MATCH'
 SOURCE_RULES = 'rules'
 CLEAN_NOTE = 'No rules triggered. Within normal range for this payee.'
-BANK_CHANGED_NOTE = (
-    'Rule BANK_CHANGED_7D: bank details changed within 7 days. '
-    'Confirm the change with the payee by phone before sending.')
+_BANK_FACT = 'bank details changed within 7 days'
+_PHONE_CONFIRM = 'Confirm the change with the payee by phone before sending.'
+BANK_CHANGED_NOTE = f'Rule {BANK_CHANGED_7D}: {_BANK_FACT}. {_PHONE_CONFIRM}'
 REVIEW_BEFORE_SENDING = 'Review before sending.'
+_REVIEW_CODES = (
+    AMOUNT_OVER_3X_AVG,
+    DUPLICATE_24H,
+    NEW_PAYEE_OVER_1000,
+    POSSIBLE_SANCTIONS_MATCH,
+)
+_FLAG_TEXT_SEP = '. '
 
 
 # FEATURE 02 — Build one rules note from a payout's stored flag
-# Same payout facts always produce the same (text, source, fallback) triple.
-# Source is always "rules" and fallback is always False: these are the primary
-# stored rules notes, not an AI-unavailable stand-in. Unknown or missing flags
-# get the clean line. When more than one rule is stored (comma-separated codes,
-# issue #89), the note lists every matching template, still as a rules note.
-# No clock and no I/O.
-def _note_for(code, flag):
-    if code == AMOUNT_OVER_3X_AVG:
-        return f'Rule {AMOUNT_OVER_3X_AVG}: {flag}. {REVIEW_BEFORE_SENDING}'
+def _single_note(code, flag):
     if code == BANK_CHANGED_7D:
         return BANK_CHANGED_NOTE
-    if code == DUPLICATE_24H:
-        return f'Rule {DUPLICATE_24H}: {flag}. {REVIEW_BEFORE_SENDING}'
-    if code == NEW_PAYEE_OVER_1000:
-        return f'Rule {NEW_PAYEE_OVER_1000}: {flag}. {REVIEW_BEFORE_SENDING}'
-    if code == POSSIBLE_SANCTIONS_MATCH:
-        return f'Rule {POSSIBLE_SANCTIONS_MATCH}: {flag}. {REVIEW_BEFORE_SENDING}'
+    if code in _REVIEW_CODES:
+        return f'Rule {code}: {flag}. {REVIEW_BEFORE_SENDING}'
     return None
+
+
+def _flag_pieces(flag_text, codes):
+    parts = [part for part in (flag_text or '').split(_FLAG_TEXT_SEP) if part]
+    if len(parts) <= len(codes):
+        return parts
+    extra = len(parts) - len(codes)
+    try:
+        index = codes.index(POSSIBLE_SANCTIONS_MATCH)
+    except ValueError:
+        index = len(codes) - 1
+    return (
+        parts[:index]
+        + [_FLAG_TEXT_SEP.join(parts[index:index + extra + 1])]
+        + parts[index + extra + 1:]
+    )
+
+
+def _story(codes, flag):
+    pieces = _flag_pieces(flag, codes)
+    known = []
+    for index, code in enumerate(codes):
+        if code == BANK_CHANGED_7D or code in _REVIEW_CODES:
+            piece = pieces[index] if index < len(pieces) else ''
+            known.append((code, piece))
+    if not known:
+        return CLEAN_NOTE
+    if len(known) == 1:
+        code, piece = known[0]
+        return _single_note(code, piece)
+    clauses = []
+    specific = []
+    review = False
+    for code, piece in known:
+        if code == BANK_CHANGED_7D:
+            clauses.append(f'Rule {code}: {piece or _BANK_FACT}')
+            if _PHONE_CONFIRM not in specific:
+                specific.append(_PHONE_CONFIRM)
+        else:
+            clauses.append(f'Rule {code}: {piece}')
+            review = True
+    tail = specific + ([REVIEW_BEFORE_SENDING] if review else [])
+    return '. '.join(clauses) + '. ' + ' '.join(tail)
 
 
 def rules_note(payout):
@@ -52,16 +90,9 @@ def rules_note(payout):
     if not codes:
         text = CLEAN_NOTE
     elif len(codes) == 1:
-        text = _note_for(codes[0], flag) or CLEAN_NOTE
+        text = _single_note(codes[0], flag) or CLEAN_NOTE
     else:
-        parts = flag.split('. ') if flag else [''] * len(codes)
-        notes = []
-        for i, code in enumerate(codes):
-            piece = parts[i] if i < len(parts) else ''
-            note = _note_for(code, piece)
-            if note:
-                notes.append(note)
-        text = ' '.join(notes) if notes else CLEAN_NOTE
+        text = _story(codes, flag)
     return text, SOURCE_RULES, False
 
 

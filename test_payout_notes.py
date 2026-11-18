@@ -106,8 +106,7 @@ class RulesNoteTests(unittest.TestCase):
         self.assertNotIn('Written by AI', text)
         self.assertNotIn('AI NOTE', text)
 
-    # FEATURE 05c — Scenario — a payout with two flags stores both rules notes (#89)
-    def test_multiple_rules_note_lists_every_reason(self):
+    def test_multiple_rules_note_is_one_story(self):
         text, source, fallback = payout_notes.rules_note({
             'flag_code': 'NEW_PAYEE_OVER_1000,BANK_CHANGED_7D',
             'flag_text': 'No paid payout to this payee yet; amount is over $1,000. Payee bank details changed today',
@@ -115,12 +114,63 @@ class RulesNoteTests(unittest.TestCase):
         self.assertEqual(
             text,
             'Rule NEW_PAYEE_OVER_1000: No paid payout to this payee yet; amount is over $1,000. '
-            'Review before sending. ' + payout_notes.BANK_CHANGED_NOTE)
+            'Rule BANK_CHANGED_7D: Payee bank details changed today. '
+            'Confirm the change with the payee by phone before sending. '
+            'Review before sending.')
         self.assertEqual((source, fallback), ('rules', False))
-        self.assertIn('Rule NEW_PAYEE_OVER_1000:', text)
-        self.assertIn('Rule BANK_CHANGED_7D:', text)
+        self.assertEqual(text.count('Review before sending.'), 1)
+        self.assertGreater(text.index('Review before sending.'), text.rindex('Rule '))
+        self.assertNotIn('Review before sending. Rule ', text)
+        self.assertIn('Payee bank details changed today', text)
         self.assertNotIn('Written by AI', text)
         self.assertNotIn('AI NOTE', text)
+
+    def test_shared_review_close_is_once_after_the_facts(self):
+        text, source, fallback = payout_notes.rules_note({
+            'flag_code': 'AMOUNT_OVER_3X_AVG,DUPLICATE_24H',
+            'flag_text': 'Amount is 4× this payee’s usual payout ($520 avg). '
+                         'Same payee and amount as yesterday (possible duplicate)',
+        })
+        self.assertEqual(
+            text,
+            'Rule AMOUNT_OVER_3X_AVG: Amount is 4× this payee’s usual payout ($520 avg). '
+            'Rule DUPLICATE_24H: Same payee and amount as yesterday (possible duplicate). '
+            'Review before sending.')
+        self.assertEqual(text.count('Review before sending.'), 1)
+        self.assertTrue(text.endswith('Review before sending.'))
+        self.assertEqual((source, fallback), ('rules', False))
+
+    def test_listed_name_period_stays_with_its_rule(self):
+        text, source, fallback = payout_notes.rules_note({
+            'flag_code': 'POSSIBLE_SANCTIONS_MATCH,NEW_PAYEE_OVER_1000',
+            'flag_text': 'Possible sanctions match: MSP KALA NAFT CO. TEHRAN, score 100, '
+                         'OFAC SDN list published 2026-11-09, snapshot taken 2026-11-12. '
+                         'No paid payout to this payee yet; amount is over $1,000',
+        })
+        self.assertEqual(
+            text,
+            'Rule POSSIBLE_SANCTIONS_MATCH: Possible sanctions match: MSP KALA NAFT CO. TEHRAN, '
+            'score 100, OFAC SDN list published 2026-11-09, snapshot taken 2026-11-12. '
+            'Rule NEW_PAYEE_OVER_1000: No paid payout to this payee yet; amount is over $1,000. '
+            'Review before sending.')
+        self.assertEqual(text.count('Review before sending.'), 1)
+        self.assertNotIn('Review before sending. Rule ', text)
+        self.assertEqual((source, fallback), ('rules', False))
+
+    def test_unknown_codes_stay_clean_and_one_known_stays_single(self):
+        self.assertEqual(
+            payout_notes.rules_note({'flag_code': 'NOT_A_RULE', 'flag_text': 'Something happened'}),
+            (payout_notes.CLEAN_NOTE, 'rules', False))
+        self.assertEqual(
+            payout_notes.rules_note({'flag_code': 'NOT_A_RULE,ALSO_NOT', 'flag_text': 'One. Two'}),
+            (payout_notes.CLEAN_NOTE, 'rules', False))
+        text, source, fallback = payout_notes.rules_note({
+            'flag_code': 'NOT_A_RULE,BANK_CHANGED_7D',
+            'flag_text': 'Something happened. Payee bank details changed today',
+        })
+        self.assertEqual(text, payout_notes.BANK_CHANGED_NOTE)
+        self.assertNotIn('Payee bank details changed today', text)
+        self.assertEqual((source, fallback), ('rules', False))
 
 
 class StoredNoteTests(unittest.TestCase):
