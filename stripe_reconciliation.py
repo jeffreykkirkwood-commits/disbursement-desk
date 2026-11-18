@@ -18,6 +18,8 @@ Item results:
 """
 import json
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 from desk_common import APIError
 import payouts
@@ -38,6 +40,10 @@ ITEM_RESULTS = (
 IN_SCOPE_STATUSES = frozenset({
     payouts.SUBMITTED, payouts.UNKNOWN, payouts.SETTLED, payouts.FAILED})
 _TERMINAL = frozenset({payouts.SETTLED, payouts.FAILED})
+# Operator surface: persist the last run's mismatch view next to the demo database.
+LAST_SUMMARY_FILE = 'stripe_recon_last.json'
+MISMATCH_RESULTS = frozenset({MISMATCH, MISSING_ON_STRIPE, ERROR})
+MAX_MISMATCH_ITEMS = 50
 
 
 def reconcile_stripe(database, *, dry_run=True, now=None, retrieve=None, env=None):
@@ -60,6 +66,56 @@ def reconcile_stripe(database, *, dry_run=True, now=None, retrieve=None, env=Non
         items.append(item)
     run = {name: sum(item['result'] == name for item in items) for name in ITEM_RESULTS}
     return {'dry_run': bool(dry_run), 'run': run, 'items': items}
+
+
+def summary_path(database):
+    return Path(database).resolve().parent / LAST_SUMMARY_FILE
+
+
+def mismatch_summary(report, *, operator_id='', ran_at=None):
+    """Build the operator-facing last-run summary from a reconcile_stripe report."""
+    when = ran_at or datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    mismatches = [
+        item for item in report.get('items') or []
+        if item.get('result') in MISMATCH_RESULTS
+    ][:MAX_MISMATCH_ITEMS]
+    return {
+        'ran_at': when,
+        'dry_run': bool(report.get('dry_run')),
+        'operator_id': operator_id or '',
+        'run': dict(report.get('run') or {}),
+        'mismatches': mismatches,
+    }
+
+
+def load_last_summary(database):
+    path = summary_path(database)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or 'run' not in data:
+        return None
+    return data
+
+
+def save_last_summary(database, summary):
+    path = summary_path(database)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    return summary
+
+
+def run_and_remember(database, *, dry_run=True, operator_id='', now=None,
+                     retrieve=None, env=None, ran_at=None):
+    """Run reconcile_stripe and persist the mismatch summary for the Desk surface."""
+    report = reconcile_stripe(
+        database, dry_run=dry_run, now=now, retrieve=retrieve, env=env)
+    summary = mismatch_summary(report, operator_id=operator_id, ran_at=ran_at)
+    save_last_summary(database, summary)
+    return {'report': report, 'summary': summary}
 
 
 def _scoped_payouts(database):

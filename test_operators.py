@@ -25,6 +25,7 @@ class OperatorUnitTests(unittest.TestCase):
         self.assertEqual(op.actor, f'Ada <{op.operator_id}>')
         self.assertTrue(op.can_decide())
         self.assertFalse(op.can_reset())
+        self.assertFalse(op.can_reconcile_stripe())
 
     def test_ensure_for_demo_persists_once(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -113,6 +114,10 @@ class OperatorHttpTests(unittest.TestCase):
                 reset = client.post('/payouts/reset', base_url=SITE, headers={'Origin': SITE})
                 self.assertEqual(reset.status_code, 403)
                 self.assertEqual(reset.json['code'], 'OPERATOR_FORBIDDEN')
+                recon = client.post('/stripe/reconciliation', base_url=SITE,
+                                    headers={'Origin': SITE}, json={})
+                self.assertEqual(recon.status_code, 403)
+                self.assertEqual(recon.json['code'], 'OPERATOR_FORBIDDEN')
                 hold = client.post(
                     '/payouts/PO-1043/hold', json={}, base_url=SITE,
                     headers={'Idempotency-Key': 'rev-hold', 'Origin': SITE})

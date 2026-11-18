@@ -86,6 +86,21 @@ Look up either direction without live Stripe:
 - The CSV fixture job in `reconciliation.py` is a separate path and is not used here.
 - Unit coverage is in `test_stripe_reconciliation.py` (mocked Stripe; no live secrets).
 
+### Operator surface (Desk)
+
+Admins see a **Stripe recon** strip on the Desk (below Reset demo): last
+mismatch summary, **Run dry-run**, and **Apply…** (confirm required). Reviewers
+do not see it.
+
+| Path | Who | Behavior |
+|------|-----|----------|
+| `GET /stripe/reconciliation` | admin | Last summary JSON (`summary` may be `null`) |
+| `POST /stripe/reconciliation` | admin | Dry-run unless body includes `"apply": true` |
+
+Dry-run needs no Stripe secrets on a seed demo (no Stripe refs → empty report).
+Apply still calls Stripe retrieve; without secrets, in-scope rows report `error`.
+CLI `--apply` remains available for operators who prefer the module entrypoint.
+
 ## Still blocked (outside this checklist's checked boxes)
 
 - Render Stripe secrets (`rk_test_` / `whsec_` / destination map / `STRIPE_DEMO_ID`)

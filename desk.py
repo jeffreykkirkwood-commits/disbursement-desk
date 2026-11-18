@@ -29,6 +29,14 @@ FINAL_MESSAGE = 'This payout is final. No actions available.'
 ACTION_FAILED = 'That didn’t save. Nothing has changed. Try again.'
 RESET_FAILED = 'That didn’t reset. Nothing has changed. Try again.'
 CREATE_FAILED = 'That didn’t create. Nothing has changed. Try again.'
+RECON_FAILED = 'That didn’t run. Nothing has changed. Try again.'
+RECON_HEADING = 'Stripe recon'
+RECON_APPLY_HEADING = 'Apply Stripe recon?'
+RECON_APPLY_BODY = (
+    'This writes SETTLED or FAILED from Stripe onto Desk execution status. '
+    'Dry-run first unless you intend to apply.')
+RECON_APPLY_OK = 'Apply'
+RECON_NONE = 'No Stripe recon yet.'
 CREATE_HEADING = 'Create a demo payout'
 CREATE_HINT = 'Synthetic payee only. Uses the same Idempotency-Key rules as the API.'
 # Viewer words for payout_events.action (who/what/when on the detail panel).
@@ -354,11 +362,40 @@ def _detail(payout, events=()):
     return ''.join(parts)
 
 
+def _recon_line(summary):
+    if not summary or not isinstance(summary, dict):
+        return RECON_NONE
+    run = summary.get('run') or {}
+    mode = 'dry-run' if summary.get('dry_run', True) else 'apply'
+    count = (
+        int(run.get('mismatch') or 0)
+        + int(run.get('missing_on_stripe') or 0)
+        + int(run.get('error') or 0))
+    label = 'mismatch' if count == 1 else 'mismatches'
+    return f'Last {mode} · {count} {label}'
+
+
+def _stripe_recon_block(operator, summary):
+    can = bool(operator and getattr(operator, 'can_reconcile_stripe', lambda: False)())
+    if not can:
+        return ''
+    line = text(_recon_line(summary))
+    return (
+        f'<p class="recon" aria-label="{RECON_HEADING}">'
+        f'<span class="recon-label">{RECON_HEADING}</span>'
+        f'<span id="recon-line" class="recon-line">{line}</span>'
+        f'<button type="button" id="recon-dry" class="link">Run dry-run</button>'
+        f'<button type="button" id="recon-apply" class="link">Apply…</button>'
+        f'<span id="recon-error" class="err-inline" role="status" hidden>{RECON_FAILED}</span>'
+        f'</p>')
+
+
 # FEATURE 03 — Build the whole Desk page
 # queue is the current-queue payouts (payouts.current_queue), or None when it could not be
 # read, which shows the approved load-error sentence instead of the list (Q2 option A).
 # The list is part of the first paint, so there is no loading message.
-def render_desk(queue, demo_id='local-test', operator=None, events_by_id=None):
+def render_desk(queue, demo_id='local-test', operator=None, events_by_id=None,
+                stripe_recon_summary=None):
     events_by_id = events_by_id or {}
     if queue is None:
         exceptions = total = details = ''
@@ -372,6 +409,7 @@ def render_desk(queue, demo_id='local-test', operator=None, events_by_id=None):
     operator_name = text(getattr(operator, 'display_name', None) or 'Desk operator')
     operator_role = text(getattr(operator, 'role', None) or 'admin')
     operator_id = text(getattr(operator, 'operator_id', None) or 'local-test')
+    recon_block = _stripe_recon_block(operator, stripe_recon_summary)
     return '''<!doctype html>
 <html lang="en"><head><meta name="demo-id" content="''' + text(demo_id) + '''"><meta name="operator-id" content="''' + operator_id + '''"><meta name="operator-role" content="''' + operator_role + '''"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Disbursement Desk · Example data</title>
@@ -479,6 +517,11 @@ dialog .btn{min-width:110px}
 .err-inline[hidden]{display:none}
 .foot .err-inline{display:inline;margin:0 0 0 .4em;padding:4px 8px;font-size:14px}
 .foot .err-inline[hidden]{display:none}
+.recon{margin:10px 0 0;padding-top:10px;border-top:1px solid var(--line);color:var(--muted);font-size:14px;display:flex;flex-wrap:wrap;gap:8px 12px;align-items:baseline}
+.recon-label{font-weight:700;color:var(--ink)}
+.recon-line{margin-right:4px}
+.recon .err-inline{display:inline;margin:0;padding:4px 8px;font-size:14px}
+.recon .err-inline[hidden]{display:none}
 @media(max-width:760px){
  .top{padding:12px 16px}.brand{font-size:17px}.tag{font-size:12px}
  .layout{grid-template-columns:minmax(0,1fr);padding:16px}
@@ -504,6 +547,7 @@ dialog .btn{min-width:110px}
     </div>
     <ul id="list" class="list">''' + items + '''</ul>
     <p class="foot">Your changes stay in this browser only. <button type="button" id="reset" class="link">Reset demo</button><span id="r-error" class="err-inline" role="status" hidden>''' + RESET_FAILED + '''</span></p>
+    ''' + recon_block + '''
   </section>
   <aside id="detail" class="detail" aria-label="Payout detail" hidden>''' + details + '''</aside>
 </main>
@@ -513,6 +557,13 @@ dialog .btn{min-width:110px}
   <p id="c-body"></p>
   <p id="c-error" class="err-inline" role="alert" hidden>''' + ACTION_FAILED + '''</p>
   <div class="row2"><button type="button" class="btn" id="cancel">Cancel</button><button type="button" id="ok"></button></div>
+</dialog>
+<dialog id="recon-confirm" aria-labelledby="rq-h">
+  <h2 id="rq-h">''' + RECON_APPLY_HEADING + '''</h2>
+  <p>''' + RECON_APPLY_BODY + '''</p>
+  <p id="rq-error" class="err-inline" role="alert" hidden>''' + RECON_FAILED + '''</p>
+  <div class="row2"><button type="button" class="btn" id="rq-cancel">Cancel</button>
+    <button type="button" class="btn danger" id="rq-ok">''' + RECON_APPLY_OK + '''</button></div>
 </dialog>
 <dialog id="create" aria-labelledby="cr-h">
   <h2 id="cr-h">''' + CREATE_HEADING + '''</h2>
