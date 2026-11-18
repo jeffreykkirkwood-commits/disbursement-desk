@@ -13,6 +13,25 @@ swallows it before the SDK's signal). When the DSN is unset or blank, the SDK
 stays idle (CI and local demos need no secret). Set the DSN only in the Render
 Dashboard (`sync: false` in `render.yaml`).
 
+## OpenTelemetry (Wave O2)
+
+**Gate:** `OTEL_EXPORTER_OTLP_ENDPOINT`. When set, `create_app` installs Flask
+instrumentation and an OTLP/HTTP span exporter aimed at that endpoint. When
+unset or blank, OpenTelemetry stays idle (CI and local demos need no secret).
+
+Each request's Desk `request_id` is copied onto the active HTTP span as attribute
+`request_id` (same value as JSON logs and `X-Request-ID`).
+
+Companion env (optional):
+
+| Key | Role |
+|-----|------|
+| `OTEL_EXPORTER_OTLP_HEADERS` | Auth headers for the exporter (`sync: false` in Blueprint). |
+| `OTEL_SERVICE_NAME` | Resource `service.name`. Default `disbursement-desk`. Not a secret. |
+
+Set endpoint (and headers when the backend needs them) only in the Render
+Dashboard. Do not commit values.
+
 ## Counters
 
 | Name | When |
