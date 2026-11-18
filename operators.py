@@ -49,6 +49,10 @@ class Operator:
     def can_reset(self):
         return self.role == ROLE_ADMIN
 
+    def can_reconcile_stripe(self):
+        """Stripe recon dry-run and apply stay admin-only, same gate as Reset."""
+        return self.role == ROLE_ADMIN
+
     def public(self):
         return {
             'operator_id': self.operator_id,

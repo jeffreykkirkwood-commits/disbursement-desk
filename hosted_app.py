@@ -21,6 +21,7 @@ import payouts
 import payout_rules
 import payout_events
 import stripe_connect
+import stripe_reconciliation
 from desk import render_desk
 from demo_sessions import DemoStore, DemoCapacityError
 from event_log import event, request_context, make_logger
@@ -316,8 +317,9 @@ def create_app(directory=None, public_origin=None):
             event('desk_load_failed', level=logging.ERROR, error_type=type(error).__name__)
             g.metric_503_reason = 'desk_load'
             return render_desk(None, g.demo_id or 'local-test', operator=g.operator), 503
+        last_recon = stripe_reconciliation.load_last_summary(g.payments.database)
         return render_desk(queue, g.demo_id or 'local-test', operator=g.operator,
-                           events_by_id=events_by_id)
+                           events_by_id=events_by_id, stripe_recon_summary=last_recon)
 
     # FEATURE 19b — Report the signed-in operator for this demo session
     # Read-only JSON. Actor identity for decide/reset comes from this principal (or a
@@ -627,6 +629,44 @@ def create_app(directory=None, public_origin=None):
               mismatched=report['run']['mismatched_count'],
               unknown=report['run']['unknown_count'])
         return jsonify(report)
+
+    # FEATURE 27b — Stripe recon operator surface (dry-run default; admin only)
+    # GET returns the last mismatch summary (or null). POST runs
+    # stripe_reconciliation; omit apply or send apply:false for dry-run.
+    # apply:true is required to write. Never auto-applies.
+    def _require_stripe_recon_admin():
+        if not g.operator.can_reconcile_stripe():
+            return jsonify(error='Only an admin operator can run Stripe reconciliation.',
+                           code=api_contract.OPERATOR_FORBIDDEN), 403
+        return None
+
+    @app.route('/stripe/reconciliation', methods=['GET', 'POST'])
+    def stripe_reconciliation_surface():
+        refused = _require_stripe_recon_admin()
+        if refused is not None:
+            return refused
+        database = g.payments.database
+        if request.method == 'GET':
+            return jsonify(summary=stripe_reconciliation.load_last_summary(database))
+        body = request.get_json(silent=True)
+        if body is None:
+            if request.data:
+                return jsonify(error='Send a JSON object, or an empty body for dry-run.',
+                               code=api_contract.INVALID_JSON_BODY), 422
+            body = {}
+        if not isinstance(body, dict):
+            return jsonify(error='Send a JSON object with optional apply.',
+                           code=api_contract.INVALID_JSON_BODY), 422
+        apply = bool(body.get('apply'))
+        result = stripe_reconciliation.run_and_remember(
+            database, dry_run=not apply, operator_id=g.operator.operator_id)
+        event('stripe_reconciliation_run', dry_run=not apply,
+              operator_id=g.operator.operator_id,
+              mismatch=result['report']['run'].get('mismatch', 0),
+              would_update=result['report']['run'].get('would_update', 0),
+              updated=result['report']['run'].get('updated', 0))
+        return jsonify(report=result['report'], summary=result['summary'],
+                       operator=g.operator.public())
 
     @app.post('/stripe/webhook')
     def stripe_webhook():

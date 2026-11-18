@@ -339,10 +339,55 @@
     location.replace(location.pathname + location.search);
   }
 
+  // Stripe recon: dry-run is the default POST. Apply only after the confirm dialog
+  // posts {apply:true}. Admin-only markup is omitted for reviewers.
+  let reconBusy = false;
+  const reconError = document.getElementById('recon-error');
+  const reconConfirm = document.getElementById('recon-confirm');
+  const reconConfirmError = document.getElementById('rq-error');
+  async function runStripeRecon(apply) {
+    if (reconBusy) return;
+    reconBusy = true;
+    if (reconError) reconError.hidden = true;
+    if (reconConfirmError) reconConfirmError.hidden = true;
+    const demo = document.querySelector('meta[name="demo-id"]');
+    try {
+      const reply = await fetch('/stripe/reconciliation', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Demo-ID': demo ? demo.content : '',
+        },
+        body: JSON.stringify(apply ? {apply: true} : {}),
+      });
+      if (!reply.ok) {
+        if (await sessionCode(reply) === 'DEMO_SESSION_CHANGED' && recoverSession()) return;
+        throw new Error('not recon');
+      }
+    } catch (error) {
+      reconBusy = false;
+      if (apply && reconConfirmError) reconConfirmError.hidden = false;
+      else if (reconError) reconError.hidden = false;
+      return;
+    }
+    try { sessionStorage.removeItem('desk-session-reloaded'); } catch (err) {}
+    location.replace(location.pathname + location.search);
+  }
+
   if (createForm) createForm.addEventListener('submit', submitCreate);
 
   document.addEventListener('click', e => {
     if (e.target.closest('#reset')) { resetDemo(); return; }
+    if (e.target.closest('#recon-dry')) { runStripeRecon(false); return; }
+    if (e.target.closest('#recon-apply')) {
+      if (reconConfirm) {
+        if (reconConfirmError) reconConfirmError.hidden = true;
+        reconConfirm.showModal();
+      }
+      return;
+    }
+    if (e.target.closest('#rq-cancel')) { if (reconConfirm) reconConfirm.close(); return; }
+    if (e.target.closest('#rq-ok')) { runStripeRecon(true); return; }
     if (e.target.closest('#create-open')) { openCreate(); return; }
     if (e.target.closest('#cr-cancel')) { if (createDialog) createDialog.close(); return; }
     if (e.target.closest('#cancel')) { dialog.close(); return; }
@@ -365,6 +410,7 @@
     if (e.key !== 'Escape') return;
     if (dialog && dialog.open) return;
     if (createDialog && createDialog.open) return;
+    if (reconConfirm && reconConfirm.open) return;
     if (!selected) return;
     e.preventDefault();
     close(true);

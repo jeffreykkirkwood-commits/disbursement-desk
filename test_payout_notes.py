@@ -514,7 +514,9 @@ class OpenaiBanTests(unittest.TestCase):
     def test_desk_js_does_not_mention_openai(self):
         script = Path(__file__).with_name('desk.js').read_text(encoding='utf-8')
         self.assertNotIn('openai', script.lower())
-        self.assertEqual(script.count('fetch('), 3)
+        # Decide, reset, create, Stripe recon — still no model SDK fetch.
+        self.assertIn("fetch('/stripe/reconciliation'", script)
+        self.assertEqual(script.count('fetch('), 4)
 
     def test_notes_module_and_requirements_skip_openai_package(self):
         source = Path(__file__).with_name('payout_notes.py').read_text(encoding='utf-8')
