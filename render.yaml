@@ -43,5 +43,7 @@ services:
         sync: false
       - key: TURSO_AUTH_TOKEN
         sync: false
+      - key: SENTRY_DSN
+        sync: false
       - key: PUBLIC_ORIGIN
         sync: false

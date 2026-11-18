@@ -81,6 +81,7 @@ Dashboard values after first create:
 | `OFAC_HTTP_URL` / `OFAC_HTTP_TOKEN` | Live OFAC vendor |
 | `DESK_AI_API_KEY` | Optional note paraphrase HTTP bearer. Off unless `DESK_AI_NOTES=1`. |
 | `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | Durable SQLite |
+| `SENTRY_DSN` | Sentry error reporting. Unset → SDK stays idle. |
 | `PUBLIC_ORIGIN` | Explicit HTTPS origin (else `RENDER_EXTERNAL_URL`) |
 
 Code inventory of secret keys: `deploy_posture.SECRET_ENV_KEYS`.

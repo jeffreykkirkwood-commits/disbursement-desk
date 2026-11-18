@@ -24,6 +24,7 @@ SECRET_ENV_KEYS = (
     'DESK_AI_API_KEY',
     'TURSO_DATABASE_URL',
     'TURSO_AUTH_TOKEN',
+    'SENTRY_DSN',
 )
 
 
