@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 import demo_scenario
 import ofac
@@ -18,6 +19,31 @@ from desk_common import APIError
 NOW = datetime(2026, 11, 12, 16, 0, tzinfo=timezone.utc)
 CODES = lambda items: [item['code'] for item in items]
 PO_4101_CENTS = 150000  # $1,500: new-payee-over-$1,000 plus the sanctions match
+ALL_STORED_FLAG_CODES = frozenset(payouts.FLAG_TEXT)
+INVENTED_FLAG_CODES = frozenset({'FIRST_TIME_PAYEE', 'ABA', 'INVALID_HOLD_CODE'})
+
+
+def codes_mentioned_in_text(text):
+    return {code for code in ALL_STORED_FLAG_CODES if code in text}
+
+
+def joined_reason_labels(items):
+    return payouts.FLAG_TEXT_SEP.join(item['label'] for item in items)
+
+
+def assert_invent_guard(test, narrative, stored_codes, allowed_text=''):
+    """Fail if narrative invents codes or generic FLAG_TEXT for unstored rules.
+
+    allowed_text is the payout's stored flag_text (or joined labels). A generic
+    sentence that already appears inside that stored text is allowed — a listed
+    SDN name can contain wording that matches another rule's generic line.
+    """
+    test.assertLessEqual(codes_mentioned_in_text(narrative), set(stored_codes))
+    for code in INVENTED_FLAG_CODES:
+        test.assertNotIn(code, narrative)
+    for code, generic in payouts.FLAG_TEXT.items():
+        if code not in stored_codes and generic not in allowed_text:
+            test.assertNotIn(generic, narrative)
 
 
 def stored_flag_codes(database, payout_id):
@@ -245,6 +271,123 @@ class ReviewReasonsCreateTests(unittest.TestCase):
                          set(stored_flag_codes(self.db, 'PO-5105')))
 
 
+class ReviewReasonsNarrativeTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.db = Path(self.temp.name) / 'payments.sqlite3'
+        payouts.ensure_seeded(self.db)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def narrative(self, payout_id):
+        payout = payouts.get_payout(self.db, payout_id)
+        earlier = [p for p in payouts.list_payouts(self.db)
+                   if p['payout_id'] != payout_id]
+        return review_reasons.narrative_for_payout(payout, earlier)
+
+    # FEATURE 11 — Narrative — multi-flag paragraph uses stored labels only
+    def test_narrative_multi_flag_joins_stored_labels(self):
+        payout_rules.create(
+            self.db, 'PO-4101', ofac.DEMO_PAYEE_NAME, ofac.DEMO_PAYEE_ACCOUNT,
+            PO_4101_CENTS, 'ACH', now=NOW)
+        items = review_reasons.for_payout(self.db, 'PO-4101')
+        payout = payouts.get_payout(self.db, 'PO-4101')
+        text = self.narrative('PO-4101')
+        self.assertEqual(CODES(items),
+                         [payouts.NEW_PAYEE_OVER_1000, payouts.POSSIBLE_SANCTIONS_MATCH])
+        self.assertEqual(text, joined_reason_labels(items))
+        self.assertEqual(text, payout['flag_text'])
+        self.assertIn(items[0]['label'], text)
+        self.assertIn(items[1]['label'], text)
+        self.assertIn(payouts.FLAG_TEXT_SEP, text)
+        assert_invent_guard(self, text, CODES(items), payout['flag_text'] or '')
+
+    # FEATURE 12 — Narrative — OFAC held payout uses the stored sanctions sentence
+    def test_narrative_ofac_uses_stored_sentence(self):
+        payout_rules.create(
+            self.db, 'PO-4100', ofac.DEMO_PAYEE_NAME, ofac.DEMO_PAYEE_ACCOUNT,
+            ofac.DEMO_AMOUNT_CENTS, 'ACH', now=NOW)
+        items = review_reasons.for_payout(self.db, 'PO-4100')
+        payout = payouts.get_payout(self.db, 'PO-4100')
+        with mock.patch('ofac.screen', side_effect=AssertionError('must not rescreen')):
+            text = self.narrative('PO-4100')
+        self.assertEqual(CODES(items), [payouts.POSSIBLE_SANCTIONS_MATCH])
+        self.assertEqual(text, items[0]['label'])
+        self.assertEqual(text, payout['flag_text'])
+        self.assertIn('Possible sanctions match:', text)
+        self.assertIn('OFAC SDN list published', text)
+        assert_invent_guard(self, text, CODES(items), payout['flag_text'] or '')
+
+    # FEATURE 13 — Narrative — clean / not-in-review payouts return an empty string
+    def test_narrative_clean_and_empty_when_not_in_review(self):
+        self.assertEqual(self.narrative('PO-1039'), '')
+        self.assertEqual(self.narrative('PO-1037'), '')
+        self.assertEqual(review_reasons.narrative_from_stored_reasons([]), '')
+        self.assertEqual(
+            review_reasons.narrative_for_payout({
+                'status': payouts.FLAGGED,
+                'flag_code': '',
+                'flag_text': '',
+            }),
+            '')
+        self.assertEqual(
+            review_reasons.narrative_for_payout({
+                'status': payouts.PAID,
+                'flag_code': payouts.AMOUNT_OVER_3X_AVG,
+                'flag_text': payouts.FLAG_TEXT[payouts.AMOUNT_OVER_3X_AVG],
+            }),
+            '')
+        # Settled payout can still carry flag_code; narrative follows reasons().
+        payout_rules.create(
+            self.db, 'PO-5100', 'Oak Street Books', 'DEMO-OAKS-010', 100001,
+            'ACH', now=NOW)
+        held = payouts.get_payout(self.db, 'PO-5100')
+        self.assertIn(payouts.NEW_PAYEE_OVER_1000, held['flag_code'])
+        payouts.decide(self.db, 'PO-5100', 'approve', 'Desk operator',
+                       'approve:PO-5100', now=NOW)
+        settled = payouts.get_payout(self.db, 'PO-5100')
+        self.assertNotIn(settled['status'], review_reasons.IN_REVIEW)
+        self.assertIn(payouts.NEW_PAYEE_OVER_1000, settled['flag_code'])
+        self.assertEqual(self.narrative('PO-5100'), '')
+
+    # FEATURE 14 — Narrative — invent-guard across seed and synthetic holds
+    def test_narrative_invent_guard_never_invents_codes_or_unknown_flags(self):
+        demo_scenario.run(self.db)
+        payout_rules.create(
+            self.db, 'PO-4100', ofac.DEMO_PAYEE_NAME, ofac.DEMO_PAYEE_ACCOUNT,
+            ofac.DEMO_AMOUNT_CENTS, 'ACH', now=NOW)
+        payout_rules.create(
+            self.db, 'PO-1048', 'Acme Supplies', 'DEMO-ACME-001', 485000, 'ACH',
+            bank_details_changed_at=NOW.isoformat(), now=NOW)
+        checked = 0
+        for payout in payouts.list_payouts(self.db):
+            text = self.narrative(payout['payout_id'])
+            if payout['status'] not in review_reasons.IN_REVIEW:
+                self.assertEqual(text, '')
+                continue
+            stored = stored_flag_codes(self.db, payout['payout_id'])
+            items = review_reasons.for_payout(self.db, payout['payout_id'])
+            self.assertEqual(text, joined_reason_labels(items))
+            self.assertEqual(text, payout['flag_text'] or '')
+            assert_invent_guard(self, text, stored, payout['flag_text'] or '')
+            checked += 1
+        self.assertGreater(checked, 0)
+
+    def test_narrative_invent_guard_ofac_only_excludes_other_rule_text(self):
+        payout_rules.create(
+            self.db, 'PO-4100', ofac.DEMO_PAYEE_NAME, ofac.DEMO_PAYEE_ACCOUNT,
+            ofac.DEMO_AMOUNT_CENTS, 'ACH', now=NOW)
+        text = self.narrative('PO-4100')
+        stored = [payouts.POSSIBLE_SANCTIONS_MATCH]
+        payout = payouts.get_payout(self.db, 'PO-4100')
+        assert_invent_guard(self, text, stored, payout['flag_text'] or '')
+        self.assertNotIn(payouts.FLAG_TEXT[payouts.AMOUNT_OVER_3X_AVG], text)
+        self.assertNotIn(payouts.FLAG_TEXT[payouts.NEW_PAYEE_OVER_1000], text)
+        self.assertNotIn(payouts.FLAG_TEXT[payouts.BANK_CHANGED_7D], text)
+        self.assertNotIn(payouts.FLAG_TEXT[payouts.DUPLICATE_24H], text)
+
+
 class ReviewReasonsHttpTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -273,6 +416,11 @@ class ReviewReasonsHttpTests(unittest.TestCase):
         self.assertEqual(reply.json['reasons'][0]['details']['ratio'], 6)
         self.assertEqual(reply.json['reasons'][0]['label'],
                          'Amount is 6× this payee’s usual payout ($790 avg)')
+        self.assertEqual(
+            reply.json['narrative'],
+            'Amount is 6× this payee’s usual payout ($790 avg)')
+        assert_invent_guard(self, reply.json['narrative'], codes,
+                            reply.json['narrative'])
 
     def test_get_review_reasons_for_sanctions_demo_payee(self):
         self.open_desk()
@@ -293,6 +441,30 @@ class ReviewReasonsHttpTests(unittest.TestCase):
         self.assertEqual(details['list_published'], '2026-11-09')
         self.assertEqual(details['snapshot_taken'], '2026-11-12')
         self.assertNotIn('uid', details)
+        self.assertEqual(reply.json['narrative'], reply.json['reasons'][0]['label'])
+        self.assertIn('Possible sanctions match:', reply.json['narrative'])
+        assert_invent_guard(self, reply.json['narrative'],
+                            [payouts.POSSIBLE_SANCTIONS_MATCH],
+                            reply.json['narrative'])
+
+    def test_get_review_reasons_multi_flag_narrative(self):
+        self.open_desk()
+        created = self.client.post(
+            '/payouts/simulate',
+            json={'payee_name': ofac.DEMO_PAYEE_NAME, 'payee_account': ofac.DEMO_PAYEE_ACCOUNT,
+                  'amount_cents': PO_4101_CENTS, 'rail': 'ACH', 'payout_id': 'PO-4101'},
+            base_url='https://demo.example',
+            headers={'Origin': 'https://demo.example',
+                     'Idempotency-Key': 'review-reasons-ofac-4101'})
+        self.assertEqual(created.status_code, 201)
+        reply = self.get_reasons('PO-4101')
+        self.assertEqual(reply.status_code, 200)
+        items = reply.json['reasons']
+        self.assertEqual(CODES(items),
+                         [payouts.NEW_PAYEE_OVER_1000, payouts.POSSIBLE_SANCTIONS_MATCH])
+        self.assertEqual(reply.json['narrative'], joined_reason_labels(items))
+        assert_invent_guard(self, reply.json['narrative'], CODES(items),
+                            reply.json['narrative'])
 
     def test_get_missing_payout_is_404(self):
         self.open_desk()
@@ -304,6 +476,8 @@ class ReviewReasonsHttpTests(unittest.TestCase):
         reply = self.get_reasons('PO-1039')
         self.assertEqual(reply.status_code, 200)
         self.assertEqual(reply.json['reasons'], [])
+        self.assertEqual(reply.json['narrative'], '')
+        assert_invent_guard(self, reply.json['narrative'], [])
 
     def test_valid_routing_number_is_not_a_stored_reason(self):
         self.open_desk()
