@@ -1,10 +1,14 @@
-# PR issue-link check (#227): fails a pull request whose body does not link a
-# tracking issue with Closes/Fixes/Resolves/Refs #N (a cross-repo owner/repo#N
-# or a full github.com/.../issues/N URL also counts). Reads the PR body text,
-# not GitHub's linked-issues field, so a PR into staging still counts. Text
-# inside HTML comments does not count. Skips Dependabot PRs. Body and user are
-# passed via env (never interpolated into run:) to avoid script injection.
-# 'edited' re-runs it after a body fix. Free GitHub Actions, built-in token only.
+# PR issue-link gate (#227): body must link a tracking issue with
+# Closes/Fixes/Resolves/Refs #N (cross-repo owner/repo#N or a full
+# github.com/.../issues/N URL also counts). Reads body text, not GitHub's
+# linked-issues field. HTML comments do not count.
+# #47: same stale-red class as card-format — each pull_request edited event used
+# to create a new failing Actions check run that stayed red after a body fix.
+# Post a commit status named "check-issue-link" on the PR head SHA so edits
+# overwrite the same status. The Actions job always exits 0 after posting; the
+# real gate is the status context check-issue-link.
+# Skips Dependabot. Body is read with gh api into env (never ${{ }} interpolated
+# into run:). Free GitHub Actions, built-in token only.
 name: PR issue link
 
 on:
@@ -14,23 +18,48 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  statuses: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  check-issue-link:
+  set-issue-link-status:
     if: github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Check the PR body links an issue
+      - name: Decide and set the check-issue-link status on the PR head
         env:
-          PR_BODY: ${{ github.event.pull_request.body }}
-          PR_USER: ${{ github.event.pull_request.user.login }}
-        run: python3 .github/scripts/check_pr_issue_link.py
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/pulls/$PR_NUMBER" > "$RUNNER_TEMP/pr.json"
+          HEAD_SHA=$(jq -r .head.sha "$RUNNER_TEMP/pr.json")
+          PR_BODY=$(jq -r '.body // ""' "$RUNNER_TEMP/pr.json")
+          PR_USER=$(jq -r '.user.login // ""' "$RUNNER_TEMP/pr.json")
+          set +e
+          PR_BODY="$PR_BODY" PR_USER="$PR_USER" \
+            python3 .github/scripts/check_pr_issue_link.py > "$RUNNER_TEMP/check.out" 2>&1
+          RC=$?
+          set -e
+          cat "$RUNNER_TEMP/check.out"
+          if [ "$RC" -eq 0 ]; then
+            STATE=success
+            DESC='PR body links a tracking issue.'
+          else
+            STATE=failure
+            DESC='PR body does not link an issue (use Refs/Closes/Fixes/Resolves #N).'
+            DESC=$(printf '%s' "$DESC" | cut -c1-140)
+          fi
+          echo "check-issue-link: $STATE - $DESC"
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state="$STATE" \
+            -f context=check-issue-link -f description="$DESC" -f target_url="$RUN_URL" > /dev/null

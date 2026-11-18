@@ -1,8 +1,13 @@
-# Card format check: fails a pull request whose title does not start with one of the six
-# category tags, e.g. [Bug fix] (junkjaws-app #148), or when any required card-format section
-# in the PR body is missing or blank (HTML comments and whitespace do not count).
-# The Proof section needs a non-empty "Inventory:" line (#222). Skips Dependabot PRs. Title and body are passed via env vars
-# (never interpolated into run:) to avoid script injection. 'edited' re-runs it after a title fix.
+# Card format gate: title must start with a category tag and the body must have the
+# required card sections plus a non-empty Inventory: line under Proof (#222).
+# #47: post a commit status named "check-card-format" on the PR head SHA so a body/title
+# edit overwrites the same status. Without that, each pull_request edited run creates a
+# new Actions check run and completed failures stay red on the Checks card even when a
+# later run on the same SHA is green. Required merge gate is the status context
+# check-card-format (branch protection already requires that name). The Actions job
+# always exits 0 after posting; historical job reds are not the merge signal.
+# Skips Dependabot. Title and body are read with gh api into env (never ${{ }}
+# interpolated into run:). Concurrency cancels in-progress PR runs only.
 name: Card format
 
 on:
@@ -12,6 +17,7 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  statuses: write
 
 # Cancel an outdated run when a PR gets a newer push or edit (#226). Pushes to main are never cancelled.
 concurrency:
@@ -19,17 +25,47 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  check-card-format:
+  set-card-format-status:
     if: github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Check PR title category and body card format
+      - name: Decide and set the check-card-format status on the PR head
         env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-        run: python3 .github/scripts/check_card_format.py
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/pulls/$PR_NUMBER" > "$RUNNER_TEMP/pr.json"
+          HEAD_SHA=$(jq -r .head.sha "$RUNNER_TEMP/pr.json")
+          PR_TITLE=$(jq -r '.title // ""' "$RUNNER_TEMP/pr.json")
+          PR_BODY=$(jq -r '.body // ""' "$RUNNER_TEMP/pr.json")
+          set +e
+          PR_TITLE="$PR_TITLE" PR_BODY="$PR_BODY" \
+            python3 .github/scripts/check_card_format.py > "$RUNNER_TEMP/check.out" 2>&1
+          RC=$?
+          set -e
+          cat "$RUNNER_TEMP/check.out"
+          if [ "$RC" -eq 0 ]; then
+            STATE=success
+            DESC='Card format OK: category title and required sections.'
+          else
+            STATE=failure
+            # Prefer the first "- …" problem line from the script; keep under 140 chars.
+            DETAIL=$(grep -m1 '^- ' "$RUNNER_TEMP/check.out" | sed 's/^- //' || true)
+            if [ -n "$DETAIL" ]; then
+              DESC="Card format failed: $DETAIL"
+            else
+              DESC='Card format failed: fix title category and/or required body sections.'
+            fi
+            DESC=$(printf '%s' "$DESC" | cut -c1-140)
+          fi
+          echo "check-card-format: $STATE - $DESC"
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state="$STATE" \
+            -f context=check-card-format -f description="$DESC" -f target_url="$RUN_URL" > /dev/null
