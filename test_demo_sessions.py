@@ -60,6 +60,10 @@ class BrowserDemoTests(unittest.TestCase):
         if cookie:
             values['Cookie'] = cookie
         values.update(headers or {})
+        # Real browsers send Origin on same-site POSTs; keep that default so
+        # scenarios exercise demo logic rather than the CSRF gate.
+        if method == 'POST':
+            values.setdefault('Origin', LOCAL_ORIGIN)
         connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=5)
         try:
             connection.request(method, path, body='{}' if method == 'POST' else None, headers=values)
@@ -127,6 +131,11 @@ class BrowserDemoTests(unittest.TestCase):
         a, aid = self.browser()
         self.assertEqual(self.call(cookie=a, method='POST', headers={'Origin': 'https://example.com'})[0], 403)
         self.assertEqual(self.call(cookie=a, method='POST', headers={'Sec-Fetch-Site': 'cross-site'})[0], 403)
+        # Cookie POST with neither Origin nor same-site Sec-Fetch-Site is refused.
+        self.assertEqual(
+            self.call(cookie=a, method='POST',
+                      headers={'Origin': '', 'X-Demo-ID': aid})[0],
+            403)
         self.assertEqual(self.call(cookie=a, method='POST',
                                    headers={'Origin': LOCAL_ORIGIN, 'X-Demo-ID': aid})[0], 201)
 

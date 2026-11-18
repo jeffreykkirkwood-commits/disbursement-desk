@@ -527,6 +527,17 @@ class StripeSendTests(unittest.TestCase):
         self.assertEqual(missing.exception.status, 404)
         self.assertEqual(self.stub.requests, [])
 
+    def test_empty_webhook_secret_is_503_without_parsing(self):
+        before = self.payout('PO-1042')
+        for secret in ('', '   '):
+            with self.subTest(secret=repr(secret)):
+                self.arm(STRIPE_WEBHOOK_SECRET=secret)
+                response = self.post_event(self.payment_intent_event('PO-1042'))
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(response.json['error'], 'Stripe webhook is not configured.')
+                self.assertEqual(self.payout('PO-1042'), before)
+                self.assertEqual(payouts.list_execution_events(self.db, 'PO-1042'), [])
+
     def test_bad_webhook_signature_is_400_without_a_demo_session(self):
         self.arm()
         before = self.payout('PO-1042')

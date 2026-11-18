@@ -2,6 +2,7 @@
 # The app shell (#122 step 2) has no payout routes yet, so these tests add two small probe
 # routes to their own app copy. The probes exist only inside the tests.
 """Exercise the hosted HTTP boundary with temporary fictional databases."""
+import json
 import os
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ from pathlib import Path
 from flask import g, jsonify, request
 from desk_common import APIError
 from hosted_app import create_app
+import operators
 
 ORIGIN = 'https://demo.example'
 
@@ -106,6 +108,11 @@ class HostedTests(unittest.TestCase):
         self.assertEqual(response.headers['X-Demo-ID'], response.json['demo_id'])
         self.assertEqual(response.headers['Cache-Control'], 'no-store')
         self.assertEqual(response.headers['X-Content-Type-Options'], 'nosniff')
+        self.assertEqual(response.headers['X-Frame-Options'], 'DENY')
+        self.assertIn("frame-ancestors 'none'", response.headers['Content-Security-Policy'])
+        self.assertIn('camera=()', response.headers['Permissions-Policy'])
+        self.assertEqual(response.headers['Strict-Transport-Security'],
+                         'max-age=31536000; includeSubDomains')
         self.assertTrue(response.headers['X-Request-ID'])
         self.assertEqual(len(self.demo_files()), 1)
         # The same browser keeps its demo.
@@ -156,16 +163,29 @@ class HostedTests(unittest.TestCase):
         self.assertEqual(self.post(**{'X-Demo-ID': fresh}).status_code, 201)
 
     # FEATURE 10 — Scenario — cross-site submissions are refused
-    # The Origin header is checked only when present; Sec-Fetch-Site cross-site is refused.
+    # Cookie browser POSTs need a matching Origin or same-origin/same-site Sec-Fetch-Site.
+    # Bearer API clients may omit Origin. Foreign Origin and cross-site stay refused.
     def test_cross_site_and_origin_checks(self):
         self.get()
         self.assertEqual(self.post(Origin='https://example.com').status_code, 403)
         self.assertEqual(self.post(Origin='null').status_code, 403)
         self.assertEqual(self.post(**{'Sec-Fetch-Site': 'cross-site'}).status_code, 403)
+        self.assertEqual(self.client.post('/probe', json={}, base_url=ORIGIN).status_code, 403)
         self.assertEqual(self.post().status_code, 201)
         bare = self.client.post('/probe', json={}, base_url=ORIGIN,
                                 headers={'Sec-Fetch-Site': 'same-origin'})
         self.assertEqual(bare.status_code, 201)
+        same_site = self.client.post('/probe', json={}, base_url=ORIGIN,
+                                     headers={'Sec-Fetch-Site': 'same-site'})
+        self.assertEqual(same_site.status_code, 201)
+        tokens = json.dumps({
+            'wave-a': {'id': 'op-wave', 'name': 'Wave', 'role': 'admin'},
+        })
+        with mock.patch.dict(os.environ, {operators.ENV_TOKENS: tokens}, clear=False):
+            bearer = self.client.post(
+                '/probe', json={}, base_url=ORIGIN,
+                headers={'Authorization': 'Bearer wave-a'})
+            self.assertEqual(bearer.status_code, 201)
 
     # FEATURE 11 — Scenario — oversized body is refused
     def test_oversized_body_rejected(self):
