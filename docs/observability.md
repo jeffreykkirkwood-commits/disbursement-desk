@@ -4,6 +4,15 @@ Desk already writes **structured JSON** log lines (`event_log.event`) with
 `request_id`, `event` name, and fields. This slice adds **process-local
 counters** for decide, create, HTTP 503, stream slots, and OFAC holds.
 
+## Sentry (Wave O1)
+
+When `SENTRY_DSN` is set, `hosted_app.create_app` initializes `sentry-sdk` with
+Flask integration and sets `release` from `RENDER_GIT_COMMIT`. The
+`internal_error` handler reports the exception to Sentry (Flask's errorhandler
+swallows it before the SDK's signal). When the DSN is unset or blank, the SDK
+stays idle (CI and local demos need no secret). Set the DSN only in the Render
+Dashboard (`sync: false` in `render.yaml`).
+
 ## Counters
 
 | Name | When |

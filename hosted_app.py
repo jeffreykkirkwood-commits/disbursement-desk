@@ -52,12 +52,31 @@ class DeskDemo:
         payout_events.sync(database)
 
 
+# FEATURE 01a — Optional Sentry (errors + release)
+# Idle when SENTRY_DSN is unset. Release is RENDER_GIT_COMMIT when present.
+# Capture runs in unexpected_error: FlaskIntegration's got_request_exception hook
+# never sees exceptions that an @app.errorhandler(Exception) already handles.
+def _init_sentry():
+    dsn = (os.environ.get('SENTRY_DSN') or '').strip()
+    if not dsn:
+        return False
+    import sentry_sdk
+    from sentry_sdk.integrations.flask import FlaskIntegration
+    sentry_sdk.init(
+        dsn=dsn,
+        integrations=[FlaskIntegration()],
+        release=os.environ.get('RENDER_GIT_COMMIT') or None,
+    )
+    return True
+
+
 # FEATURE 01 — Assemble the web application
 # Connect HTTP requests (messages from browsers or API clients) to the Desk. Limit
 # request size and choose a trusted public website address. Every visitor gets a
 # separate temporary demo database.
 def create_app(directory=None, public_origin=None):
     app = Flask(__name__, static_folder=None)
+    app.extensions['sentry_enabled'] = _init_sentry()
     app.config['MAX_CONTENT_LENGTH'] = 10000  # Refuse request bodies over ~10 KB.
     WEBHOOK_MAX_CONTENT_LENGTH = 65536
     ENDPOINTS_WITHOUT_DEMO_DB = frozenset({
@@ -273,6 +292,12 @@ def create_app(directory=None, public_origin=None):
     @app.errorhandler(Exception)
     def unexpected_error(error):
         event('internal_error', level=logging.ERROR, error_type=type(error).__name__)
+        if app.extensions.get('sentry_enabled'):
+            try:
+                import sentry_sdk
+                sentry_sdk.capture_exception(error)
+            except Exception:
+                pass
         return jsonify(error='Internal server error. Retry with the same idempotency key.',
                        code=api_contract.INTERNAL_ERROR), 500
 

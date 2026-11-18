@@ -253,6 +253,60 @@ class HostedTests(unittest.TestCase):
                 finally:
                     app.extensions['close']()
 
+    # FEATURE 15 — Scenario — Sentry stays idle without a DSN
+    # Unset or blank SENTRY_DSN must not call sentry_sdk.init; /health still works.
+    def test_sentry_idle_without_dsn(self):
+        for value in (None, '', '  '):
+            env = {k: v for k, v in os.environ.items() if k != 'SENTRY_DSN'}
+            if value is not None:
+                env['SENTRY_DSN'] = value
+            with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, env, clear=True):
+                with mock.patch('sentry_sdk.init') as init:
+                    app = probe_app(d, ORIGIN)
+                    try:
+                        self.assertFalse(app.extensions['sentry_enabled'])
+                        init.assert_not_called()
+                        client = app.test_client()
+                        self.assertEqual(client.get('/health').status_code, 200)
+                        reply = client.get('/probe/crash', base_url=ORIGIN)
+                        self.assertEqual(reply.status_code, 500)
+                        self.assertEqual(reply.json['code'], 'INTERNAL_ERROR')
+                    finally:
+                        app.extensions['close']()
+
+    # FEATURE 16 — Scenario — Sentry init uses DSN and Render commit
+    # Fake DSN triggers init (mocked; no network). Release comes from RENDER_GIT_COMMIT.
+    # Crash still returns the same 500 JSON and reports via capture_exception.
+    def test_sentry_init_with_dsn_and_release(self):
+        fake_dsn = 'https://public@example.com/1'
+        env = {
+            **{k: v for k, v in os.environ.items()
+               if k not in ('SENTRY_DSN', 'RENDER_GIT_COMMIT')},
+            'SENTRY_DSN': fake_dsn,
+            'RENDER_GIT_COMMIT': 'abc1234fake',
+        }
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch('sentry_sdk.init') as init:
+                with mock.patch('sentry_sdk.capture_exception') as capture:
+                    app = probe_app(d, ORIGIN)
+                    try:
+                        self.assertTrue(app.extensions['sentry_enabled'])
+                        init.assert_called_once()
+                        kwargs = init.call_args.kwargs
+                        self.assertEqual(kwargs['dsn'], fake_dsn)
+                        self.assertEqual(kwargs['release'], 'abc1234fake')
+                        self.assertTrue(kwargs['integrations'])
+                        reply = app.test_client().get('/probe/crash', base_url=ORIGIN)
+                        self.assertEqual(reply.status_code, 500)
+                        self.assertEqual(reply.json, {
+                            'error': 'Internal server error. Retry with the same idempotency key.',
+                            'code': 'INTERNAL_ERROR',
+                        })
+                        capture.assert_called_once()
+                        self.assertIsInstance(capture.call_args.args[0], RuntimeError)
+                    finally:
+                        app.extensions['close']()
+
 
 if __name__ == '__main__':
     unittest.main()
