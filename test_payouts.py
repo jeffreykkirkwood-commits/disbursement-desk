@@ -407,7 +407,7 @@ class HostedSeedTests(unittest.TestCase):
             ('/v1/payouts/<payout_id>/decisions', frozenset({'POST'})),
         }
         app_rules = [r for r in self.app.url_map.iter_rules() if r.endpoint != 'static']
-        self.assertEqual(len(app_rules), 24)
+        self.assertEqual(len(app_rules), 25)
         self.assertEqual({(str(r), frozenset(r.methods - {'HEAD', 'OPTIONS'})) for r in app_rules}, expected)
         self.assertEqual(client.get('/payouts', base_url='https://demo.example').status_code, 404)
         self.assertEqual(client.get('/payouts/reset', base_url='https://demo.example').status_code, 405)

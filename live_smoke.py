@@ -115,6 +115,10 @@ class Visitor:
             sent['Cookie'] = self.cookie
         if self.demo_id and keep_session and method == 'POST':
             sent['X-Demo-ID'] = self.demo_id
+        # Match browser POSTs: Origin is required for cookie submissions.
+        if method == 'POST':
+            parts = urlsplit(self.base_url)
+            sent.setdefault('Origin', f'{parts.scheme}://{parts.netloc}')
         reply = self.transport(method, self.base_url + path, sent, body, REQUEST_TIMEOUT)
         if keep_session:
             set_cookie = reply.headers.get('set-cookie', '')

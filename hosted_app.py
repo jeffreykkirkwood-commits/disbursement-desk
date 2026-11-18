@@ -124,10 +124,17 @@ def create_app(directory=None, public_origin=None):
             request.max_content_length = WEBHOOK_MAX_CONTENT_LENGTH
         if request.endpoint in ENDPOINTS_WITHOUT_DEMO_DB:
             return
-        # Reject foreign websites before looking up a browser session. The server log retains the rejection.
+        # Reject foreign websites before looking up a browser session. Cookie browser
+        # POSTs need a matching Origin or same-origin/same-site Sec-Fetch-Site.
+        # Bearer API clients may omit Origin. The server log retains the rejection.
         if request.method == 'POST':
-            if (request.headers.get('Sec-Fetch-Site') == 'cross-site' or
-                    (request.headers.get('Origin') and request.headers['Origin'] != origin)):
+            site = request.headers.get('Sec-Fetch-Site')
+            req_origin = request.headers.get('Origin')
+            if site == 'cross-site' or (req_origin and req_origin != origin):
+                return jsonify(error='Cross-site submissions are not allowed.'), 403
+            bearer = (request.headers.get('Authorization') or '').startswith('Bearer ')
+            if not bearer and not (
+                    req_origin == origin or site in ('same-origin', 'same-site')):
                 return jsonify(error='Cross-site submissions are not allowed.'), 403
         # GET/HEAD may start a demo; a POST can only use an existing session.
         # Issuer set (OidcConfig or OidcConfigError) never mints operator.json.
@@ -187,8 +194,22 @@ def create_app(directory=None, public_origin=None):
     # gets the request ID, method, endpoint pattern and status (plus the rejection reason for requests refused before a demo is found); visitor details stay in that visitor's own log.
     @app.after_request
     def finish(response):
-        response.headers.update({'X-Request-ID': g.request_id, 'Cache-Control': 'no-store',
-                                 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin'})
+        response.headers.update({
+            'X-Request-ID': g.request_id,
+            'Cache-Control': 'no-store',
+            'X-Content-Type-Options': 'nosniff',
+            'Referrer-Policy': 'same-origin',
+            'X-Frame-Options': 'DENY',
+            'Content-Security-Policy': (
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
+                "base-uri 'self'; form-action 'self'"
+            ),
+            'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()',
+        })
+        if origin.startswith('https://') or os.environ.get('RENDER'):
+            response.headers['Strict-Transport-Security'] = (
+                'max-age=31536000; includeSubDomains')
         if g.demo_id:
             response.headers['X-Demo-ID'] = g.demo_id
         cookies = [value for value in (g.cookie, g.get('operator_cookie')) if value]
@@ -680,6 +701,8 @@ def create_app(directory=None, public_origin=None):
     @app.post('/stripe/webhook')
     def stripe_webhook():
         secret = (os.environ.get('STRIPE_WEBHOOK_SECRET') or '').strip()
+        if not secret:
+            return jsonify(error='Stripe webhook is not configured.'), 503
         try:
             command = stripe_connect.parse_webhook(
                 request.get_data(cache=False), request.headers.get('Stripe-Signature'), secret)
