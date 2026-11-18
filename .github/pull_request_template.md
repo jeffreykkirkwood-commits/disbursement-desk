@@ -1,6 +1,7 @@
 <!-- Title: start it with exactly one category, then a space, e.g. "[Bug fix] Fix empty Work tab". Pick one of: [Product enhancement], [Bug fix], [Security], [Vulnerability patch], [Resiliency], [Build & tooling]. The Card format check fails without one. -->
 
-Issue: #
+<!-- check-issue-link accepts Closes/Fixes/Resolves/Refs #N (or owner/repo#N / a github.com/.../issues/N URL). "Issue: #" and "Issue: #N" do not count. Replace the line below, e.g. Refs jeffreykkirkwood-commits/payments-api-simulator#122 -->
+Refs #
 
 ## Type
 
