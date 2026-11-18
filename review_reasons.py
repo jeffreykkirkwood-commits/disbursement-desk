@@ -2,9 +2,10 @@
 # stored_reasons() lists every stored flag, in stored order, with the Desk's
 # codes and the exact per-payout sentences in flag_text, and attaches details
 # to each. for_payout() / reasons() return that list only when the payout is
-# still in review (FLAGGED or HELD). The Desk panel reads panel_items(), which
-# is the same stored list (including on final payouts) plus the phone line and
-# sanctions fact rows.
+# still in review (FLAGGED or HELD). narrative_for_payout() joins those stored
+# labels into one paragraph; it is empty whenever reasons() is empty. The Desk
+# panel reads panel_items(), which is the same stored list (including on final
+# payouts) plus the phone line and sanctions fact rows.
 # Routing-number failures are not a stored reason: the ABA check (#112)
 # rejects a bad number at creation (422) and never writes it on a payout, so it
 # is left out rather than invented here. FIRST_TIME_PAYEE is not a stored flag
@@ -184,6 +185,7 @@ def for_payout(database, payout_id):
                        (payout_id,)).fetchall()]
     return reasons(payout, earlier)
 
+
 # FEATURE 04 — Desk panel items from the same stored list
 # panel_items() is stored_reasons() plus the panel's presentation: a period
 # on each sentence, the BANK_CHANGED_7D phone-check line, and sanctions fact
@@ -224,3 +226,28 @@ def _sanctions_fact_rows(details):
         ('List published', details['list_published']),
         ('Snapshot taken', details['snapshot_taken']),
     )
+
+
+# FEATURE 05 — Operator narrative from stored hold reasons only
+# One paragraph for GET /payouts/<id>/review-reasons. Joins the same labels
+# reasons() already returns, with FLAG_TEXT_SEP, so the JSON `narrative` cannot
+# diverge from `reasons`. Empty when the payout is not in review. No
+# ofac.screen(), no FIRST_TIME_PAYEE, no ABA, and no FLAG_TEXT sentence for a
+# code that is not on the payout. A stored code with a missing sentence still
+# uses the existing stored_reasons() fallback for that code only.
+def narrative_from_stored_reasons(items):
+    """Join stored reason labels into one paragraph; empty when there are no items."""
+    parts = []
+    for item in items:
+        label = (item.get('label') or '').strip()
+        if label:
+            parts.append(label)
+    if not parts:
+        return ''
+    return payouts.FLAG_TEXT_SEP.join(parts)
+
+
+def narrative_for_payout(payout, earlier=()):
+    """One held-for-review paragraph from stored flags only; empty when not in review."""
+    return narrative_from_stored_reasons(reasons(payout, earlier))
+
