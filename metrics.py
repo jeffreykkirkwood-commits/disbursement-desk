@@ -3,9 +3,12 @@
 # accepted Render deploy notifications.
 # Values are process-local (one Gunicorn worker). Structured metric_recorded
 # log lines are meant for an aggregator; /metrics exposes a JSON snapshot.
+# Wave C: GET /metrics is gated by DESK_METRICS_SECRET (open locally when unset).
 """Process-local counters for Desk decide, create, 503, stream, OFAC, and Render events."""
 from __future__ import annotations
 
+import hmac
+import os
 from collections import Counter
 from threading import Lock
 
@@ -19,6 +22,9 @@ STREAM_OPEN_TOTAL = 'desk_stream_open_total'
 STREAM_REFUSED_TOTAL = 'desk_stream_refused_total'
 OFAC_HOLD_TOTAL = 'desk_ofac_hold_total'
 RENDER_DEPLOY_EVENT_TOTAL = 'desk_render_deploy_event_total'
+
+ENV_SECRET = 'DESK_METRICS_SECRET'
+HEADER = 'X-Metrics-Secret'
 
 _KNOWN = frozenset({
     DECIDE_TOTAL, CREATE_TOTAL, HTTP_503_TOTAL,
@@ -65,3 +71,38 @@ def reset():
     """Clear counters (tests only)."""
     with _lock:
         _counters.clear()
+
+
+def configured_secret(env=None):
+    """Return the trimmed metrics scrape secret, or '' when unset."""
+    source = os.environ if env is None else env
+    raw = source.get(ENV_SECRET)
+    if not isinstance(raw, str):
+        return ''
+    return raw.strip()
+
+
+def header_matches(presented, secret):
+    """True only when both sides are non-empty and equal."""
+    if not secret or not isinstance(presented, str):
+        return False
+    got = presented.strip()
+    if not got or len(got) != len(secret):
+        return False
+    return hmac.compare_digest(got, secret)
+
+
+def snapshot_allowed(presented, env=None):
+    """Whether GET /metrics may return the snapshot.
+
+    Secret set → require matching X-Metrics-Secret.
+    Secret unset on Render → refuse (404 at the route).
+    Secret unset off Render → allow (local demos and unit tests).
+    """
+    source = os.environ if env is None else env
+    secret = configured_secret(source)
+    if secret:
+        return header_matches(presented, secret)
+    if source.get('RENDER'):
+        return False
+    return True

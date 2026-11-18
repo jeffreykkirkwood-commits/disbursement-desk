@@ -29,6 +29,7 @@ import metrics
 import operators
 import operator_oidc
 import deploy_posture
+import rate_limits
 import render_events
 
 
@@ -309,10 +310,21 @@ def create_app(directory=None, public_origin=None):
     # FEATURE 10c — Process-local metrics snapshot (decide/create/503/stream)
     # No demo allocation. Values are per Gunicorn worker; scrapers should poll each
     # instance. Structured metric_recorded lines are also written to the request log.
+    # Wave C: require X-Metrics-Secret when DESK_METRICS_SECRET is set; on Render
+    # with the secret unset, answer 404 like an unknown path (tests stay open).
     @app.get('/metrics')
     def metrics_snapshot():
+        if not metrics.snapshot_allowed(request.headers.get(metrics.HEADER)):
+            abort(404)
         return jsonify(status='ok', metrics=metrics.snapshot(),
                        commit=os.environ.get('RENDER_GIT_COMMIT') or None)
+
+    def _rate_limited(bucket):
+        """Refuse with 429 when this IP+demo session exceeds the in-process cap."""
+        if rate_limits.allow(bucket, request.remote_addr, g.demo_id):
+            return None
+        return jsonify(error='Too many requests. Try again shortly.',
+                       code=api_contract.RATE_LIMITED), 429
 
     # FEATURE 09 — Open the Desk
     # This repo holds only the Desk, so visiting the root address redirects to /desk.
@@ -426,6 +438,9 @@ def create_app(directory=None, public_origin=None):
         refused = _require_demo_tools()
         if refused is not None:
             return refused
+        limited = _rate_limited(rate_limits.BUCKET_DEMO_SCENARIO)
+        if limited is not None:
+            return limited
         import demo_scenario
         database = g.payments.database
         report = demo_scenario.run(database)
@@ -482,12 +497,18 @@ def create_app(directory=None, public_origin=None):
 
     @app.post('/payouts/<payout_id>/<any(approve, hold, return, clear, block):action>')
     def decide_payout(payout_id, action):
+        limited = _rate_limited(rate_limits.BUCKET_DECIDE)
+        if limited is not None:
+            return limited
         body = _require_json_object('Send a JSON object (reason optional).')
         return _run_decide(payout_id, action, body)
 
     # FEATURE 21b — Versioned decide (action in JSON body)
     @app.post('/v1/payouts/<payout_id>/decisions')
     def v1_decide_payout(payout_id):
+        limited = _rate_limited(rate_limits.BUCKET_DECIDE)
+        if limited is not None:
+            return limited
         body = _require_json_object('Send a JSON object with action (reason optional).')
         action = body.get('action')
         if action not in payouts.DECISIONS:
@@ -526,6 +547,9 @@ def create_app(directory=None, public_origin=None):
         if not g.operator.can_reset():
             return jsonify(error='Only an admin operator can reset the demo.',
                            code='OPERATOR_FORBIDDEN'), 403
+        limited = _rate_limited(rate_limits.BUCKET_RESET)
+        if limited is not None:
+            return limited
         database = g.payments.database
         restored = payouts.reset(database)
         event('payouts_reset', restored=restored, operator_id=g.operator.operator_id)
@@ -599,6 +623,9 @@ def create_app(directory=None, public_origin=None):
         refused = _require_demo_tools()
         if refused is not None:
             return refused
+        limited = _rate_limited(rate_limits.BUCKET_SIMULATE)
+        if limited is not None:
+            return limited
         body = _require_json_object(
             'Send a JSON object with a payee name, DEMO- account and amount.')
         return _run_create(body)
@@ -606,6 +633,9 @@ def create_app(directory=None, public_origin=None):
     # FEATURE 25b — Versioned create (same body as simulate)
     @app.post('/v1/payouts')
     def v1_create_payout():
+        limited = _rate_limited(rate_limits.BUCKET_CREATE)
+        if limited is not None:
+            return limited
         body = _require_json_object(
             'Send a JSON object with a payee name, DEMO- account and amount.')
         return _run_create(body)
@@ -671,6 +701,9 @@ def create_app(directory=None, public_origin=None):
         refused = _require_demo_tools()
         if refused is not None:
             return refused
+        limited = _rate_limited(rate_limits.BUCKET_RECON)
+        if limited is not None:
+            return limited
         import reconciliation
         database = g.payments.database
         report = reconciliation.reconcile(database)

@@ -19,7 +19,8 @@ Turso / multi-visitor tenancy: see [docs/tenancy.md](docs/tenancy.md). A shared
 `TURSO_DATABASE_URL` across visitors is refused unless tenancy is configured.
 
 Observability (structured logs + decide/create/503/stream counters): see
-[docs/observability.md](docs/observability.md). Snapshot: `GET /metrics`.
+[docs/observability.md](docs/observability.md). Snapshot: `GET /metrics`
+(gated by `DESK_METRICS_SECRET` / `X-Metrics-Secret` on Render).
 
 Deploy posture (Render Blueprint, ephemeral `/tmp`, secrets, free spin-down):
 see [docs/deploy-posture.md](docs/deploy-posture.md). Blueprint: `render.yaml`.

@@ -73,6 +73,7 @@ Dashboard values after first create:
 | `STRIPE_SECRET_KEY` | Connect / Stripe SDK (test mode) |
 | `STRIPE_WEBHOOK_SECRET` | Webhook signature check |
 | `RENDER_EVENTS_SECRET` | Shared secret for `POST /internal/render-events` |
+| `DESK_METRICS_SECRET` | Shared secret for `GET /metrics` (`X-Metrics-Secret`). On Render, unset → 404. |
 | `OFAC_HTTP_URL` / `OFAC_HTTP_TOKEN` | Live OFAC vendor |
 | `DESK_AI_API_KEY` | Optional note paraphrase HTTP bearer. Off unless `DESK_AI_NOTES=1`. |
 | `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | Durable SQLite |

@@ -32,8 +32,19 @@ aggregators (Datadog / CloudWatch / etc. that scrape JSON stdout).
 ## Endpoints
 
 - `GET /metrics` — JSON snapshot for this process. Does **not** mint a demo.
+  Send `X-Metrics-Secret` matching `DESK_METRICS_SECRET` when that env is set.
+  On Render with the secret unset, the path answers **404**. Local / unit tests
+  leave the secret unset and keep the route open.
 - `GET /health` — liveness only (unchanged).
 - `POST /internal/render-events`. Accepted deploy notices only. The gate is in [deploy-posture.md](deploy-posture.md).
+
+## Abuse limits (Wave C)
+
+Mutating POSTs (`decide`, `/v1` create, reset, simulate, demo-scenario,
+fixture reconciliation) share an in-process sliding window keyed by route
+bucket + client IP + demo session (`rate_limits.py`). Over the cap → **429**
+with `code=RATE_LIMITED`. Defaults: 60 hits / 60s (`DESK_RATE_LIMIT_MAX`,
+`DESK_RATE_LIMIT_WINDOW_SECONDS`). Limits are per Gunicorn worker.
 
 ## Deploy notes
 
