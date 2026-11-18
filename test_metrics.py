@@ -1,5 +1,6 @@
 # Automated checks for Desk process-local metrics (decide/create/503/stream/OFAC).
 """Exercise metrics counters and the /metrics snapshot route."""
+import os
 import tempfile
 import unittest
 from unittest import mock
@@ -10,6 +11,7 @@ import payout_events
 from hosted_app import create_app
 
 SITE = 'https://demo.example'
+METRICS_SECRET = 'metrics-test-secret'
 
 
 class MetricsUnitTests(unittest.TestCase):
@@ -72,6 +74,30 @@ class MetricsHttpTests(unittest.TestCase):
         self.assertEqual(reply.get_json()['metrics'][metrics.OFAC_HOLD_TOTAL], [])
         self.assertNotIn('Set-Cookie', reply.headers)
         self.assertEqual(list(__import__('pathlib').Path(self.temp.name).rglob('payments.sqlite3')), [])
+
+    def test_metrics_secret_required_when_configured(self):
+        missing = self.client.get('/not-a-route', base_url=SITE)
+        with mock.patch.dict(os.environ, {metrics.ENV_SECRET: METRICS_SECRET}, clear=False):
+            closed = self.client.get('/metrics', base_url=SITE)
+            wrong = self.client.get(
+                '/metrics', base_url=SITE,
+                headers={metrics.HEADER: 'nope'})
+            opened = self.client.get(
+                '/metrics', base_url=SITE,
+                headers={metrics.HEADER: METRICS_SECRET})
+        self.assertEqual(closed.status_code, 404)
+        self.assertEqual(closed.get_json(), missing.get_json())
+        self.assertEqual(wrong.status_code, 404)
+        self.assertEqual(opened.status_code, 200)
+        self.assertEqual(opened.get_json()['status'], 'ok')
+
+    def test_metrics_closed_on_render_when_secret_unset(self):
+        missing = self.client.get('/not-a-route', base_url=SITE)
+        with mock.patch.dict(os.environ, {'RENDER': 'true'}, clear=False):
+            os.environ.pop(metrics.ENV_SECRET, None)
+            closed = self.client.get('/metrics', base_url=SITE)
+        self.assertEqual(closed.status_code, 404)
+        self.assertEqual(closed.get_json(), missing.get_json())
 
     def test_decide_and_create_increment_counters(self):
         self.open_desk()
