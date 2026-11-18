@@ -145,6 +145,17 @@ def _review_panel(payout, items):
             f'<p class="review-foot">From fixed rules. Review before sending.</p></div>')
 
 
+WHY_HELD_HEADING = 'Why held'
+
+
+def _why_held(narrative):
+    if not narrative:
+        return ''
+    return (f'<section class="why-held" aria-label="{WHY_HELD_HEADING}">'
+            f'<h3>{WHY_HELD_HEADING}</h3>'
+            f'<p>{text(narrative)}</p></section>')
+
+
 # FEATURE 01d — Choose the note badge and helper line (slice 5, Q3 option A)
 # Stored #37 notes come from a template, so they are shown only as RULES NOTE
 # plus "From fixed rules". There is no AI model, so the AI NOTE spot uses the
@@ -321,6 +332,7 @@ def _detail(payout, events=()):
         parts.append(_review_panel(payout, items))
     else:
         parts.append(f'<p class="review-clean">{text(payout_notes.CLEAN_NOTE)}</p>')
+    parts.append(_why_held(review_reasons.narrative_for_payout(payout)))
     parts.append(_audit_panel(events))
     if payout['status'] in FINAL_STATUSES:
         parts.append(f'<p class="done">{FINAL_MESSAGE}</p>')
@@ -432,6 +444,9 @@ dl{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:14px 0;font-s
 .review-phone{margin:4px 0 0;font-size:15px;overflow-wrap:anywhere}
 .review-foot{margin:10px 0 0;padding-top:8px;border-top:1px solid #ead7a8;font-size:13px;color:var(--muted)}
 .review-clean{font-size:15px;color:var(--muted);margin:12px 0}
+.why-held{margin:14px 0 0;padding-top:12px;border-top:1px solid var(--line)}
+.why-held h3{font-size:15px;font-weight:700;margin:0 0 8px}
+.why-held p{margin:0;font-size:15px;overflow-wrap:anywhere}
 .audit{margin:14px 0 0;padding-top:12px;border-top:1px solid var(--line)}
 .audit h3{font-size:15px;font-weight:700;margin:0 0 8px}
 .audit-empty{font-size:14px;color:var(--muted);margin:0}
