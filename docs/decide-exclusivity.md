@@ -20,7 +20,7 @@ remains allowed sequentially (issue #41).
 
 | Layer | Where |
 |-------|--------|
-| Product stress | `test_decide_exclusivity.py`, `ConcurrentDecideTests` in `test_pre_send_gates.py` |
+| Product stress | `test_decide_exclusivity.py` (thread + multi-process fan-in, Clear/Block OFAC races, repeated rounds), `ConcurrentDecideTests` in `test_pre_send_gates.py` |
 | Formal model | `.cursor/skills/verify-decide-exclusivity/` (`Inv_AtMostOneSettle`) |
 
 Run the formal check (needs Java + `tla2tools.jar`):
