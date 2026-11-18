@@ -35,6 +35,8 @@ services:
         sync: false
       - key: OFAC_HTTP_TOKEN
         sync: false
+      - key: DESK_AI_API_KEY
+        sync: false
       - key: TURSO_DATABASE_URL
         sync: false
       - key: TURSO_AUTH_TOKEN
