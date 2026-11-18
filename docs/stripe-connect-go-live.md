@@ -1,5 +1,10 @@
 # Stripe Connect go-live (P3) — gated checklist
 
+**Maturity:** test-mode Connect send/recon code is on main behind the kill
+switch. Until Render Stripe secrets, Connect test clocks, Express/KYC owner
+sign-off, a limited live pilot, and compliance sign-off are done, this is
+**not** full production money software.
+
 Test-mode Stripe send runs only when `STRIPE_PAYOUTS_ENABLED` is exactly `1`,
 and only for the demo folder named by `STRIPE_DEMO_ID`. Any other flag value
 keeps the demo settle, even when Stripe secrets are present. Armed send
@@ -12,6 +17,18 @@ idempotency ↔ Stripe object id mapping
 ([#42](https://github.com/jeffreykkirkwood-commits/disbursement-desk/pull/42)),
 and the Stripe reconciliation job with dry-run default
 ([#43](https://github.com/jeffreykkirkwood-commits/disbursement-desk/pull/43)).
+
+Adjacent operator control-plane (not Connect pilot blockers): gate-stop
+narrative
+([#45](https://github.com/jeffreykkirkwood-commits/disbursement-desk/pull/45)),
+multi-flag rules notes
+([#47](https://github.com/jeffreykkirkwood-commits/disbursement-desk/pull/47)),
+Desk Why held panel
+([#48](https://github.com/jeffreykkirkwood-commits/disbursement-desk/pull/48)),
+card-format / issue-link commit-status overwrite
+([#49](https://github.com/jeffreykkirkwood-commits/disbursement-desk/pull/49)).
+Optional AI paraphrase of stored gate notes (`DESK_AI_NOTES`) is **in flight**
+([#50](https://github.com/jeffreykkirkwood-commits/disbursement-desk/pull/50)).
 
 Related gates:
 [pre-send-gates.md](pre-send-gates.md), [ofac-vendor.md](ofac-vendor.md),
@@ -88,6 +105,7 @@ Look up either direction without live Stripe:
 
 ## Still blocked (outside this checklist's checked boxes)
 
+- Express / KYC owner sign-off (checkbox in [stripe-connect-account-ownership.md](stripe-connect-account-ownership.md) still unchecked)
 - Render Stripe secrets (`rk_test_` / `whsec_` / destination map / `STRIPE_DEMO_ID`)
 - Connect test-clocks end-to-end
 - Limited live pilot (disarmable with the kill switch)
