@@ -1,5 +1,11 @@
 # Stripe Connect go-live (P3) — gated checklist
 
+**Maturity:** test-mode Connect send/recon code is on main behind the kill
+switch. Until Render Stripe secrets, Connect test clocks, a limited live
+pilot, and compliance sign-off are done, this is **not** full production
+money software. Express / KYC owner sign-off is already checked
+([stripe-connect-account-ownership.md](stripe-connect-account-ownership.md)).
+
 Test-mode Stripe send runs only when `STRIPE_PAYOUTS_ENABLED` is exactly `1`,
 and only for the demo folder named by `STRIPE_DEMO_ID`. Any other flag value
 keeps the demo settle, even when Stripe secrets are present. Armed send
@@ -13,12 +19,25 @@ idempotency ↔ Stripe object id mapping
 and the Stripe reconciliation job with dry-run default
 ([#43](https://github.com/jeffreykkirkwood-commits/disbursement-desk/pull/43)).
 
+Adjacent operator control-plane (not Connect pilot blockers): gate-stop
+narrative
+([#45](https://github.com/jeffreykkirkwood-commits/disbursement-desk/pull/45)),
+multi-flag rules notes
+([#47](https://github.com/jeffreykkirkwood-commits/disbursement-desk/pull/47)),
+Desk Why held panel
+([#48](https://github.com/jeffreykkirkwood-commits/disbursement-desk/pull/48)),
+card-format / issue-link commit-status overwrite
+([#49](https://github.com/jeffreykkirkwood-commits/disbursement-desk/pull/49)),
+optional AI paraphrase of stored gate notes behind `DESK_AI_NOTES`
+([#50](https://github.com/jeffreykkirkwood-commits/disbursement-desk/pull/50),
+`7089654`).
+
 Related gates:
 [pre-send-gates.md](pre-send-gates.md), [ofac-vendor.md](ofac-vendor.md),
 [decide-exclusivity.md](decide-exclusivity.md), [desk-audit.md](desk-audit.md).
 The account-type recommendation is in
 [stripe-connect-account-ownership.md](stripe-connect-account-ownership.md).
-The owner sign-off there is unchecked.
+The owner sign-off there is checked (2026-11-17).
 Kill-switch steps are in
 [stripe-connect-kill-switch.md](stripe-connect-kill-switch.md).
 
@@ -38,7 +57,7 @@ Re-verify these on any change to `decide`, `_settle`, `route_one`, or OFAC scree
 Checked items are enforced by the test-mode send path or shipped jobs. Unchecked
 items still block a live pilot:
 
-- [ ] Connected account type and KYC ownership signed off. The recommendation is Express. See [Account ownership](stripe-connect-account-ownership.md). The owner sign-off box is unchecked.
+- [x] Connected account type and KYC ownership signed off. The recommendation is Express. See [Account ownership](stripe-connect-account-ownership.md). Jeff signed 2026-11-17.
 - [x] Platform → connected-account fund flow: test-mode destination charge (`PaymentIntent` with `transfer_data[destination]`). `STRIPE_SEND_PATH=transfer` keeps Transfers (#41).
 - [x] Desk Stripe-call idempotency keys map 1:1 to Stripe `Transfer` / `PaymentIntent` / `Payout` ids in `payout_events` evidence (#42; see [Idempotency to Stripe id mapping](#idempotency-to-stripe-id-mapping))
 - [x] OFAC **Clear** is a hard precondition in code **before** any Stripe money-movement API call
